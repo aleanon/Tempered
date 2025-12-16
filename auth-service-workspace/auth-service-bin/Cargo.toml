@@ -1,0 +1,75 @@
+[package]
+name = "auth-service"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "auth-service"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+auth-core.workspace = true
+auth-application.workspace = true
+auth-adapters.workspace = true
+auth-service-lib.workspace = true
+
+# Web framework
+axum.workspace = true
+axum-server.workspace = true
+tower-http.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Database
+sqlx.workspace = true
+redis.workspace = true
+
+# HTTP client
+reqwest.workspace = true
+
+# Configuration
+dotenvy.workspace = true
+
+# Observability
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-error.workspace = true
+color-eyre.workspace = true
+
+# Utilities
+secrecy.workspace = true
+
+[dev-dependencies]
+# Testing utilities
+testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }
+libtest-mimic = { workspace = true }
+libtest-mimic-collect = { workspace = true }
+rustest = { workspace = true }
+reqwest = { workspace = true, features = ["json", "cookies"] }
+wiremock = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+uuid = { workspace = true, features = ["v4"] }
+fake = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+sqlx = { workspace = true, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "migrate",
+] }
+redis = { workspace = true, features = ["tokio-comp"] }
+secrecy = { workspace = true, features = ["serde"] }
+test-log = "0.2.16"
+
+# Internal crates for testing
+auth-core = { path = "../auth-core" }
+auth-adapters = { path = "../auth-adapters" }
+auth-application = { path = "../auth-application" }
+auth-service-lib = { path = "../auth-service-lib" }
+
+[[test]]
+name = "api"
+path = "tests/api/main.rs"
+harness = true

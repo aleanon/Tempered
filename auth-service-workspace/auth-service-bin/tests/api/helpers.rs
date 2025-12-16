@@ -1,21 +1,12 @@
 use std::sync::Arc;
 
-use auth_service::{
-    AuthService,
-    auth_service::get_postgres_pool,
-    auth_service_state::AuthServiceState,
-    domain::{
-        data_stores::{BannedTokenStore, TwoFaCodeStore},
-        email::Email,
-        two_fa_attempt_id::TwoFaAttemptId,
-    },
-    services::{
-        data_stores::{PostgresUserStore, RedisBannedTokenStore, RedisTwoFaCodeStore},
-        postmark_email_client::PostmarkEmailClient,
-    },
-    utils::constants::test,
+use auth_adapters::{
+    config::test,
+    email::PostmarkEmailClient,
+    persistence::{PostgresUserStore, RedisBannedTokenStore, RedisTwoFaCodeStore},
 };
-
+use auth_core::{BannedTokenStore, Email, TwoFaAttemptId, TwoFaCodeStore};
+use auth_service_lib::{AuthService, get_postgres_pool};
 use reqwest::{
     Client, Url,
     cookie::{CookieStore, Jar},
@@ -49,20 +40,17 @@ pub struct TestApp {
     redis_container: ContainerAsync<Redis>,
 }
 
-// static TEST_APP_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-// static JANITOR: std::sync::LazyLock<std::sync::RwLock<Janitor>> =
-//     std::sync::LazyLock::new(|| std::sync::RwLock::new(Janitor::new()));
-
 impl TestApp {
     pub async fn new() -> Self {
-        // TEST_APP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-
         let (redis_container, redis_connection) = setup_and_connect_redis_container().await;
         let redis_connection = Arc::new(Mutex::new(redis_connection));
+
         let banned_token_store = Arc::new(RwLock::new(RedisBannedTokenStore::new(
             redis_connection.clone(),
+            600,
         )));
         let two_fa_code_store = Arc::new(RwLock::new(RedisTwoFaCodeStore::new(redis_connection)));
+
         let email_server = MockServer::start().await;
         let base_url = email_server.uri();
         let email_client = Arc::new(configure_postmark_email_client(base_url));
@@ -77,17 +65,15 @@ impl TestApp {
 
         let address = format!("http://{}", listener.local_addr().unwrap());
 
-        let app_state = AuthServiceState::new(
+        let app = AuthService::with_state(
             user_store,
             banned_token_store.clone(),
             two_fa_code_store.clone(),
             email_client,
         );
 
-        let app = AuthService::with_state(app_state);
-
         let _ = tokio::spawn(async {
-            app.as_standalone(listener, None)
+            app.run_standalone(listener, None)
                 .await
                 .expect("Failed to run auth-service")
         });
