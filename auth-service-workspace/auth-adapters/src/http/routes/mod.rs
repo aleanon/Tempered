@@ -6,6 +6,7 @@ pub mod login;
 pub mod logout;
 pub mod signup;
 pub mod verify_2fa;
+pub mod verify_elevated_token;
 pub mod verify_token;
 
 pub use change_password::{ChangePasswordRequest, change_password};
@@ -16,4 +17,5 @@ pub use login::{LoginHttpResponse, LoginRequest, TwoFactorAuthResponse, login};
 pub use logout::logout;
 pub use signup::{SignupRequest, signup};
 pub use verify_2fa::{Verify2FARequest, verify_2fa};
+pub use verify_elevated_token::{VerifyElevatedTokenRequest, verify_elevated_token};
 pub use verify_token::{VerifyTokenRequest, verify_token};

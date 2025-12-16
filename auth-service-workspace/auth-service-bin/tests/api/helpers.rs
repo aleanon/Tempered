@@ -70,6 +70,7 @@ impl TestApp {
             banned_token_store.clone(),
             two_fa_code_store.clone(),
             email_client,
+            "../assets".to_string(),
         );
 
         let _ = tokio::spawn(async {

@@ -63,6 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         banned_token_store,
         two_fa_code_store,
         email_client,
+        "assets".to_string(),
     );
 
     // Get allowed origins from config

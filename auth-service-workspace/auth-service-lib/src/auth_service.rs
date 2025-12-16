@@ -1,7 +1,8 @@
 use auth_adapters::{
     config::AllowedOrigins,
     http::routes::{
-        change_password, delete_account, elevate, login, logout, signup, verify_2fa, verify_token,
+        change_password, delete_account, elevate, login, logout, signup, verify_2fa,
+        verify_elevated_token, verify_token,
     },
 };
 use auth_core::{BannedTokenStore, EmailClient, TwoFaCodeStore, UserStore};
@@ -14,7 +15,7 @@ use std::sync::Arc;
 use tokio::{net::TcpListener, sync::RwLock};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
-    services::ServeDir,
+    services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 
@@ -43,6 +44,7 @@ impl AuthService {
         banned_token_store: B,
         two_fa_code_store: T,
         email_client: E,
+        assets_dir: String,
     ) -> Self
     where
         U: UserStore + 'static,
@@ -60,6 +62,7 @@ impl AuthService {
             banned_token_store,
             two_fa_code_store,
             email_client,
+            assets_dir,
         )
     }
 
@@ -74,6 +77,7 @@ impl AuthService {
         banned_token_store: Arc<RwLock<B>>,
         two_fa_code_store: Arc<RwLock<T>>,
         email_client: Arc<E>,
+        assets_dir: String,
     ) -> Self
     where
         U: UserStore + 'static,
@@ -81,6 +85,9 @@ impl AuthService {
         T: TwoFaCodeStore + 'static,
         E: EmailClient + 'static,
     {
+        let assets_service =
+            ServeDir::new(assets_dir.clone()).fallback(ServeFile::new(assets_dir + "/index.html"));
+
         let router = Router::new()
             // Signup only needs user store
             .route("/signup", post(signup))
@@ -101,6 +108,9 @@ impl AuthService {
             // Verify token only needs banned token store
             .route("/verify-token", post(verify_token))
             .with_state(banned_token_store.clone())
+            // Verify elevated token only needs banned token store
+            .route("/verify-elevated-token", post(verify_elevated_token))
+            .with_state(banned_token_store.clone())
             // Elevate needs user store and banned token store
             .route("/elevate", post(elevate))
             .with_state((user_store.clone(), banned_token_store.clone()))
@@ -110,7 +120,7 @@ impl AuthService {
             // Delete account needs user store and banned token store
             .route("/delete-account", delete(delete_account))
             .with_state((user_store, banned_token_store))
-            .fallback_service(ServeDir::new("assets"));
+            .fallback_service(assets_service);
 
         Self { router }
     }

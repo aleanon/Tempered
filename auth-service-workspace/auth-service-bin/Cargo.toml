@@ -43,7 +43,11 @@ secrecy.workspace = true
 
 [dev-dependencies]
 # Testing utilities
-testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }
+testcontainers-modules = { workspace = true, features = [
+    "postgres",
+    "redis",
+    "blocking",
+] }
 libtest-mimic = { workspace = true }
 libtest-mimic-collect = { workspace = true }
 rustest = { workspace = true }
