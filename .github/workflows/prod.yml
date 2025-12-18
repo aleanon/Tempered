@@ -55,7 +55,7 @@ jobs:
       - name: Test workspace
         # working-directory: ./app-service
         run: |
-          cargo build--workspace --verbose
+          cargo build --workspace --verbose
           cargo test --workspace --verbose
 
       # - name: Build and test auth-service code
