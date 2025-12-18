@@ -1,0 +1,12 @@
+# Cargo configuration for the workspace
+
+[alias]
+# Use clippy instead of check
+check = "clippy --all-targets --all-features"
+
+# Add a strict clippy check that treats warnings as errors
+clippy-strict = "clippy --all-targets --all-features -- -D warnings"
+
+[build]
+# Optional: set default features for clippy
+# rustflags = ["-W", "clippy::all", "-W", "clippy::pedantic"]

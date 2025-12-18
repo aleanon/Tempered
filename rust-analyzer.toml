@@ -1,0 +1,11 @@
+# rust-analyzer configuration for workspace
+
+[check]
+# Use clippy instead of cargo check
+command = "clippy"
+
+# Check all targets (lib, bins, tests, examples, benches)
+extraArgs = ["--all-targets", "--all-features"]
+
+# Optional: uncomment to treat warnings as errors in the editor
+# extraArgs = ["--all-targets", "--all-features", "--", "-D", "warnings"]

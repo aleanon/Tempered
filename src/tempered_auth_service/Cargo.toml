@@ -1,0 +1,41 @@
+[package]
+name = "tempered_auth_service"
+version.workspace = true
+edition.workspace = true
+
+[[test]]
+name = "api"
+path = "tests/api/main.rs"
+harness = true
+
+[dependencies]
+# Internal crates
+tempered_core.workspace = true
+tempered_adapters.workspace = true
+
+# Web framework
+axum.workspace = true
+axum-server.workspace = true
+tower-http.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Database
+sqlx.workspace = true
+redis.workspace = true
+
+# Observability
+tracing.workspace = true
+
+# Utilities
+uuid.workspace = true
+secrecy.workspace = true
+
+[dev-dependencies]
+# Testing
+testcontainers-modules.workspace = true
+wiremock.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true

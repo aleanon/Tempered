@@ -1,0 +1,58 @@
+[package]
+name = "tempered_adapters"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Core dependencies
+tempered_core.workspace = true
+tempered_application.workspace = true
+
+# Web framework
+axum.workspace = true
+axum-extra.workspace = true
+tower-http.workspace = true
+
+# Async
+async-trait.workspace = true
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Database
+sqlx.workspace = true
+redis.workspace = true
+
+# Utilities
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+secrecy.workspace = true
+dashmap.workspace = true
+arc-swap.workspace = true
+rand.workspace = true
+
+# Authentication
+jsonwebtoken.workspace = true
+argon2.workspace = true
+
+# Configuration
+config.workspace = true
+dotenvy.workspace = true
+
+# Observability
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-error.workspace = true
+color-eyre.workspace = true
+
+# HTTP client
+reqwest.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+fake.workspace = true
+testcontainers-modules.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
