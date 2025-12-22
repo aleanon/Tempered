@@ -1,5 +1,5 @@
 use tempered_adapters::{
-    auth,
+    auth_validation,
     http::{
         error::{AuthApiError, ErrorResponse},
         routes::{TwoFactorAuthResponse, Verify2FARequest},
@@ -48,7 +48,7 @@ async fn should_return_200_if_correct_code() {
 
     let response = app.verify_2fa(&verify_2fa_request).await;
     let token = app.get_jwt_token().expect("No jwt token stored");
-    auth::validate_auth_token(&token, &app.banned_token_store)
+    auth_validation::validate_auth_token(&token, &app.banned_token_store)
         .await
         .expect("Invalid auth token");
 

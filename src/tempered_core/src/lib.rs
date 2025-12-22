@@ -1,5 +1,8 @@
 pub mod domain;
+pub mod http_abstraction;
+pub mod http_authentication_scheme;
 pub mod ports;
+pub mod strategies;
 
 // Re-export commonly used types for convenience
 pub use domain::{
@@ -18,3 +21,14 @@ pub use ports::{
     },
     services::EmailClient,
 };
+
+pub use strategies::{
+    auth_validator::AuthValidator,
+    authenticator::{
+        AuthenticationScheme, LoginOutcome, SupportsElevation, SupportsOAuth2,
+        SupportsPasswordReset, SupportsRegistration, SupportsTokenRevocation, SupportsTwoFactor,
+    },
+};
+
+pub use http_abstraction::{AuthRequest, AuthResponseBuilder, AuthResponseHelpers};
+pub use http_authentication_scheme::{HttpAuthenticationScheme, HttpElevationScheme};

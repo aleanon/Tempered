@@ -89,7 +89,7 @@ pub mod adapters {
 
     /// JWT authentication utilities
     pub mod auth {
-        pub use tempered_adapters::auth::*;
+        pub use tempered_adapters::auth_validation::*;
     }
 
     /// Configuration
@@ -125,3 +125,5 @@ pub use async_trait::async_trait;
 
 /// Re-export secrecy for working with secrets
 pub use secrecy::{ExposeSecret, Secret};
+
+pub use http;

@@ -1,6 +1,6 @@
 use reqwest::{Url, cookie::CookieStore};
 use tempered_adapters::{
-    auth::TokenAuthError,
+    auth_validation::TokenAuthError,
     http::error::{AuthApiError, ErrorResponse},
 };
 

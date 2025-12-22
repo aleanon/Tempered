@@ -16,18 +16,18 @@ pub enum Verify2FaError {
 }
 
 /// Verify 2FA use case - validates 2FA code and login attempt
-pub struct Verify2FaUseCase<T>
+pub struct Verify2FaUseCase<'a, T>
 where
     T: TwoFaCodeStore,
 {
-    two_fa_code_store: T,
+    two_fa_code_store: &'a T,
 }
 
-impl<T> Verify2FaUseCase<T>
+impl<'a, T> Verify2FaUseCase<'a, T>
 where
     T: TwoFaCodeStore,
 {
-    pub fn new(two_fa_code_store: T) -> Self {
+    pub fn new(two_fa_code_store: &'a T) -> Self {
         Self { two_fa_code_store }
     }
 
@@ -130,7 +130,7 @@ mod tests {
             code: code.clone(),
         };
 
-        let use_case = Verify2FaUseCase::new(store);
+        let use_case = Verify2FaUseCase::new(&store);
         let result = use_case.execute(email.clone(), attempt_id, code).await;
 
         assert!(result.is_ok());
@@ -150,7 +150,7 @@ mod tests {
             code: correct_code,
         };
 
-        let use_case = Verify2FaUseCase::new(store);
+        let use_case = Verify2FaUseCase::new(&store);
         let result = use_case.execute(email, attempt_id, wrong_code).await;
 
         assert!(matches!(result, Err(Verify2FaError::InvalidTwoFaCode)));

@@ -1,0 +1,29 @@
+[package]
+name = "tempered_axum"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Core authentication library
+tempered_core = { path = "../tempered_core" }
+tempered_adapters = { path = "../tempered_adapters" }
+
+# Axum framework
+axum.workspace = true
+axum-extra.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Security
+secrecy.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Tracing
+tracing.workspace = true

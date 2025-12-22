@@ -1,0 +1,22 @@
+{
+  "auth": {
+    "jwt": {
+      "cookie_name": "jwt",
+      "time_to_live_in_seconds": 600
+    },
+    "elevated_jwt": {
+      "cookie_name": "jwt_elevated",
+      "time_to_live_in_seconds": 60
+    },
+    "allowed_origins": ["http://localhost:3000", "127.0.0.1:3000"]
+  },
+  "redis": {
+    "host_name": "127.0.0.1"
+  },
+  "email_client": {
+    "base_url": "https://api.postmarkapp.com/",
+    "sender": "bogdan@codeiron.io",
+    "timeout_in_millis": 10000
+  },
+  "postgres": {}
+}

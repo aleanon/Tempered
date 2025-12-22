@@ -1,18 +1,18 @@
 use tempered_core::{Email, Password, User, UserStore, UserStoreError};
 
 /// Signup use case - handles user registration
-pub struct SignupUseCase<U>
+pub struct SignupUseCase<'a, U>
 where
     U: UserStore,
 {
-    user_store: U,
+    user_store: &'a U,
 }
 
-impl<U> SignupUseCase<U>
+impl<'a, U> SignupUseCase<'a, U>
 where
     U: UserStore,
 {
-    pub fn new(user_store: U) -> Self {
+    pub fn new(user_store: &'a U) -> Self {
         Self { user_store }
     }
 
@@ -93,7 +93,7 @@ mod tests {
         let user_store = MockUserStore {
             users: Arc::new(RwLock::new(std::collections::HashMap::new())),
         };
-        let use_case = SignupUseCase::new(user_store);
+        let use_case = SignupUseCase::new(&user_store);
 
         let email = Email::try_from(Secret::from("test@example.com".to_string())).unwrap();
         let password = Password::try_from(Secret::from("password123".to_string())).unwrap();
@@ -113,7 +113,7 @@ mod tests {
         let user_store = MockUserStore {
             users: Arc::new(RwLock::new(initial_users)),
         };
-        let use_case = SignupUseCase::new(user_store);
+        let use_case = SignupUseCase::new(&user_store);
 
         let result = use_case.execute(email, password, false).await;
         assert!(matches!(result, Err(UserStoreError::UserAlreadyExists)));

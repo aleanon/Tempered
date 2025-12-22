@@ -12,6 +12,7 @@ harness = true
 # Internal crates
 tempered_core.workspace = true
 tempered_adapters.workspace = true
+tempered_axum.workspace = true
 
 # Web framework
 axum.workspace = true

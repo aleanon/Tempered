@@ -1,4 +1,4 @@
-use tempered_adapters::auth::jwt::JWT_COOKIE_NAME;
+use tempered_adapters::auth_validation::jwt::JWT_COOKIE_NAME;
 
 use crate::helpers::{TestApp, get_standard_test_user};
 

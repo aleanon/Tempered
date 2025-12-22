@@ -27,24 +27,24 @@ pub enum LoginError {
 }
 
 /// Login use case - handles user authentication
-pub struct LoginUseCase<U, T, E>
+pub struct LoginUseCase<'a, U, T, E>
 where
     U: UserStore,
     T: TwoFaCodeStore,
     E: EmailClient,
 {
-    user_store: U,
-    two_fa_code_store: T,
-    email_client: E,
+    user_store: &'a U,
+    two_fa_code_store: &'a T,
+    email_client: &'a E,
 }
 
-impl<U, T, E> LoginUseCase<U, T, E>
+impl<'a, U, T, E> LoginUseCase<'a, U, T, E>
 where
     U: UserStore,
     T: TwoFaCodeStore,
     E: EmailClient,
 {
-    pub fn new(user_store: U, two_fa_code_store: T, email_client: E) -> Self {
+    pub fn new(user_store: &'a U, two_fa_code_store: &'a T, email_client: &'a E) -> Self {
         Self {
             user_store,
             two_fa_code_store,
@@ -89,7 +89,7 @@ where
         self.email_client
             .send_email(&email, "2FA Code", code.as_str())
             .await
-            .map_err(|e| LoginError::EmailError(e.to_string()))?;
+            .map_err(|e| LoginError::EmailError(e))?;
 
         Ok(LoginResponse::Requires2Fa {
             email,
@@ -208,7 +208,7 @@ mod tests {
         let two_fa_store = MockTwoFaCodeStore;
         let email_client = MockEmailClient;
 
-        let use_case = LoginUseCase::new(user_store, two_fa_store, email_client);
+        let use_case = LoginUseCase::new(&user_store, &two_fa_store, &email_client);
 
         let email = Email::try_from(Secret::from("test@example.com".to_string())).unwrap();
         let password = Password::try_from(Secret::from("password123".to_string())).unwrap();
@@ -227,7 +227,7 @@ mod tests {
         let two_fa_store = MockTwoFaCodeStore;
         let email_client = MockEmailClient;
 
-        let use_case = LoginUseCase::new(user_store, two_fa_store, email_client);
+        let use_case = LoginUseCase::new(&user_store, &two_fa_store, &email_client);
 
         let email = Email::try_from(Secret::from("test@example.com".to_string())).unwrap();
         let password = Password::try_from(Secret::from("password123".to_string())).unwrap();

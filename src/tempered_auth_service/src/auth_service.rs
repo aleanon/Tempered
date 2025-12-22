@@ -4,11 +4,13 @@ use axum::{
     routing::{delete, post},
 };
 use tempered_adapters::{
-    config::AllowedOrigins,
-    http::routes::{
-        change_password, delete_account, elevate, login, logout, signup, verify_2fa,
-        verify_elevated_token, verify_token,
-    },
+    auth_validation::local_jwt_validator::JwtAuthConfig,
+    authentication::jwt_scheme::JwtScheme,
+    config::{AllowedOrigins, AuthServiceSetting},
+};
+use tempered_axum::routes::{
+    change_password, delete_account, elevate, login, logout, signup, verify_2fa,
+    verify_elevated_token, verify_token,
 };
 use tempered_core::{BannedTokenStore, EmailClient, TwoFaCodeStore, UserStore};
 use tokio::net::TcpListener;
@@ -33,10 +35,12 @@ impl AuthService {
     /// * `banned_token_store` - Store for banned JWT tokens (must be Clone)
     /// * `two_fa_code_store` - Store for 2FA codes (must be Clone)
     /// * `email_client` - Client for sending emails (must be Clone)
+    /// * `assets_dir` - Directory for static assets
     ///
     /// # Note on Architecture
-    /// Stores implement Clone via internal Arc<RwLock> for thread-safe sharing.
-    /// Each route is given its specific state requirements, avoiding unnecessary cloning.
+    /// This creates a JwtScheme that wraps all the stores and implements
+    /// the authentication logic. Routes receive the scheme as state instead
+    /// of individual stores.
     pub fn new<U, B, T, E>(
         user_store: U,
         banned_token_store: B,
@@ -50,41 +54,47 @@ impl AuthService {
         T: TwoFaCodeStore + Clone + 'static,
         E: EmailClient + Clone + 'static,
     {
+        // Load JWT configuration
+        let config = AuthServiceSetting::load();
+
+        let jwt_config = JwtAuthConfig {
+            jwt_cookie_name: config.auth.jwt.cookie_name.clone(),
+            jwt_secret: config.auth.jwt.secret.clone(),
+            token_ttl_in_seconds: config.auth.jwt.time_to_live,
+        };
+
+        let elevated_jwt_config = JwtAuthConfig {
+            jwt_cookie_name: config.auth.elevated_jwt.cookie_name.clone(),
+            jwt_secret: config.auth.elevated_jwt.secret.clone(),
+            token_ttl_in_seconds: config.auth.elevated_jwt.time_to_live,
+        };
+
+        // Create JWT authentication scheme
+        let jwt_scheme = JwtScheme::new(
+            user_store.clone(),
+            two_fa_code_store.clone(),
+            email_client.clone(),
+            banned_token_store.clone(),
+            jwt_config,
+            banned_token_store.clone(),
+            elevated_jwt_config,
+        );
+
         let assets_service =
             ServeDir::new(assets_dir.clone()).fallback(ServeFile::new(assets_dir + "/index.html"));
 
+        // All routes use the JwtScheme as state
         let router = Router::new()
-            // Signup only needs user store
-            .route("/signup", post(signup::<U>))
-            .with_state(user_store.clone())
-            // Login needs user store, 2FA store, and email client
-            .route("/login", post(login::<U, T, E>))
-            .with_state((
-                user_store.clone(),
-                two_fa_code_store.clone(),
-                email_client.clone(),
-            ))
-            // Logout only needs banned token store
-            .route("/logout", post(logout::<B>))
-            .with_state(banned_token_store.clone())
-            // Verify 2FA only needs 2FA code store
-            .route("/verify-2fa", post(verify_2fa::<T>))
-            .with_state(two_fa_code_store.clone())
-            // Verify token only needs banned token store
-            .route("/verify-token", post(verify_token::<B>))
-            .with_state(banned_token_store.clone())
-            // Verify elevated token only needs banned token store
-            .route("/verify-elevated-token", post(verify_elevated_token::<B>))
-            .with_state(banned_token_store.clone())
-            // Elevate needs user store and banned token store
-            .route("/elevate", post(elevate::<U, B>))
-            .with_state((user_store.clone(), banned_token_store.clone()))
-            // Change password needs user store and banned token store
-            .route("/change-password", post(change_password::<U, B>))
-            .with_state((user_store.clone(), banned_token_store.clone()))
-            // Delete account needs user store and banned token store
-            .route("/delete-account", delete(delete_account::<U, B>))
-            .with_state((user_store, banned_token_store))
+            .route("/signup", post(signup))
+            .route("/login", post(login))
+            .route("/logout", post(logout))
+            .route("/verify-2fa", post(verify_2fa))
+            .route("/verify-token", post(verify_token))
+            .route("/verify-elevated-token", post(verify_elevated_token))
+            .route("/elevate", post(elevate))
+            .route("/change-password", post(change_password))
+            .route("/delete-account", delete(delete_account))
+            .with_state(jwt_scheme)
             .fallback_service(assets_service);
 
         Self { router }

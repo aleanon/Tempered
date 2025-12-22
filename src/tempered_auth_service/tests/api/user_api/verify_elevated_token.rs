@@ -1,5 +1,5 @@
 use tempered_adapters::{
-    auth::{TokenAuthError, jwt::JWT_ELEVATED_COOKIE_NAME},
+    auth_validation::{TokenAuthError, jwt::JWT_ELEVATED_COOKIE_NAME},
     http::error::{AuthApiError, ErrorResponse},
 };
 

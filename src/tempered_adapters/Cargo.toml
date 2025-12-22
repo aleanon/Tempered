@@ -33,6 +33,7 @@ secrecy.workspace = true
 dashmap.workspace = true
 arc-swap.workspace = true
 rand.workspace = true
+http.workspace = true
 
 # Authentication
 jsonwebtoken.workspace = true
@@ -44,8 +45,6 @@ dotenvy.workspace = true
 
 # Observability
 tracing.workspace = true
-tracing-subscriber.workspace = true
-tracing-error.workspace = true
 color-eyre.workspace = true
 
 # HTTP client
