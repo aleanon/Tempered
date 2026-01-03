@@ -25,8 +25,9 @@ pub use ports::{
 pub use strategies::{
     auth_validator::AuthValidator,
     authenticator::{
-        AuthenticationScheme, LoginOutcome, SupportsElevation, SupportsOAuth2,
-        SupportsPasswordReset, SupportsRegistration, SupportsTokenRevocation, SupportsTwoFactor,
+        AuthenticationScheme, LoginOutcome, SupportsAccountDeletion, SupportsElevation,
+        SupportsOAuth2, SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
+        SupportsTokenRevocation, SupportsTwoFactor,
     },
 };
 

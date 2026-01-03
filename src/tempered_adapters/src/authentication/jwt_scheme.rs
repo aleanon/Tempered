@@ -499,3 +499,55 @@ where
             .map(|token_str| ElevatedJwtToken(token_str.to_string()))
     }
 }
+
+// ============================================================================
+// Optional Capability: Password Change
+// ============================================================================
+
+#[async_trait]
+impl<U, T, E, B> tempered_core::SupportsPasswordChange for JwtScheme<U, T, E, B>
+where
+    U: UserStore + Clone + 'static,
+    T: TwoFaCodeStore + Clone + 'static,
+    E: EmailClient + Clone + 'static,
+    B: BannedTokenStore + Clone + Send + Sync + 'static,
+{
+    type PasswordChangeError = JwtAuthError;
+
+    #[tracing::instrument(name = "JwtScheme::change_password", skip(self, new_password))]
+    async fn change_password(
+        &self,
+        email: Email,
+        new_password: Password,
+    ) -> Result<(), Self::PasswordChangeError> {
+        // Update the user's password in the user store
+        self.user_store
+            .set_new_password(&email, new_password)
+            .await?;
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Optional Capability: Account Deletion
+// ============================================================================
+
+#[async_trait]
+impl<U, T, E, B> tempered_core::SupportsAccountDeletion for JwtScheme<U, T, E, B>
+where
+    U: UserStore + Clone + 'static,
+    T: TwoFaCodeStore + Clone + 'static,
+    E: EmailClient + Clone + 'static,
+    B: BannedTokenStore + Clone + Send + Sync + 'static,
+{
+    type AccountDeletionError = JwtAuthError;
+
+    #[tracing::instrument(name = "JwtScheme::delete_account", skip(self))]
+    async fn delete_account(&self, email: Email) -> Result<(), Self::AccountDeletionError> {
+        // Delete the user from the user store
+        self.user_store.delete_user(&email).await?;
+
+        Ok(())
+    }
+}

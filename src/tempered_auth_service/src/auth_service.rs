@@ -1,18 +1,18 @@
 use axum::{
     Router,
     http::{HeaderValue, Method, request},
+    middleware,
     routing::{delete, post},
 };
-use tempered_adapters::{
-    auth_validation::local_jwt_validator::JwtAuthConfig,
-    authentication::jwt_scheme::JwtScheme,
-    config::{AllowedOrigins, AuthServiceSetting},
-};
+use tempered_adapters::config::AllowedOrigins;
 use tempered_axum::routes::{
     change_password, delete_account, elevate, login, logout, signup, verify_2fa,
     verify_elevated_token, verify_token,
 };
-use tempered_core::{BannedTokenStore, EmailClient, TwoFaCodeStore, UserStore};
+use tempered_core::{
+    HttpAuthenticationScheme, HttpElevationScheme, SupportsElevation, SupportsRegistration,
+    SupportsTokenRevocation, SupportsTwoFactor,
+};
 use tokio::net::TcpListener;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -41,60 +41,71 @@ impl AuthService {
     /// This creates a JwtScheme that wraps all the stores and implements
     /// the authentication logic. Routes receive the scheme as state instead
     /// of individual stores.
-    pub fn new<U, B, T, E>(
-        user_store: U,
-        banned_token_store: B,
-        two_fa_code_store: T,
-        email_client: E,
-        assets_dir: String,
-    ) -> Self
+    pub fn new<A>(auth_schema: A, assets_dir: String) -> Self
     where
-        U: UserStore + Clone + 'static,
-        B: BannedTokenStore + Clone + 'static,
-        T: TwoFaCodeStore + Clone + 'static,
-        E: EmailClient + Clone + 'static,
+        A: HttpAuthenticationScheme
+            + HttpElevationScheme
+            + SupportsRegistration
+            + SupportsElevation
+            + SupportsTokenRevocation
+            + SupportsTwoFactor
+            + tempered_core::SupportsPasswordChange
+            + tempered_core::SupportsAccountDeletion
+            + Send
+            + Sync
+            + Clone
+            + 'static,
+        A::Validator: tempered_core::AuthValidator<RequestParts = http::request::Parts>,
     {
         // Load JWT configuration
-        let config = AuthServiceSetting::load();
+        // let config = AuthServiceSetting::load();
 
-        let jwt_config = JwtAuthConfig {
-            jwt_cookie_name: config.auth.jwt.cookie_name.clone(),
-            jwt_secret: config.auth.jwt.secret.clone(),
-            token_ttl_in_seconds: config.auth.jwt.time_to_live,
-        };
+        // let jwt_config = JwtAuthConfig {
+        //     jwt_cookie_name: config.auth.jwt.cookie_name.clone(),
+        //     jwt_secret: config.auth.jwt.secret.clone(),
+        //     token_ttl_in_seconds: config.auth.jwt.time_to_live,
+        // };
 
-        let elevated_jwt_config = JwtAuthConfig {
-            jwt_cookie_name: config.auth.elevated_jwt.cookie_name.clone(),
-            jwt_secret: config.auth.elevated_jwt.secret.clone(),
-            token_ttl_in_seconds: config.auth.elevated_jwt.time_to_live,
-        };
+        // let elevated_jwt_config = JwtAuthConfig {
+        //     jwt_cookie_name: config.auth.elevated_jwt.cookie_name.clone(),
+        //     jwt_secret: config.auth.elevated_jwt.secret.clone(),
+        //     token_ttl_in_seconds: config.auth.elevated_jwt.time_to_live,
+        // };
 
         // Create JWT authentication scheme
-        let jwt_scheme = JwtScheme::new(
-            user_store.clone(),
-            two_fa_code_store.clone(),
-            email_client.clone(),
-            banned_token_store.clone(),
-            jwt_config,
-            banned_token_store.clone(),
-            elevated_jwt_config,
-        );
+        // let jwt_scheme = JwtScheme::new(
+        //     user_store.clone(),
+        //     two_fa_code_store.clone(),
+        //     email_client.clone(),
+        //     banned_token_store.clone(),
+        //     jwt_config,
+        //     banned_token_store.clone(),
+        //     elevated_jwt_config,
+        // );
 
         let assets_service =
             ServeDir::new(assets_dir.clone()).fallback(ServeFile::new(assets_dir + "/index.html"));
 
-        // All routes use the JwtScheme as state
+        // Routes that require elevated authentication
+        let elevated_routes = Router::new()
+            .route("/change-password", post(change_password::<A>))
+            .route("/delete-account", delete(delete_account::<A>))
+            .layer(middleware::from_fn_with_state(
+                auth_schema.clone(),
+                tempered_axum::middleware::validate_elevated_token::<A>,
+            ));
+
+        // All routes use the authentication scheme as state
         let router = Router::new()
-            .route("/signup", post(signup))
-            .route("/login", post(login))
-            .route("/logout", post(logout))
-            .route("/verify-2fa", post(verify_2fa))
-            .route("/verify-token", post(verify_token))
-            .route("/verify-elevated-token", post(verify_elevated_token))
-            .route("/elevate", post(elevate))
-            .route("/change-password", post(change_password))
-            .route("/delete-account", delete(delete_account))
-            .with_state(jwt_scheme)
+            .route("/signup", post(signup::<A>))
+            .route("/login", post(login::<A>))
+            .route("/logout", post(logout::<A>))
+            .route("/verify-2fa", post(verify_2fa::<A>))
+            .route("/verify-token", post(verify_token::<A>))
+            .route("/verify-elevated-token", post(verify_elevated_token::<A>))
+            .route("/elevate", post(elevate::<A>))
+            .merge(elevated_routes)
+            .with_state(auth_schema)
             .fallback_service(assets_service);
 
         Self { router }
@@ -117,7 +128,7 @@ impl AuthService {
     ///
     /// # Returns
     /// An Axum Router that can be nested into another application
-    pub fn as_nested_router(mut self, allowed_origins: Option<AllowedOrigins>) -> Router {
+    pub fn into_router(mut self, allowed_origins: Option<AllowedOrigins>) -> Router {
         if let Some(allowed_origins) = allowed_origins {
             let cors = CorsLayer::new()
                 .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
@@ -146,7 +157,7 @@ impl AuthService {
         listener: TcpListener,
         allowed_origins: Option<AllowedOrigins>,
     ) -> Result<(), std::io::Error> {
-        let router = self.as_nested_router(allowed_origins);
+        let router = self.into_router(allowed_origins);
 
         tracing::info!("Auth service listening on {}", listener.local_addr()?);
 

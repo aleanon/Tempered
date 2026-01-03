@@ -12,8 +12,11 @@ tempered_adapters = { path = "../tempered_adapters" }
 axum.workspace = true
 axum-extra.workspace = true
 
+http.workspace = true
+
 # Async runtime
 tokio.workspace = true
+async-trait.workspace = true
 
 # Serialization
 serde.workspace = true

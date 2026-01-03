@@ -239,3 +239,55 @@ pub trait SupportsElevation: AuthenticationScheme {
         password: Password,
     ) -> Result<Self::ElevatedToken, Self::ElevationError>;
 }
+
+// ============================================================================
+// Optional Capability: Password Change
+// ============================================================================
+
+/// Optional trait for authentication schemes that support password changes.
+///
+/// Only applicable to schemes that use passwords (not OAuth2, API keys, etc.).
+/// Password changes are sensitive operations that typically require elevated
+/// authentication via the SupportsElevation trait.
+#[async_trait]
+pub trait SupportsPasswordChange: AuthenticationScheme {
+    /// Errors that can occur during password change
+    type PasswordChangeError: std::error::Error + Send + Sync + 'static;
+
+    /// Change a user's password.
+    ///
+    /// This should be called only after verifying elevated authentication.
+    /// Routes should require re-authentication before calling this method.
+    ///
+    /// # Arguments
+    /// * `email` - User's email (extracted from elevated token)
+    /// * `new_password` - The new password to set
+    async fn change_password(
+        &self,
+        email: Email,
+        new_password: Password,
+    ) -> Result<(), Self::PasswordChangeError>;
+}
+
+// ============================================================================
+// Optional Capability: Account Deletion
+// ============================================================================
+
+/// Optional trait for authentication schemes that support account deletion.
+///
+/// Account deletion is a sensitive operation that typically requires elevated
+/// authentication via the SupportsElevation trait.
+#[async_trait]
+pub trait SupportsAccountDeletion: AuthenticationScheme {
+    /// Errors that can occur during account deletion
+    type AccountDeletionError: std::error::Error + Send + Sync + 'static;
+
+    /// Delete a user's account.
+    ///
+    /// This should be called only after verifying elevated authentication.
+    /// Routes should require re-authentication before calling this method.
+    ///
+    /// # Arguments
+    /// * `email` - User's email (extracted from elevated token)
+    async fn delete_account(&self, email: Email) -> Result<(), Self::AccountDeletionError>;
+}

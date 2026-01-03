@@ -9,6 +9,8 @@ use serde::Serialize;
 use serde_json::Value;
 use sqlx::PgPool;
 use tempered_adapters::{
+    auth_validation::local_jwt_validator::JwtAuthConfig,
+    authentication::jwt_scheme::JwtScheme,
     config::test,
     email::PostmarkEmailClient,
     persistence::{
@@ -26,6 +28,11 @@ use testcontainers_modules::{
 use tokio::{net::TcpListener, sync::RwLock};
 use uuid::Uuid;
 use wiremock::MockServer;
+
+// Test constants for JWT cookies
+pub const JWT_COOKIE_NAME: &str = "jwt";
+pub const JWT_ELEVATED_COOKIE_NAME: &str = "elevated_jwt";
+pub const JWT_SECRET: &str = "secret";
 
 pub struct TestApp {
     pub address: String,
@@ -56,19 +63,37 @@ impl TestApp {
 
         let user_store = PostgresUserStore::new(pool);
 
+        // Create JWT configuration for the scheme
+        let jwt_config = JwtAuthConfig {
+            jwt_cookie_name: JWT_COOKIE_NAME.to_string(),
+            jwt_secret: Secret::new(JWT_SECRET.to_string()),
+            token_ttl_in_seconds: 3600,
+        };
+
+        let elevated_jwt_config = JwtAuthConfig {
+            jwt_cookie_name: JWT_ELEVATED_COOKIE_NAME.to_string(),
+            jwt_secret: Secret::new(JWT_SECRET.to_string()),
+            token_ttl_in_seconds: 900, // 15 minutes for elevated tokens
+        };
+
+        // Create the JwtScheme with all required stores
+        let jwt_scheme = JwtScheme::new(
+            user_store,
+            two_fa_code_store.clone(),
+            email_client,
+            banned_token_store.clone(),
+            jwt_config,
+            banned_token_store.clone(),
+            elevated_jwt_config,
+        );
+
         let listener = TcpListener::bind(test::APP_ADDRESS)
             .await
             .expect("Failed to bind to address");
 
         let address = format!("http://{}", listener.local_addr().unwrap());
 
-        let app = AuthService::new(
-            user_store,
-            banned_token_store.clone(),
-            two_fa_code_store.clone(),
-            email_client,
-            "./assets".to_string(),
-        );
+        let app = AuthService::new(jwt_scheme, "./assets".to_string());
 
         let _ = tokio::spawn(async {
             app.run_standalone(listener, None)

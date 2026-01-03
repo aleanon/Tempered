@@ -3,8 +3,9 @@ use reqwest::Client as HttpClient;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tempered::{
-    AuthService, Email, ExposeSecret, PostgresUserStore, PostmarkEmailClient,
-    RedisBannedTokenStore, RedisTwoFaCodeStore, Secret, adapters::config::AuthServiceSetting,
+    AuthService, Email, ExposeSecret, JwtAuthConfig, JwtScheme, PostgresUserStore,
+    PostmarkEmailClient, RedisBannedTokenStore, RedisTwoFaCodeStore, Secret,
+    adapters::config::AuthServiceSetting,
 };
 use tokio::sync::RwLock;
 use tracing_error::ErrorLayer;
@@ -51,14 +52,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_client,
     );
 
-    // Create the auth service using the library
-    let auth_service = AuthService::new(
+    // Create JWT configuration for the scheme
+    let jwt_config = JwtAuthConfig {
+        jwt_cookie_name: config.auth.jwt.cookie_name.clone(),
+        jwt_secret: config.auth.jwt.secret.clone(),
+        token_ttl_in_seconds: config.auth.jwt.time_to_live,
+    };
+
+    let elevated_jwt_config = JwtAuthConfig {
+        jwt_cookie_name: "elevated_jwt".to_string(),
+        jwt_secret: config.auth.jwt.secret.clone(),
+        token_ttl_in_seconds: 900, // 15 minutes for elevated tokens
+    };
+
+    // Create the JwtScheme with all required stores
+    let jwt_scheme = JwtScheme::new(
         user_store,
-        banned_token_store,
         two_fa_code_store,
         email_client,
-        "examples/assets".to_string(),
+        banned_token_store.clone(),
+        jwt_config,
+        banned_token_store,
+        elevated_jwt_config,
     );
+
+    // Create the auth service using the library
+    let auth_service = AuthService::new(jwt_scheme, "examples/assets".to_string());
 
     // Get allowed origins from config
     let allowed_origins = config.auth.allowed_origins.clone();

@@ -24,8 +24,9 @@
 //! so there's zero runtime overhead.
 
 use axum::body::Body;
-use axum::extract::Request as AxumExtractRequest;
-use axum::http::Response;
+use axum::extract::{FromRequestParts, Request as AxumExtractRequest};
+use axum::http::{HeaderMap, Method, Response, Uri, request::Parts};
+use std::convert::Infallible;
 use tempered_core::{AuthRequest, AuthResponseBuilder};
 
 /// Newtype wrapper around Axum's Request type.
@@ -79,6 +80,75 @@ impl AuthRequest for AxumRequest {
 
     fn path(&self) -> &str {
         self.0.uri().path()
+    }
+}
+
+/// Extractor for authentication requests that works with Axum's `State`.
+///
+/// This type can be used as an Axum extractor (implements `FromRequestParts`)
+/// and also implements `AuthRequest`, making it suitable for generic authentication
+/// handlers that need to work alongside `State<S>`.
+///
+/// Unlike `AxumRequest` which wraps the full `Request`, this only extracts
+/// the parts needed for authentication (headers, method, URI), allowing it to
+/// be used with other extractors.
+#[derive(Clone)]
+pub struct AuthRequestExtractor {
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+}
+
+impl<S> FromRequestParts<S> for AuthRequestExtractor
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        let headers = parts.headers.clone();
+        let method = parts.method.clone();
+        let uri = parts.uri.clone();
+
+        async move {
+            Ok(AuthRequestExtractor {
+                headers,
+                method,
+                uri,
+            })
+        }
+    }
+}
+
+impl AuthRequest for AuthRequestExtractor {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name)?.to_str().ok()
+    }
+
+    fn cookie(&self, name: &str) -> Option<&str> {
+        // Parse the Cookie header to extract the named cookie
+        let cookie_header = self.header("cookie")?;
+
+        // Simple cookie parsing - split by semicolon and find the named cookie
+        for cookie_pair in cookie_header.split(';') {
+            let parts: Vec<&str> = cookie_pair.trim().splitn(2, '=').collect();
+            if parts.len() == 2 && parts[0] == name {
+                return Some(parts[1]);
+            }
+        }
+
+        None
+    }
+
+    fn method(&self) -> &str {
+        self.method.as_str()
+    }
+
+    fn path(&self) -> &str {
+        self.uri.path()
     }
 }
 
@@ -153,7 +223,7 @@ pub fn response_builder() -> AxumResponseBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::Method;
+    use axum::http::{Method, Request};
 
     #[test]
     fn test_auth_request_implementation() {

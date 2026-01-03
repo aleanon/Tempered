@@ -2,40 +2,38 @@
 //!
 //! Password changes are sensitive operations that typically require elevated authentication.
 
-use tempered_application::ChangePasswordUseCase;
-use tempered_core::{AuthResponseBuilder, Email, Password, UserStore};
+use tempered_core::{AuthResponseBuilder, Email, Password, SupportsPasswordChange};
 
 /// Framework-agnostic password change handler.
 ///
-/// Changes a user's password using the application layer use case.
+/// Changes a user's password using the authentication scheme.
 /// This is a sensitive operation - routes should verify elevated authentication before calling this.
 ///
 /// # Type Parameters
-/// * `U` - User store for persisting the password change
+/// * `S` - Authentication scheme that supports password changes
 /// * `B` - Response builder for the framework being used
 ///
 /// # Arguments
-/// * `user_store` - The user store for updating the password
+/// * `scheme` - The authentication scheme
 /// * `email` - User's email (extracted from authenticated/elevated token by the route)
 /// * `new_password` - The new password
 /// * `builder` - HTTP response builder
 ///
 /// # Returns
 /// Either an HTTP success response, or an error message
-pub async fn handle_change_password<U, B>(
-    user_store: U,
+pub async fn handle_change_password<S, B>(
+    scheme: S,
     email: Email,
     new_password: Password,
     builder: B,
 ) -> Result<B::Response, String>
 where
-    U: UserStore,
+    S: SupportsPasswordChange,
     B: AuthResponseBuilder,
 {
-    // Use the application layer use case
-    let use_case = ChangePasswordUseCase::new(user_store);
-    use_case
-        .execute(email, new_password)
+    // Use the scheme's password change capability
+    scheme
+        .change_password(email, new_password)
         .await
         .map_err(|e| format!("Failed to change password: {}", e))?;
 

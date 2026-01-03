@@ -1,42 +1,27 @@
 //! Axum-specific token verification route.
 
-use axum::body::Body;
-use axum::http::Request;
-use axum::{
-    Json,
-    extract::State,
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use tempered_adapters::handlers;
 use tempered_core::HttpAuthenticationScheme;
 use thiserror::Error;
 
-use crate::adapters::{AxumRequest, response_builder};
+use crate::adapters::{AuthRequestExtractor, response_builder};
 
 /// Axum token verification route.
 ///
 /// This route is Axum-specific - it uses Axum's extractors and error handling.
 /// The actual verification logic is in the framework-agnostic handler.
-#[tracing::instrument(name = "Verify Token", skip(scheme, headers))]
+#[tracing::instrument(name = "Verify Token", skip(scheme, req))]
 pub async fn verify_token<S>(
     State(scheme): State<S>,
-    headers: HeaderMap,
-) -> axum::response::Response
+    req: AuthRequestExtractor,
+) -> impl IntoResponse
 where
     S: HttpAuthenticationScheme + Clone + Send + Sync + 'static,
 {
-    // Create a minimal request from headers for cookie extraction
-    let req = Request::builder().body(Body::empty()).unwrap();
-
-    let (mut parts, body) = req.into_parts();
-    parts.headers = headers;
-    let request = Request::from_parts(parts, body);
-
     let builder = response_builder();
-    let axum_req = AxumRequest(request);
 
-    match handlers::handle_verify_token(&scheme, &axum_req, builder).await {
+    match handlers::handle_verify_token(&scheme, &req, builder).await {
         Ok(resp) => resp.into_response(),
         Err(e) => VerifyTokenError::Failed(e).into_response(),
     }

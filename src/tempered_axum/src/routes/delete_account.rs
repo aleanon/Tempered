@@ -3,13 +3,9 @@
 //! This route requires elevated authentication - users must re-authenticate before deleting their account.
 
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
-use tempered_adapters::{
-    auth_validation::local_jwt_validator::Claims, authentication::jwt_scheme::JwtScheme, handlers,
-};
-use tempered_core::{BannedTokenStore, Email, EmailClient, TwoFaCodeStore, UserStore};
+use tempered_adapters::auth_validation::local_jwt_validator::Claims;
+use tempered_core::{Email, HttpAuthenticationScheme, SupportsAccountDeletion};
 use thiserror::Error;
-
-use crate::adapters::response_builder;
 
 /// Axum account deletion route.
 ///
@@ -19,25 +15,29 @@ use crate::adapters::response_builder;
 /// Note: This route expects an elevated token to be verified by middleware,
 /// with the claims extracted and provided via Extension.
 #[tracing::instrument(name = "Delete Account", skip(scheme, claims))]
-pub async fn delete_account<U, T, E, B>(
-    State(scheme): State<JwtScheme<U, T, E, B>>,
+pub async fn delete_account<S>(
+    State(scheme): State<S>,
     Extension(claims): Extension<Claims>,
 ) -> Result<impl IntoResponse, DeleteAccountError>
 where
-    U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
-    B: BannedTokenStore + Clone + 'static,
+    S: HttpAuthenticationScheme + SupportsAccountDeletion + Clone + 'static,
 {
     // Extract email from claims
     let email =
         Email::try_from(claims.sub).map_err(|e| DeleteAccountError::InvalidEmail(e.to_string()))?;
 
-    let builder = response_builder();
-
-    handlers::handle_delete_account(scheme.user_store().clone(), email, builder)
+    scheme
+        .delete_account(email)
         .await
-        .map_err(DeleteAccountError::Failed)
+        .map_err(|e| DeleteAccountError::Failed(e.to_string()))?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "success",
+            "message": "Account deleted successfully"
+        })),
+    ))
 }
 
 /// Errors that can occur during account deletion

@@ -32,6 +32,7 @@
 //! ```
 
 pub mod adapters;
+pub mod middleware;
 pub mod routes;
 
 // Re-export for convenience

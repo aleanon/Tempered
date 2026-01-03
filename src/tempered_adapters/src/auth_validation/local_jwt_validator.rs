@@ -88,7 +88,7 @@ pub fn generate_auth_cookie<'a>(
     let jwt_secret = config.jwt_secret.expose_secret().as_bytes();
 
     let token = generate_auth_token(email, token_ttl, jwt_secret)?;
-    Ok(create_auth_cookie(token, config.jwt_secret.expose_secret()))
+    Ok(create_auth_cookie(token, &config.jwt_cookie_name))
 }
 
 pub fn create_removal_cookie(cookie_name: &str) -> Cookie<'_> {

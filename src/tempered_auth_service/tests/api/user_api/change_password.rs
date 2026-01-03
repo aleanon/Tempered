@@ -1,6 +1,4 @@
-use tempered_adapters::auth_validation::jwt::JWT_ELEVATED_COOKIE_NAME;
-
-use crate::helpers::{TestApp, get_standard_test_user};
+use crate::helpers::{JWT_ELEVATED_COOKIE_NAME, TestApp, get_standard_test_user};
 
 #[tokio::test]
 async fn should_return_200_with_valid_request_and_elevated_auth() {
@@ -55,7 +53,7 @@ async fn should_return_401_with_invalid_token() {
     let app = TestApp::new().await;
 
     // Add an invalid elevated token
-    app.add_invalid_cookie(*JWT_ELEVATED_COOKIE_NAME);
+    app.add_invalid_cookie(JWT_ELEVATED_COOKIE_NAME);
 
     let body = serde_json::json!({
         "new_password": "newpassword123"

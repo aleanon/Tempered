@@ -1,19 +1,26 @@
-use tempered_adapters::{
-    auth_validation,
-    http::{
-        error::{AuthApiError, ErrorResponse},
-        routes::{TwoFactorAuthResponse, Verify2FARequest},
-    },
-};
+use secrecy::Secret;
+use serde::Deserialize;
+use tempered_adapters::auth_validation::local_jwt_validator::{JwtAuthConfig, validate_auth_token};
 use tempered_core::TwoFaAttemptId;
-
-use secrecy::ExposeSecret;
 use wiremock::{
     Mock, ResponseTemplate,
     matchers::{method, path},
 };
 
-use crate::helpers::{TestApp, get_standard_test_user};
+use crate::helpers::{JWT_COOKIE_NAME, JWT_SECRET, TestApp, get_standard_test_user};
+
+#[derive(Deserialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+#[derive(Deserialize)]
+struct TwoFactorAuthResponse {
+    status: String,
+    message: String,
+    #[serde(rename = "loginAttemptId")]
+    login_attempt_id: String,
+}
 
 #[tokio::test]
 async fn should_return_200_if_correct_code() {
@@ -41,14 +48,20 @@ async fn should_return_200_if_correct_code() {
         .as_str()
         .expect("Email was not of type String");
     let two_fa_attempt_id =
-        TwoFaAttemptId::parse(&two_fa_response.attempt_id).expect("Invalid attempt Id");
+        TwoFaAttemptId::parse(&two_fa_response.login_attempt_id).expect("Invalid attempt Id");
     let verify_2fa_request = app
         .get_verify_two_fa_request(email, two_fa_attempt_id)
         .await;
 
+    let jwt_config = JwtAuthConfig {
+        jwt_cookie_name: JWT_COOKIE_NAME.to_string(),
+        jwt_secret: Secret::new(JWT_SECRET.to_string()),
+        token_ttl_in_seconds: 3600,
+    };
+
     let response = app.verify_2fa(&verify_2fa_request).await;
     let token = app.get_jwt_token().expect("No jwt token stored");
-    auth_validation::validate_auth_token(&token, &app.banned_token_store)
+    validate_auth_token(&token, &app.banned_token_store, &jwt_config)
         .await
         .expect("Invalid auth token");
 
@@ -81,18 +94,15 @@ async fn should_return_400_with_invalid_input() {
         .as_str()
         .expect("Email was not of type String");
     let two_fa_attempt_id =
-        TwoFaAttemptId::parse(&two_fa_response.attempt_id).expect("Invalid attempt Id");
-    let body = app
+        TwoFaAttemptId::parse(&two_fa_response.login_attempt_id).expect("Invalid attempt Id");
+    let verify_2fa_body = app
         .get_verify_two_fa_request(email, two_fa_attempt_id)
         .await;
 
-    let to_fa_request = serde_json::from_value::<Verify2FARequest>(body)
-        .expect("Failed to parse two factor auth request");
-
     let body = serde_json::json!({
-        "email": to_fa_request.email.expose_secret(),
-        "loginAttemptId": format!("{}invalid", to_fa_request.login_attempt_id),
-        "2FACode": to_fa_request.two_factor_code,
+        "email": verify_2fa_body["email"],
+        "loginAttemptId": format!("{}invalid", verify_2fa_body["loginAttemptId"].as_str().unwrap()),
+        "2FACode": verify_2fa_body["2FACode"],
     });
 
     let response = app.verify_2fa(&body).await;
@@ -125,7 +135,7 @@ async fn should_return_401_with_outdated_login_attempt_id() {
         .as_str()
         .expect("Email was not of type String");
     let two_fa_attempt_id =
-        TwoFaAttemptId::parse(&two_fa_response.attempt_id).expect("Invalid attempt Id");
+        TwoFaAttemptId::parse(&two_fa_response.login_attempt_id).expect("Invalid attempt Id");
 
     assert!(app.login(&body).await.status().as_u16() == 206);
 
@@ -142,7 +152,7 @@ async fn should_return_401_with_outdated_login_attempt_id() {
             .await
             .expect("Failed to parse error response")
             .error,
-        AuthApiError::InvalidLoginAttemptId.to_string()
+        "error"
     )
 }
 
@@ -172,7 +182,7 @@ async fn should_return_401_if_same_code_twice() {
         .as_str()
         .expect("Email was not of type String");
     let two_fa_attempt_id =
-        TwoFaAttemptId::parse(&two_fa_response.attempt_id).expect("Invalid attempt Id");
+        TwoFaAttemptId::parse(&two_fa_response.login_attempt_id).expect("Invalid attempt Id");
 
     let body = app
         .get_verify_two_fa_request(email, two_fa_attempt_id)
@@ -208,7 +218,7 @@ async fn should_return_422_when_malformed_input() {
         .as_str()
         .expect("Email was not of type String");
     let two_fa_attempt_id =
-        TwoFaAttemptId::parse(&two_fa_response.attempt_id).expect("Invalid attempt Id");
+        TwoFaAttemptId::parse(&two_fa_response.login_attempt_id).expect("Invalid attempt Id");
 
     let body = app
         .get_verify_two_fa_request(email, two_fa_attempt_id)

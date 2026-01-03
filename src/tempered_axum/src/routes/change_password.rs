@@ -5,13 +5,9 @@
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
-use tempered_adapters::{
-    auth_validation::local_jwt_validator::Claims, authentication::jwt_scheme::JwtScheme, handlers,
-};
-use tempered_core::{BannedTokenStore, Email, EmailClient, Password, TwoFaCodeStore, UserStore};
+use tempered_adapters::auth_validation::local_jwt_validator::Claims;
+use tempered_core::{Email, HttpAuthenticationScheme, Password, SupportsPasswordChange};
 use thiserror::Error;
-
-use crate::adapters::response_builder;
 
 /// Axum password change route.
 ///
@@ -21,16 +17,13 @@ use crate::adapters::response_builder;
 /// Note: This route expects an elevated token to be verified by middleware,
 /// with the claims extracted and provided via Extension.
 #[tracing::instrument(name = "Change Password", skip(scheme, claims, request))]
-pub async fn change_password<U, T, E, B>(
-    State(scheme): State<JwtScheme<U, T, E, B>>,
+pub async fn change_password<S>(
+    State(scheme): State<S>,
     Extension(claims): Extension<Claims>,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, ChangePasswordError>
 where
-    U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
-    B: BannedTokenStore + Clone + 'static,
+    S: HttpAuthenticationScheme + SupportsPasswordChange + Send + 'static + Clone,
 {
     // Extract email from claims
     let email = Email::try_from(claims.sub)
@@ -40,11 +33,18 @@ where
     let new_password = Password::try_from(request.new_password)
         .map_err(|e| ChangePasswordError::InvalidPassword(e.to_string()))?;
 
-    let builder = response_builder();
-
-    handlers::handle_change_password(scheme.user_store().clone(), email, new_password, builder)
+    scheme
+        .change_password(email, new_password)
         .await
-        .map_err(ChangePasswordError::Failed)
+        .map_err(|e| ChangePasswordError::Failed(e.to_string()))?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "success",
+            "message": "Password changed successfully"
+        })),
+    ))
 }
 
 /// Axum-specific request body for password change

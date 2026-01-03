@@ -100,6 +100,8 @@ pub mod adapters {
 
 // Re-export commonly used adapters at root level
 pub use tempered_adapters::{
+    auth_validation::local_jwt_validator::JwtAuthConfig,
+    authentication::jwt_scheme::JwtScheme,
     email::{MockEmailClient, PostmarkEmailClient},
     persistence::{
         HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore, PostgresUserStore,
