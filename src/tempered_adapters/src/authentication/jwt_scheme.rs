@@ -151,15 +151,22 @@ where
     ) -> RB::Response {
         let cookie_name = cookie_name.unwrap_or_else(|| self.jwt_config.jwt_cookie_name.clone());
 
-        // Create a cookie that expires immediately to clear it
+        // Create cookies that expire immediately to clear them
         let clear_cookie = format!(
             "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
             cookie_name
         );
 
+        // Also clear the elevated token cookie
+        let clear_elevated_cookie = format!(
+            "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+            self.elevated_jwt_config.jwt_cookie_name
+        );
+
         builder
             .status(200)
             .cookie(&clear_cookie)
+            .cookie(&clear_elevated_cookie)
             .json_body(serde_json::json!({
                 "message": "Logged out successfully"
             }))
@@ -406,6 +413,51 @@ pub enum JwtAuthError {
     BanTokenStoreError(#[from] BannedTokenStoreError),
 }
 
+impl tempered_core::IntoStatusMessage for JwtAuthError {
+    fn into_status_message(self) -> (http::StatusCode, String) {
+        match self {
+            // Validation errors -> 400 BAD_REQUEST
+            JwtAuthError::UserError(e) => (http::StatusCode::BAD_REQUEST, e.to_string()),
+
+            // Authentication failures -> 401 UNAUTHORIZED
+            JwtAuthError::UserStoreError(UserStoreError::UserNotFound) => {
+                (http::StatusCode::UNAUTHORIZED, "User not found".to_string())
+            }
+            JwtAuthError::UserStoreError(UserStoreError::IncorrectPassword) => (
+                http::StatusCode::UNAUTHORIZED,
+                "Incorrect password".to_string(),
+            ),
+
+            // Conflict errors -> 409 CONFLICT
+            JwtAuthError::UserStoreError(UserStoreError::UserAlreadyExists) => (
+                http::StatusCode::CONFLICT,
+                "User already exists".to_string(),
+            ),
+
+            // 2FA errors -> 401 UNAUTHORIZED
+            JwtAuthError::TwoFaError(e) => (http::StatusCode::UNAUTHORIZED, e.to_string()),
+            JwtAuthError::TwoFaCodeStoreError(e) => (
+                http::StatusCode::UNAUTHORIZED,
+                format!("2FA code store error: {}", e),
+            ),
+
+            // Token errors -> use their own mapping
+            JwtAuthError::TokenError(e) => e.into_status_message(),
+
+            // Server errors -> 500 INTERNAL_SERVER_ERROR
+            JwtAuthError::UserStoreError(e) => (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("User store error: {}", e),
+            ),
+            JwtAuthError::EmailError(e) => (http::StatusCode::INTERNAL_SERVER_ERROR, e),
+            JwtAuthError::BanTokenStoreError(e) => (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Token store error: {}", e),
+            ),
+        }
+    }
+}
+
 // ============================================================================
 // Optional Capability: Elevated Tokens (Sudo Pattern)
 // ============================================================================
@@ -433,6 +485,7 @@ where
     B: BannedTokenStore + Clone + Send + Sync + 'static,
 {
     type ElevatedToken = ElevatedJwtToken;
+    type ElevatedValidator = LocalJwtValidator<B>;
     type ElevationError = JwtAuthError;
 
     #[tracing::instrument(name = "JwtScheme::elevate", skip(self, password))]
@@ -455,6 +508,22 @@ where
         )?;
 
         Ok(ElevatedJwtToken(token_string))
+    }
+
+    fn elevated_validator(&self) -> &Self::ElevatedValidator {
+        &self.elevated_jwt_validator
+    }
+
+    async fn revoke_elevated_token(
+        &self,
+        token: &Self::ElevatedToken,
+    ) -> Result<(), Self::ElevationError> {
+        self.elevated_jwt_validator
+            .banned_token_store
+            .ban_token(token.0.clone())
+            .await
+            .map_err(JwtAuthError::BanTokenStoreError)?;
+        Ok(())
     }
 }
 

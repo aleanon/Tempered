@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use tempered_core::ports::repositories::UserStoreError;
 
 #[derive(Deserialize)]
 struct ErrorResponse {
@@ -110,7 +111,7 @@ async fn signup_should_return_409_if_email_already_exists() {
             .await
             .expect("Could not deserialize response body to ErrorResponse")
             .error,
-        "error"
+        UserStoreError::UserAlreadyExists.to_string()
     );
 }
 

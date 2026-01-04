@@ -35,16 +35,13 @@ pub async fn handle_login<S, B>(
     scheme: &S,
     credentials: S::Credentials,
     builder: B,
-) -> Result<B::Response, String>
+) -> Result<B::Response, S::AuthError>
 where
     S: HttpAuthenticationScheme,
     B: AuthResponseBuilder,
 {
     // Call the scheme's login method (domain logic)
-    let outcome = scheme
-        .login(credentials)
-        .await
-        .map_err(|e| format!("Authentication failed: {}", e))?;
+    let outcome = scheme.login(credentials).await?;
 
     // Let the scheme decide how to deliver the token via HTTP
     Ok(scheme.create_login_response(builder, outcome))

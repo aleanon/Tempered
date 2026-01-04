@@ -7,17 +7,13 @@ async fn should_return_200_if_jwt_cookie_is_valid() {
     let body = get_standard_test_user(false);
     app.post_signup(&body).await;
     app.login(&body).await;
-    let token = app.get_jwt_token();
+    let token = app.get_jwt_token().expect("Missing JWT token");
 
     let response = app.logout().await;
 
     assert_eq!(response.status().as_u16(), 200);
 
-    let body = serde_json::json!({
-        "token": token
-    });
-
-    let response = app.verify_token(&body).await;
+    let response = app.verify_token(&token).await;
     assert_eq!(response.status().as_u16(), 401)
 }
 

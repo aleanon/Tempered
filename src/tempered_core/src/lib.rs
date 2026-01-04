@@ -1,6 +1,7 @@
 pub mod domain;
 pub mod http_abstraction;
 pub mod http_authentication_scheme;
+pub mod http_error;
 pub mod ports;
 pub mod strategies;
 
@@ -33,3 +34,4 @@ pub use strategies::{
 
 pub use http_abstraction::{AuthRequest, AuthResponseBuilder, AuthResponseHelpers};
 pub use http_authentication_scheme::{HttpAuthenticationScheme, HttpElevationScheme};
+pub use http_error::IntoStatusMessage;

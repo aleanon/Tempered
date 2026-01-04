@@ -1,27 +1,24 @@
 //! Axum-specific token verification route.
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{Json, http::StatusCode, response::IntoResponse};
 use tempered_adapters::handlers;
 use tempered_core::HttpAuthenticationScheme;
 use thiserror::Error;
 
-use crate::adapters::{AuthRequestExtractor, response_builder};
+use crate::adapters::response_builder;
 
 /// Axum token verification route.
 ///
-/// This route is Axum-specific - it uses Axum's extractors and error handling.
-/// The actual verification logic is in the framework-agnostic handler.
-#[tracing::instrument(name = "Verify Token", skip(scheme, req))]
-pub async fn verify_token<S>(
-    State(scheme): State<S>,
-    req: AuthRequestExtractor,
-) -> impl IntoResponse
+/// This route assumes the token has already been validated by middleware.
+/// It simply returns a success response.
+#[tracing::instrument(name = "Verify Token")]
+pub async fn verify_token<S>() -> impl IntoResponse
 where
     S: HttpAuthenticationScheme + Clone + Send + Sync + 'static,
 {
     let builder = response_builder();
 
-    match handlers::handle_verify_token(&scheme, &req, builder).await {
+    match handlers::handle_verify_token(builder).await {
         Ok(resp) => resp.into_response(),
         Err(e) => VerifyTokenError::Failed(e).into_response(),
     }

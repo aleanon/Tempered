@@ -31,13 +31,7 @@ where
         .await
         .map_err(|e| DeleteAccountError::Failed(e.to_string()))?;
 
-    Ok((
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "success",
-            "message": "Account deleted successfully"
-        })),
-    ))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Errors that can occur during account deletion

@@ -25,11 +25,7 @@ async fn should_return_200_with_valid_token() {
 
     let (_, token) = cookie.to_str().unwrap().split_once('=').unwrap();
 
-    let body = serde_json::json!({
-        "token": token
-    });
-
-    let response = app.verify_token(&body).await;
+    let response = app.verify_token(token).await;
 
     assert_eq!(response.status().as_u16(), 200);
 }
@@ -38,11 +34,7 @@ async fn should_return_200_with_valid_token() {
 async fn should_return_401_if_token_is_invalid() {
     let app = TestApp::new().await;
 
-    let body = serde_json::json!({
-        "token": "invalid token"
-    });
-
-    let response = app.verify_token(&body).await;
+    let response = app.verify_token("invalid token").await;
 
     assert_eq!(response.status().as_u16(), 401);
 }
@@ -57,15 +49,11 @@ async fn should_return_401_if_token_is_banned() {
     let response = app.login(&body).await;
     assert_eq!(response.status().as_u16(), 200);
 
-    let token = app.get_jwt_token();
+    let token = app.get_jwt_token().expect("Missing JWT token");
 
     assert!(app.logout().await.status().is_success());
 
-    let body = serde_json::json!({
-        "token": token
-    });
-
-    let response = app.verify_token(&body).await;
+    let response = app.verify_token(&token).await;
 
     assert_eq!(response.status().as_u16(), 401);
     let error_response = response
@@ -76,10 +64,10 @@ async fn should_return_401_if_token_is_banned() {
 }
 
 #[tokio::test]
-async fn should_return_422_if_malformed_input() {
+async fn should_return_400_if_missing_token() {
     let app = TestApp::new().await;
 
-    let response = app.verify_token(&"").await;
+    let response = app.verify_token("").await;
 
-    assert_eq!(response.status().as_u16(), 422);
+    assert_eq!(response.status().as_u16(), 400);
 }

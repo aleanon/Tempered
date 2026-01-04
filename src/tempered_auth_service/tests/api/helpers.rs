@@ -33,6 +33,7 @@ use wiremock::MockServer;
 pub const JWT_COOKIE_NAME: &str = "jwt";
 pub const JWT_ELEVATED_COOKIE_NAME: &str = "elevated_jwt";
 pub const JWT_SECRET: &str = "secret";
+pub const JWT_ELEVATED_SECRET: &str = "elevated_secret";
 
 pub struct TestApp {
     pub address: String,
@@ -72,7 +73,7 @@ impl TestApp {
 
         let elevated_jwt_config = JwtAuthConfig {
             jwt_cookie_name: JWT_ELEVATED_COOKIE_NAME.to_string(),
-            jwt_secret: Secret::new(JWT_SECRET.to_string()),
+            jwt_secret: Secret::new(JWT_ELEVATED_SECRET.to_string()),
             token_ttl_in_seconds: 900, // 15 minutes for elevated tokens
         };
 
@@ -218,19 +219,19 @@ impl TestApp {
             .expect("Failed to execute request")
     }
 
-    pub async fn verify_token<Body: Serialize>(&self, token: &Body) -> reqwest::Response {
+    pub async fn verify_token(&self, token: &str) -> reqwest::Response {
         self.http_client
             .post(&format!("{}/verify-token", &self.address))
-            .json(token)
+            .header("Cookie", format!("jwt={}", token))
             .send()
             .await
             .expect("Failed to execute request")
     }
 
-    pub async fn verify_elevated_token<Body: Serialize>(&self, token: &Body) -> reqwest::Response {
+    pub async fn verify_elevated_token(&self, token: &str) -> reqwest::Response {
         self.http_client
             .post(&format!("{}/verify-elevated-token", &self.address))
-            .json(token)
+            .header("Cookie", format!("elevated_jwt={}", token))
             .send()
             .await
             .expect("Failed to execute request")

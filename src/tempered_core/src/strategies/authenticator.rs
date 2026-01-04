@@ -218,6 +218,9 @@ pub trait SupportsElevation: AuthenticationScheme {
     /// The type of elevated token (may be same as Token or different)
     type ElevatedToken: Clone + Send + Sync;
 
+    /// The validator for elevated tokens
+    type ElevatedValidator: AuthValidator;
+
     /// Errors that can occur during elevation
     type ElevationError: std::error::Error + Send + Sync + 'static;
 
@@ -238,6 +241,27 @@ pub trait SupportsElevation: AuthenticationScheme {
         email: Email,
         password: Password,
     ) -> Result<Self::ElevatedToken, Self::ElevationError>;
+
+    /// Get the validator for elevated tokens.
+    ///
+    /// This validator is used to verify elevated tokens on protected routes
+    /// that require elevated privileges.
+    fn elevated_validator(&self) -> &Self::ElevatedValidator;
+
+    /// Revoke/invalidate an elevated token so it can no longer be used.
+    ///
+    /// This is typically called during logout to ensure both regular and
+    /// elevated tokens are invalidated.
+    ///
+    /// # Arguments
+    /// * `token` - The elevated token to revoke
+    ///
+    /// # Returns
+    /// Ok(()) if revocation succeeded, or an error
+    async fn revoke_elevated_token(
+        &self,
+        token: &Self::ElevatedToken,
+    ) -> Result<(), Self::ElevationError>;
 }
 
 // ============================================================================

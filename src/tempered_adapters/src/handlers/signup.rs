@@ -25,12 +25,12 @@ pub struct SignupData<D> {
 /// * `builder` - HTTP response builder
 ///
 /// # Returns
-/// Either an HTTP success response, or an error message
+/// Either an HTTP success response, or the registration error
 pub async fn handle_signup<S, B>(
     scheme: &S,
     data: SignupData<S::RegistrationData>,
     builder: B,
-) -> Result<B::Response, String>
+) -> Result<B::Response, S::RegistrationError>
 where
     S: SupportsRegistration,
     B: AuthResponseBuilder,
@@ -38,8 +38,7 @@ where
     // Register the user
     scheme
         .register(data.email, data.password, data.registration_data)
-        .await
-        .map_err(|e| format!("Registration failed: {}", e))?;
+        .await?;
 
     // Return success response
     Ok(builder

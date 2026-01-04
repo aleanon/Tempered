@@ -1,7 +1,8 @@
 //! Framework-agnostic logout handler.
 
 use tempered_core::{
-    AuthRequest, AuthResponseBuilder, HttpAuthenticationScheme, SupportsTokenRevocation,
+    AuthRequest, AuthResponseBuilder, HttpAuthenticationScheme, HttpElevationScheme,
+    SupportsElevation, SupportsTokenRevocation,
 };
 
 /// Handle logout request - framework agnostic.
@@ -39,20 +40,27 @@ pub async fn handle_logout<S, R, B>(
     builder: B,
 ) -> Result<B::Response, String>
 where
-    S: HttpAuthenticationScheme + SupportsTokenRevocation,
+    S: HttpAuthenticationScheme + HttpElevationScheme + SupportsTokenRevocation + SupportsElevation,
     R: AuthRequest,
     B: AuthResponseBuilder,
 {
-    // Extract token from request (scheme decides where to look: cookie, header, etc.)
+    // Extract regular token from request (scheme decides where to look: cookie, header, etc.)
     let token = scheme
         .extract_token_from_request(request)
         .ok_or_else(|| "Missing authentication token".to_string())?;
 
-    // Revoke the token (domain logic)
+    // Revoke the regular token (domain logic)
     scheme
         .revoke_token(&token)
         .await
         .map_err(|e| format!("Token revocation failed: {}", e))?;
+
+    // Also try to revoke the elevated token if it exists
+    // We don't fail if the elevated token is missing or invalid - it's optional
+    if let Some(elevated_token) = scheme.extract_elevated_token_from_request(request) {
+        // Silently ignore errors when revoking elevated token
+        let _ = scheme.revoke_elevated_token(&elevated_token).await;
+    }
 
     // Create the logout response
     Ok(scheme.create_logout_response(builder, None))

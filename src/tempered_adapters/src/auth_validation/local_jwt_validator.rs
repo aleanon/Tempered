@@ -25,8 +25,8 @@ impl JwtAuthConfig {
 
 #[derive(Clone)]
 pub struct LocalJwtValidator<B> {
-    banned_token_store: B,
-    config: JwtAuthConfig,
+    pub banned_token_store: B,
+    pub config: JwtAuthConfig,
 }
 
 impl<B> LocalJwtValidator<B> {
@@ -72,9 +72,41 @@ pub enum TokenAuthError {
     UnexpectedError(String),
 }
 
+impl tempered_core::IntoStatusMessage for TokenAuthError {
+    fn into_status_message(self) -> (http::StatusCode, String) {
+        match self {
+            TokenAuthError::MissingToken => {
+                (http::StatusCode::BAD_REQUEST, "Missing token".to_string())
+            }
+            TokenAuthError::InvalidToken => {
+                (http::StatusCode::UNAUTHORIZED, "Invalid token".to_string())
+            }
+            TokenAuthError::TokenError(e) => (
+                http::StatusCode::UNAUTHORIZED,
+                format!("Token error: {}", e),
+            ),
+            TokenAuthError::TokenIsBanned => (
+                http::StatusCode::UNAUTHORIZED,
+                "Token is banned".to_string(),
+            ),
+            TokenAuthError::UnexpectedError(msg) => (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Unexpected error: {}", msg),
+            ),
+        }
+    }
+}
+
 pub fn extract_token<'a>(jar: &'a CookieJar, cookie_name: &str) -> Result<&'a str, TokenAuthError> {
     match jar.get(cookie_name) {
-        Some(cookie) => Ok(cookie.value()),
+        Some(cookie) => {
+            let value = cookie.value();
+            if value.is_empty() {
+                Err(TokenAuthError::MissingToken)
+            } else {
+                Ok(value)
+            }
+        }
         None => Err(TokenAuthError::MissingToken),
     }
 }

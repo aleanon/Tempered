@@ -10,8 +10,8 @@ use tempered_axum::routes::{
     verify_elevated_token, verify_token,
 };
 use tempered_core::{
-    HttpAuthenticationScheme, HttpElevationScheme, SupportsElevation, SupportsRegistration,
-    SupportsTokenRevocation, SupportsTwoFactor,
+    AuthValidator, HttpAuthenticationScheme, HttpElevationScheme, IntoStatusMessage,
+    SupportsElevation, SupportsRegistration, SupportsTokenRevocation, SupportsTwoFactor,
 };
 use tokio::net::TcpListener;
 use tower_http::{
@@ -56,6 +56,12 @@ impl AuthService {
             + Clone
             + 'static,
         A::Validator: tempered_core::AuthValidator<RequestParts = http::request::Parts>,
+        <A::Validator as AuthValidator>::Error: IntoStatusMessage,
+        A::ElevatedValidator: tempered_core::AuthValidator<RequestParts = http::request::Parts>,
+        <A::ElevatedValidator as AuthValidator>::Error: IntoStatusMessage,
+        A::AuthError: IntoStatusMessage,
+        A::RegistrationError: IntoStatusMessage,
+        A::TwoFactorError: IntoStatusMessage,
     {
         // Load JWT configuration
         // let config = AuthServiceSetting::load();
@@ -90,20 +96,27 @@ impl AuthService {
         let elevated_routes = Router::new()
             .route("/change-password", post(change_password::<A>))
             .route("/delete-account", delete(delete_account::<A>))
+            .route("/verify-elevated-token", post(verify_elevated_token::<A>))
             .layer(middleware::from_fn_with_state(
                 auth_schema.clone(),
                 tempered_axum::middleware::validate_elevated_token::<A>,
+            ));
+
+        let validated_routes = Router::new()
+            .route("/logout", post(logout::<A>))
+            .route("/elevate", post(elevate::<A>))
+            .route("/verify-token", post(verify_token::<A>))
+            .layer(middleware::from_fn_with_state(
+                auth_schema.clone(),
+                tempered_axum::middleware::validate_token::<A>,
             ));
 
         // All routes use the authentication scheme as state
         let router = Router::new()
             .route("/signup", post(signup::<A>))
             .route("/login", post(login::<A>))
-            .route("/logout", post(logout::<A>))
             .route("/verify-2fa", post(verify_2fa::<A>))
-            .route("/verify-token", post(verify_token::<A>))
-            .route("/verify-elevated-token", post(verify_elevated_token::<A>))
-            .route("/elevate", post(elevate::<A>))
+            .merge(validated_routes)
             .merge(elevated_routes)
             .with_state(auth_schema)
             .fallback_service(assets_service);

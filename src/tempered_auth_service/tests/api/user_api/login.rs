@@ -1,5 +1,6 @@
 use secrecy::Secret;
 use serde::Deserialize;
+use tempered_core::ports::repositories::UserStoreError;
 use tempered_core::{Email, TwoFaAttemptId, TwoFaCodeStore};
 use wiremock::{
     Mock, ResponseTemplate,
@@ -231,7 +232,7 @@ async fn should_return_401_with_unregistered_email() {
             .await
             .expect("Unable to parse error response")
             .error,
-        "error"
+        UserStoreError::UserNotFound.to_string()
     )
 }
 

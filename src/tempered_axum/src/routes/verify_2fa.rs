@@ -3,9 +3,11 @@
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
-use tempered_adapters::handlers::{self, verify_2fa::Verify2FaData};
-use tempered_core::{HttpAuthenticationScheme, SupportsTwoFactor};
-use thiserror::Error;
+use tempered_adapters::handlers::{
+    self,
+    verify_2fa::{Verify2FaData, Verify2FaError},
+};
+use tempered_core::{HttpAuthenticationScheme, IntoStatusMessage, SupportsTwoFactor};
 
 use crate::adapters::response_builder;
 
@@ -17,9 +19,10 @@ use crate::adapters::response_builder;
 pub async fn verify_2fa<S>(
     State(scheme): State<S>,
     Json(request): Json<Verify2FaRequest>,
-) -> Result<impl IntoResponse, Verify2FaError>
+) -> impl IntoResponse
 where
     S: HttpAuthenticationScheme + SupportsTwoFactor,
+    S::TwoFactorError: IntoStatusMessage,
 {
     // Convert Axum request to framework-agnostic data
     let data = Verify2FaData {
@@ -30,9 +33,18 @@ where
 
     let builder = response_builder();
 
-    handlers::handle_verify_2fa(&scheme, data, builder)
-        .await
-        .map_err(Verify2FaError::Failed)
+    match handlers::handle_verify_2fa(&scheme, data, builder).await {
+        Ok(response) => response.into_response(),
+        Err(e) => {
+            let (status, message) = match e {
+                Verify2FaError::InvalidEmail(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+                Verify2FaError::InvalidAttemptId(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+                Verify2FaError::InvalidCode(err) => (StatusCode::BAD_REQUEST, err.to_string()),
+                Verify2FaError::VerificationFailed(err) => err.into_status_message(),
+            };
+            (status, Json(serde_json::json!({ "error": message }))).into_response()
+        }
+    }
 }
 
 /// Axum-specific request body for 2FA verification
@@ -48,21 +60,4 @@ pub struct Verify2FaRequest {
     /// The 2FA code (TOTP, SMS code, etc.)
     #[serde(rename = "2FACode")]
     pub two_factor_code: String,
-}
-
-/// Errors that can occur during 2FA verification
-#[derive(Debug, Error)]
-pub enum Verify2FaError {
-    #[error("2FA verification failed: {0}")]
-    Failed(String),
-}
-
-impl IntoResponse for Verify2FaError {
-    fn into_response(self) -> axum::response::Response {
-        let (status, message) = match self {
-            Verify2FaError::Failed(msg) => (StatusCode::UNAUTHORIZED, msg),
-        };
-
-        (status, Json(serde_json::json!({ "error": message }))).into_response()
-    }
 }

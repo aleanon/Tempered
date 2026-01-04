@@ -2,7 +2,7 @@
 
 use tempered_core::{
     AuthResponseBuilder, Email, HttpAuthenticationScheme, SupportsTwoFactor, TwoFaAttemptId,
-    TwoFaCode,
+    TwoFaCode, TwoFaError, UserError,
 };
 
 /// Request data for 2FA verification.
@@ -53,29 +53,37 @@ pub async fn handle_verify_2fa<S, B>(
     scheme: &S,
     data: Verify2FaData,
     builder: B,
-) -> Result<B::Response, String>
+) -> Result<B::Response, Verify2FaError<S::TwoFactorError>>
 where
     S: HttpAuthenticationScheme + SupportsTwoFactor,
     B: AuthResponseBuilder,
 {
     // Parse email
-    let email = Email::try_from(secrecy::Secret::new(data.email))
-        .map_err(|e| format!("Invalid email: {}", e))?;
+    let email =
+        Email::try_from(secrecy::Secret::new(data.email)).map_err(Verify2FaError::InvalidEmail)?;
 
     // Parse login attempt ID
-    let attempt_id = TwoFaAttemptId::parse(&data.login_attempt_id)
-        .map_err(|e| format!("Invalid attempt ID: {}", e))?;
+    let attempt_id =
+        TwoFaAttemptId::parse(&data.login_attempt_id).map_err(Verify2FaError::InvalidAttemptId)?;
 
     // Parse 2FA code
-    let code =
-        TwoFaCode::parse(data.two_factor_code).map_err(|e| format!("Invalid 2FA code: {}", e))?;
+    let code = TwoFaCode::parse(data.two_factor_code).map_err(Verify2FaError::InvalidCode)?;
 
     // Verify the 2FA code and get token (domain logic)
     let token = scheme
         .verify_2fa(email, attempt_id, code)
         .await
-        .map_err(|e| format!("2FA verification failed: {}", e))?;
+        .map_err(Verify2FaError::VerificationFailed)?;
 
     // Create the 2FA success response
     Ok(scheme.create_2fa_response(builder, token))
+}
+
+/// Errors that can occur during 2FA verification
+#[derive(Debug)]
+pub enum Verify2FaError<E> {
+    InvalidEmail(UserError),
+    InvalidAttemptId(TwoFaError),
+    InvalidCode(TwoFaError),
+    VerificationFailed(E),
 }
