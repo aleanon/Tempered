@@ -6,7 +6,7 @@ use axum::{
 };
 use tempered_adapters::config::AllowedOrigins;
 use tempered_axum::routes::{
-    change_password, delete_account, elevate, login, logout, signup, verify_2fa,
+    change_password, delete_account, elevate, login, logout_with_elevation, signup, verify_2fa,
     verify_elevated_token, verify_token,
 };
 use tempered_core::{
@@ -63,32 +63,6 @@ impl AuthService {
         A::RegistrationError: IntoStatusMessage,
         A::TwoFactorError: IntoStatusMessage,
     {
-        // Load JWT configuration
-        // let config = AuthServiceSetting::load();
-
-        // let jwt_config = JwtAuthConfig {
-        //     jwt_cookie_name: config.auth.jwt.cookie_name.clone(),
-        //     jwt_secret: config.auth.jwt.secret.clone(),
-        //     token_ttl_in_seconds: config.auth.jwt.time_to_live,
-        // };
-
-        // let elevated_jwt_config = JwtAuthConfig {
-        //     jwt_cookie_name: config.auth.elevated_jwt.cookie_name.clone(),
-        //     jwt_secret: config.auth.elevated_jwt.secret.clone(),
-        //     token_ttl_in_seconds: config.auth.elevated_jwt.time_to_live,
-        // };
-
-        // Create JWT authentication scheme
-        // let jwt_scheme = JwtScheme::new(
-        //     user_store.clone(),
-        //     two_fa_code_store.clone(),
-        //     email_client.clone(),
-        //     banned_token_store.clone(),
-        //     jwt_config,
-        //     banned_token_store.clone(),
-        //     elevated_jwt_config,
-        // );
-
         let assets_service =
             ServeDir::new(assets_dir.clone()).fallback(ServeFile::new(assets_dir + "/index.html"));
 
@@ -103,7 +77,7 @@ impl AuthService {
             ));
 
         let validated_routes = Router::new()
-            .route("/logout", post(logout::<A>))
+            .route("/logout", post(logout_with_elevation::<A>))
             .route("/elevate", post(elevate::<A>))
             .route("/verify-token", post(verify_token::<A>))
             .layer(middleware::from_fn_with_state(

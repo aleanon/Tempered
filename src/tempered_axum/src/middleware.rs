@@ -28,7 +28,7 @@ pub async fn validate_token<S>(
     next: Next,
 ) -> Result<Response, Response>
 where
-    S: HttpElevationScheme + AuthenticationScheme + Clone + Send + Sync + 'static,
+    S: AuthenticationScheme + Clone + Send + Sync + 'static,
     S::Validator: AuthValidator<RequestParts = http::request::Parts>,
     <S::Validator as AuthValidator>::Error: IntoStatusMessage,
 {

@@ -31,11 +31,7 @@ use tempered_core::{AuthRequest, AuthResponseBuilder};
 
 /// Newtype wrapper around Axum's Request type.
 ///
-/// This wrapper is zero-cost (repr(transparent)) and allows us to implement
-/// `tempered_core::AuthRequest` without violating the orphan rule.
-///
 /// Note: Uses `axum::extract::Request` which is compatible with Axum's extractor system.
-#[repr(transparent)]
 pub struct AxumRequest(pub AxumExtractRequest);
 
 impl From<AxumExtractRequest> for AxumRequest {

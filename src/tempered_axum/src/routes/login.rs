@@ -1,6 +1,6 @@
 //! Axum-specific login route.
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{Json, extract::State, response::IntoResponse};
 use tempered_adapters::handlers;
 use tempered_core::{HttpAuthenticationScheme, IntoStatusMessage};
 

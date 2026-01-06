@@ -17,7 +17,7 @@ pub use change_password::change_password;
 pub use delete_account::delete_account;
 pub use elevate::elevate;
 pub use login::login;
-pub use logout::logout;
+pub use logout::{logout, logout_with_elevation};
 pub use signup::signup;
 pub use verify_2fa::verify_2fa;
 pub use verify_elevated_token::verify_elevated_token;

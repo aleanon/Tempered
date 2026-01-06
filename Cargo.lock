@@ -3576,6 +3576,7 @@ dependencies = [
  "tempered_core",
  "thiserror",
  "tokio",
+ "tower-http",
  "tracing",
 ]
 

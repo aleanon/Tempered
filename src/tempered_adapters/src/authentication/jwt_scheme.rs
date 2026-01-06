@@ -3,8 +3,9 @@ use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
 use tempered_core::{
     AuthRequest, AuthResponseBuilder, BannedTokenStore, BannedTokenStoreError, Email, EmailClient,
-    HttpAuthenticationScheme, Password, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore,
-    TwoFaCodeStoreError, TwoFaError, User, UserError, UserStore, UserStoreError, ValidatedUser,
+    HttpAuthenticationScheme, Password, SupportsAccountDeletion, SupportsElevation,
+    SupportsPasswordChange, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError,
+    TwoFaError, User, UserError, UserStore, UserStoreError, ValidatedUser,
     strategies::authenticator::{
         AuthenticationScheme, LoginOutcome, SupportsRegistration, SupportsTokenRevocation,
         SupportsTwoFactor,
@@ -477,7 +478,7 @@ impl ElevatedJwtToken {
 }
 
 #[async_trait]
-impl<U, T, E, B> tempered_core::SupportsElevation for JwtScheme<U, T, E, B>
+impl<U, T, E, B> SupportsElevation for JwtScheme<U, T, E, B>
 where
     U: UserStore + Clone + 'static,
     T: TwoFaCodeStore + Clone + 'static,
@@ -574,7 +575,7 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B> tempered_core::SupportsPasswordChange for JwtScheme<U, T, E, B>
+impl<U, T, E, B> SupportsPasswordChange for JwtScheme<U, T, E, B>
 where
     U: UserStore + Clone + 'static,
     T: TwoFaCodeStore + Clone + 'static,
@@ -603,7 +604,7 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B> tempered_core::SupportsAccountDeletion for JwtScheme<U, T, E, B>
+impl<U, T, E, B> SupportsAccountDeletion for JwtScheme<U, T, E, B>
 where
     U: UserStore + Clone + 'static,
     T: TwoFaCodeStore + Clone + 'static,
