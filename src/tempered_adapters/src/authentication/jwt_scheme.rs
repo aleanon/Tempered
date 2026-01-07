@@ -7,8 +7,7 @@ use tempered_core::{
     SupportsPasswordChange, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError,
     TwoFaError, User, UserError, UserStore, UserStoreError, ValidatedUser,
     strategies::authenticator::{
-        AuthenticationScheme, LoginOutcome, SupportsRegistration, SupportsTokenRevocation,
-        SupportsTwoFactor,
+        AuthenticationScheme, LoginOutcome, SupportsRegistration, SupportsTwoFactor,
     },
 };
 use thiserror::Error;
@@ -242,8 +241,8 @@ where
         }
     }
 
-    async fn logout(&self, token: Self::Token) -> Result<Self::LogoutOutput, Self::AuthError> {
-        self.banned_token_store.ban_token(token.0).await?;
+    async fn logout(&self, token: &Self::Token) -> Result<Self::LogoutOutput, Self::AuthError> {
+        self.banned_token_store.ban_token(token.0.clone()).await?;
 
         Ok(self.jwt_config.jwt_cookie_name.clone())
     }
@@ -317,32 +316,6 @@ where
         // Generate token for verified user
         let token = self.generate_token(&email)?;
         Ok(token)
-    }
-}
-
-// ============================================================================
-// Optional Capability: Token Revocation (Logout)
-// ============================================================================
-
-#[async_trait]
-impl<U, T, E, B> SupportsTokenRevocation for JwtScheme<U, T, E, B>
-where
-    U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
-    B: BannedTokenStore + Clone + Send + Sync + 'static,
-{
-    type RevocationError = JwtAuthError;
-
-    #[tracing::instrument(name = "JwtScheme::revoke_token", skip(self, token))]
-    async fn revoke_token(&self, token: &Self::Token) -> Result<(), Self::RevocationError> {
-        // Add the token to the banned token store
-        // This prevents it from being used for future requests
-        self.banned_token_store
-            .ban_token(token.as_str().to_string())
-            .await?;
-
-        Ok(())
     }
 }
 

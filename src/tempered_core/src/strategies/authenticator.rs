@@ -42,7 +42,7 @@ pub trait AuthenticationScheme: Send + Sync + Clone + 'static {
         credentials: Self::Credentials,
     ) -> Result<LoginOutcome<Self::Token>, Self::AuthError>;
 
-    async fn logout(&self, token: Self::Token) -> Result<Self::LogoutOutput, Self::AuthError>;
+    async fn logout(&self, token: &Self::Token) -> Result<Self::LogoutOutput, Self::AuthError>;
 
     /// Get the validator for this scheme.
     ///

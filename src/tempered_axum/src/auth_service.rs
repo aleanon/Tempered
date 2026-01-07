@@ -1,8 +1,7 @@
 use axum::{Router, routing::post};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    IntoStatusMessage, SupportsAccountDeletion, SupportsElevation, SupportsPasswordChange,
-    SupportsRegistration, SupportsTokenRevocation, SupportsTwoFactor,
+    IntoStatusMessage, SupportsElevation, SupportsRegistration, SupportsTwoFactor,
 };
 use tokio::net::TcpListener;
 
@@ -10,7 +9,7 @@ use crate::route_config::{self, RouteConfig, Routers};
 
 pub fn auth_service<S>(schema: S, assets_dir: String) -> AuthService<impl RouteConfig<Scheme = S>>
 where
-    S: HttpAuthenticationScheme + SupportsTokenRevocation + Send + Sync + Clone + 'static,
+    S: HttpAuthenticationScheme<LogoutOutput = String> + Send + Sync + Clone + 'static,
     S::AuthError: IntoStatusMessage,
     <S as tempered_core::AuthenticationScheme>::Validator:
         tempered_core::AuthValidator<RequestParts = http::request::Parts>,
@@ -30,7 +29,7 @@ where
 
     impl<S> RouteConfig for Instance<S>
     where
-        S: HttpAuthenticationScheme + SupportsTokenRevocation + Send + Sync + Clone + 'static,
+        S: HttpAuthenticationScheme<LogoutOutput = String> + Send + Sync + Clone + 'static,
         S::AuthError: IntoStatusMessage,
         <S as AuthenticationScheme>::Validator: AuthValidator<RequestParts = http::request::Parts>,
         <<S as AuthenticationScheme>::Validator as AuthValidator>::Error: IntoStatusMessage,
@@ -63,6 +62,10 @@ where
             self.verify_token_path = path;
         }
 
+        fn get_logout_path(&self) -> String {
+            self.logout_path.clone()
+        }
+
         fn get_scheme(&self) -> &Self::Scheme {
             &self.schema
         }
@@ -75,22 +78,34 @@ where
             use axum::middleware;
             use tower_http::services::{ServeDir, ServeFile};
 
+            // Register required routes by calling trait methods
+            let configured = self
+                .login_route()
+                .logout_route()
+                .with_signup_route()
+                .with_2fa_route()
+                .with_elevate_route();
+
             // Apply middleware to validated routes
-            let validated_router = self.validated_router.layer(middleware::from_fn_with_state(
-                self.schema.clone(),
-                crate::middleware::validate_token::<S>,
-            ));
+            let validated_router =
+                configured
+                    .validated_router
+                    .layer(middleware::from_fn_with_state(
+                        configured.schema.clone(),
+                        crate::middleware::validate_token::<S>,
+                    ));
 
             // Merge all routers
-            let router = self.main_router.merge(validated_router);
+            let router = configured.main_router.merge(validated_router);
 
             // Static assets
-            let assets_service = ServeDir::new(&self.assets_dir)
-                .not_found_service(ServeFile::new(format!("{}/index.html", self.assets_dir)));
+            let assets_service = ServeDir::new(&configured.assets_dir).not_found_service(
+                ServeFile::new(format!("{}/index.html", configured.assets_dir)),
+            );
 
             // Final router with state and assets
             router
-                .with_state(self.schema)
+                .with_state(configured.schema)
                 .fallback_service(assets_service)
         }
 
@@ -98,23 +113,29 @@ where
             self.main_router = self
                 .main_router
                 .route(&self.login_path, post(crate::routes::login::<S>));
+            self.validated_router = self.validated_router.route(
+                &self.verify_token_path,
+                post(crate::routes::verify_token::<Self::Scheme>),
+            );
             self
         }
 
         fn logout_route(mut self) -> Self {
-            self.main_router = self
-                .main_router
+            self.validated_router = self
+                .validated_router
                 .route(&self.logout_path, post(crate::routes::logout::<S>));
             self
         }
 
-        fn with_verify_token_route(mut self) -> Self {
-            let mut routers = self.get_routers();
-            routers.validated_router = routers.validated_router.route(
-                &self.verify_token_path,
-                post(crate::routes::verify_token::<Self::Scheme>),
-            );
-            self.set_routers(routers);
+        fn with_signup_route(self) -> Self {
+            self
+        }
+
+        fn with_2fa_route(self) -> Self {
+            self
+        }
+
+        fn with_elevate_route(self) -> Self {
             self
         }
     }
@@ -210,17 +231,21 @@ where
     <R::Scheme as tempered_core::AuthenticationScheme>::Validator:
         tempered_core::AuthValidator<RequestParts = http::request::Parts>,
     <<R::Scheme as tempered_core::AuthenticationScheme>::Validator as tempered_core::AuthValidator>::Error:
-        IntoStatusMessage,
+    IntoStatusMessage,
     <R::Scheme as SupportsElevation>::ElevatedValidator:
         tempered_core::AuthValidator<RequestParts = http::request::Parts>,
     <<R::Scheme as SupportsElevation>::ElevatedValidator as tempered_core::AuthValidator>::Error:
         IntoStatusMessage,
 {
-    pub fn with_elevation(
+    pub fn with_elevation<F>(
         self,
         elevate_path: Option<&str>,
         verify_elevated_token_path: Option<&str>,
-    ) -> AuthService<impl RouteConfig<Scheme = R::Scheme>> {
+        configure: F,
+    ) -> AuthService<impl RouteConfig<Scheme = R::Scheme>>
+    where
+        F: FnOnce(crate::ElevatedRouter<R::Scheme>) -> crate::ElevatedRouter<R::Scheme>,
+    {
         let elevate_path = elevate_path.unwrap_or("/elevate");
         let verify_elevated_token_path =
             verify_elevated_token_path.unwrap_or("/verify-elevated-token");
@@ -233,45 +258,8 @@ where
                 self.instance,
                 elevate_path,
                 verify_elevated_token_path,
+                configure,
             ),
-        }
-    }
-}
-
-impl<R> AuthService<R>
-where
-    R: RouteConfig,
-    R::Scheme: HttpAuthenticationScheme + SupportsPasswordChange,
-{
-    pub fn with_change_password(
-        self,
-        path: Option<&str>,
-    ) -> AuthService<impl RouteConfig<Scheme = R::Scheme>> {
-        let path = path.unwrap_or("/change-password");
-
-        validate_path(&path);
-
-        AuthService {
-            instance: route_config::with_change_password_route(self.instance, path),
-        }
-    }
-}
-
-impl<R> AuthService<R>
-where
-    R: RouteConfig,
-    R::Scheme: HttpAuthenticationScheme + SupportsAccountDeletion,
-{
-    pub fn with_delete_account(
-        self,
-        path: Option<&str>,
-    ) -> AuthService<impl RouteConfig<Scheme = R::Scheme>> {
-        let path = path.unwrap_or("/delete-account");
-
-        validate_path(&path);
-
-        AuthService {
-            instance: route_config::with_delete_account_route(self.instance, path),
         }
     }
 }

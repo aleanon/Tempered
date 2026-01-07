@@ -25,7 +25,7 @@ pub async fn handle_logout<S, R, B>(
     builder: B,
 ) -> Result<B::Response, String>
 where
-    S: HttpAuthenticationScheme + SupportsTokenRevocation,
+    S: HttpAuthenticationScheme<LogoutOutput = String>,
     R: AuthRequest,
     B: AuthResponseBuilder,
 {
@@ -34,14 +34,14 @@ where
         .extract_token_from_request(request)
         .ok_or_else(|| "Missing authentication token".to_string())?;
 
-    // Revoke the regular token (domain logic)
-    scheme
-        .revoke_token(&token)
+    // Logout using the scheme's logout method
+    let cookie_name = scheme
+        .logout(&token)
         .await
-        .map_err(|e| format!("Token revocation failed: {}", e))?;
+        .map_err(|e| format!("Logout failed: {}", e))?;
 
     // Create the logout response
-    Ok(scheme.create_logout_response(builder, None))
+    Ok(scheme.create_logout_response(builder, Some(cookie_name)))
 }
 
 /// Handle logout request with elevation support - framework agnostic.
@@ -63,7 +63,7 @@ pub async fn handle_logout_with_elevation<S, R, B>(
     builder: B,
 ) -> Result<B::Response, String>
 where
-    S: HttpAuthenticationScheme + HttpElevationScheme + SupportsTokenRevocation + SupportsElevation,
+    S: HttpAuthenticationScheme + HttpElevationScheme + SupportsElevation,
     R: AuthRequest,
     B: AuthResponseBuilder,
 {
@@ -74,7 +74,7 @@ where
 
     // Revoke the regular token (domain logic)
     scheme
-        .revoke_token(&token)
+        .logout(&token)
         .await
         .map_err(|e| format!("Token revocation failed: {}", e))?;
 

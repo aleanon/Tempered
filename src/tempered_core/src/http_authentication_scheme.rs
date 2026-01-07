@@ -177,7 +177,7 @@ pub trait HttpAuthenticationScheme: AuthenticationScheme {
 ///     }
 /// }
 /// ```
-pub trait HttpElevationScheme: SupportsElevation {
+pub trait HttpElevationScheme: HttpAuthenticationScheme + SupportsElevation {
     /// Create an HTTP response containing an elevated token.
     ///
     /// Similar to `create_login_response`, but for elevated tokens.

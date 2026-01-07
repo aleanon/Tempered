@@ -3,6 +3,11 @@ name = "tempered_axum"
 version.workspace = true
 edition.workspace = true
 
+[[test]]
+name = "api"
+path = "tests/api/main.rs"
+harness = true
+
 [dependencies]
 # Core authentication library
 tempered_core = { path = "../tempered_core" }
@@ -31,3 +36,16 @@ thiserror.workspace = true
 
 # Tracing
 tracing.workspace = true
+
+[dev-dependencies]
+# Testing
+testcontainers-modules.workspace = true
+wiremock.workspace = true
+reqwest.workspace = true
+
+# Database
+sqlx.workspace = true
+redis.workspace = true
+
+# Utilities
+uuid.workspace = true

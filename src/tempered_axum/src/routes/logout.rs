@@ -2,9 +2,7 @@
 
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use tempered_adapters::handlers;
-use tempered_core::{
-    HttpAuthenticationScheme, HttpElevationScheme, SupportsElevation, SupportsTokenRevocation,
-};
+use tempered_core::{HttpAuthenticationScheme, HttpElevationScheme, SupportsElevation};
 use thiserror::Error;
 
 use crate::adapters::{AuthRequestExtractor, response_builder};
@@ -18,7 +16,7 @@ use crate::adapters::{AuthRequestExtractor, response_builder};
 #[tracing::instrument(name = "Logout", skip(scheme, req))]
 pub async fn logout<S>(State(scheme): State<S>, req: AuthRequestExtractor) -> impl IntoResponse
 where
-    S: HttpAuthenticationScheme + SupportsTokenRevocation + Clone + Send + Sync + 'static,
+    S: HttpAuthenticationScheme<LogoutOutput = String> + Clone + Send + Sync + 'static,
 {
     let builder = response_builder();
 
@@ -43,7 +41,6 @@ pub async fn logout_with_elevation<S>(
 where
     S: HttpAuthenticationScheme
         + HttpElevationScheme
-        + SupportsTokenRevocation
         + SupportsElevation
         + Clone
         + Send

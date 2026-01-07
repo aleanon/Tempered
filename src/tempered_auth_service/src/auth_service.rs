@@ -47,7 +47,6 @@ impl AuthService {
             + HttpElevationScheme
             + SupportsRegistration
             + SupportsElevation
-            + SupportsTokenRevocation
             + SupportsTwoFactor
             + tempered_core::SupportsPasswordChange
             + tempered_core::SupportsAccountDeletion
