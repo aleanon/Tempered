@@ -2,6 +2,9 @@ use reqwest::{Client, Url};
 use secrecy::{ExposeSecret, Secret};
 use tempered_core::{Email, EmailClient};
 
+const MESSAGE_STREAM: &str = "outbound";
+const POSTMARK_AUTH_HEADER: &str = "X-Postmark-Server-Token";
+
 #[derive(Clone)]
 pub struct PostmarkEmailClient {
     http_client: Client,
@@ -66,9 +69,6 @@ impl EmailClient for PostmarkEmailClient {
         Ok(())
     }
 }
-
-const MESSAGE_STREAM: &str = "outbound";
-const POSTMARK_AUTH_HEADER: &str = "X-Postmark-Server-Token";
 
 #[derive(serde::Serialize, Debug)]
 #[serde(rename_all = "PascalCase")]

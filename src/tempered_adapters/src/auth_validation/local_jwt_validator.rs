@@ -14,7 +14,7 @@ use thiserror::Error;
 pub struct JwtAuthConfig {
     pub jwt_cookie_name: String,
     pub jwt_secret: Secret<String>,
-    pub token_ttl_in_seconds: i64,
+    pub token_ttl_in_seconds: u64,
 }
 
 impl JwtAuthConfig {
@@ -142,10 +142,10 @@ pub fn create_auth_cookie(token: String, cookie_name: &str) -> Cookie<'_> {
 // Create JWT auth token
 pub fn generate_auth_token(
     email: &Email,
-    token_ttl_seconds: i64,
+    token_ttl_seconds: u64,
     secret: &[u8],
 ) -> Result<String, TokenAuthError> {
-    let delta = chrono::Duration::try_seconds(token_ttl_seconds).ok_or(
+    let delta = chrono::Duration::try_seconds(token_ttl_seconds as i64).ok_or(
         TokenAuthError::UnexpectedError("Failed to create auth token duration".to_string()),
     )?;
 

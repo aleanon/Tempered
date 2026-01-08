@@ -6,7 +6,6 @@ edition.workspace = true
 [dependencies]
 # Core dependencies
 tempered_core.workspace = true
-tempered_application.workspace = true
 
 # Web framework
 axum.workspace = true

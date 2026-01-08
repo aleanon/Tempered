@@ -2,7 +2,7 @@
 
 use tempered_core::{
     AuthRequest, AuthResponseBuilder, HttpAuthenticationScheme, HttpElevationScheme,
-    SupportsElevation, SupportsTokenRevocation,
+    SupportsElevation,
 };
 
 /// Handle logout request - framework agnostic (base version without elevation support).

@@ -1,8 +1,7 @@
 use axum::{Router, routing::post};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    IntoStatusMessage, SupportsElevation, SupportsRegistration, SupportsTokenRevocation,
-    SupportsTwoFactor,
+    IntoStatusMessage, SupportsElevation, SupportsRegistration, SupportsTwoFactor,
 };
 
 pub struct Routers<Scheme> {
@@ -23,12 +22,8 @@ pub trait RouteConfig: Sized {
     fn set_verify_token_path(&mut self, path: String);
     fn get_logout_path(&self) -> String;
 
-    // Access to scheme and assets
-    fn get_scheme(&self) -> &Self::Scheme;
-    fn get_assets_dir(&self) -> &str;
-
     // Build method - consumes self and returns final Router
-    fn build(self) -> Router;
+    fn build(self, assets_dir: String, scheme: Self::Scheme) -> Router;
 
     // Required routes (always present)
     fn login_route(self) -> Self;
@@ -87,16 +82,8 @@ where
             self.instance.get_logout_path()
         }
 
-        fn get_scheme(&self) -> &Self::Scheme {
-            self.instance.get_scheme()
-        }
-
-        fn get_assets_dir(&self) -> &str {
-            self.instance.get_assets_dir()
-        }
-
-        fn build(self) -> Router {
-            self.instance.build()
+        fn build(self, assets_dir: String, scheme: Self::Scheme) -> Router {
+            self.instance.build(assets_dir, scheme)
         }
 
         fn login_route(mut self) -> Self {
@@ -183,16 +170,8 @@ where
             self.instance.get_logout_path()
         }
 
-        fn get_scheme(&self) -> &Self::Scheme {
-            self.instance.get_scheme()
-        }
-
-        fn get_assets_dir(&self) -> &str {
-            self.instance.get_assets_dir()
-        }
-
-        fn build(self) -> Router {
-            self.instance.build()
+        fn build(self, assets_dir: String, scheme: Self::Scheme) -> Router {
+            self.instance.build(assets_dir, scheme)
         }
 
         fn login_route(mut self) -> Self {
@@ -298,22 +277,10 @@ where
             self.instance.get_logout_path()
         }
 
-        fn get_scheme(&self) -> &Self::Scheme {
-            self.instance.get_scheme()
-        }
-
-        fn get_assets_dir(&self) -> &str {
-            self.instance.get_assets_dir()
-        }
-
-        fn build(self) -> Router {
+        fn build(self, assets_dir: String, scheme: Self::Scheme) -> Router {
             use axum::middleware;
             use tower_http::services::{ServeDir, ServeFile};
 
-            let scheme = self.instance.get_scheme().clone();
-            let assets_dir = self.instance.get_assets_dir().to_string();
-
-            // Get routers from the chain - routes are already registered by Instance::build()
             let mut config = self
                 .login_route()
                 .logout_route()

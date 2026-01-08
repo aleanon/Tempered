@@ -11,7 +11,6 @@ use sqlx::PgPool;
 use tempered_adapters::{
     auth_validation::local_jwt_validator::JwtAuthConfig,
     authentication::jwt_scheme::JwtScheme,
-    config::test,
     email::PostmarkEmailClient,
     persistence::{
         PostgresUserStore, RedisBannedTokenStore, RedisTwoFaCodeStore,
@@ -57,8 +56,8 @@ impl TestApp {
         let two_fa_code_store = RedisTwoFaCodeStore::new(redis_connection);
 
         let email_server = MockServer::start().await;
-        let base_url = email_server.uri();
-        let email_client = configure_postmark_email_client(base_url);
+        // let base_url = email_server.uri();
+        let email_client = tempered_adapters::email::MockEmailClient::new();
 
         let (user_store_container, pool) = setup_and_connect_user_store_container().await;
 
@@ -88,7 +87,7 @@ impl TestApp {
             elevated_jwt_config,
         );
 
-        let listener = TcpListener::bind(test::APP_ADDRESS)
+        let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("Failed to bind to address");
 
@@ -96,10 +95,10 @@ impl TestApp {
 
         // Use the new builder pattern to configure the service with all features
         let app = auth_service(jwt_scheme, "./assets".to_string())
-            .with_login_path("/login")
-            .with_logout_path("/logout")
-            .with_verify_token_path("/verify-token")
-            .with_registration(Some("/signup"))
+            .login_route("/login")
+            .logout_route("/logout")
+            .verify_token_route("/verify-token")
+            .signup_route(Some("/signup"))
             .with_2fa(Some("/verify-2fa"))
             .with_elevation(
                 Some("/elevate"),
@@ -295,18 +294,18 @@ pub fn get_standard_test_user(two_fa: bool) -> Value {
     })
 }
 
-fn configure_postmark_email_client(base_url: String) -> PostmarkEmailClient {
-    let postmark_auth_token = Secret::new("auth_token".to_owned());
+// fn configure_postmark_email_client(base_url: String) -> PostmarkEmailClient {
+//     let postmark_auth_token = Secret::new("auth_token".to_owned());
 
-    let sender = Email::try_from(Secret::new(test::email_client::SENDER.to_owned())).unwrap();
+//     let sender = Email::try_from(Secret::new(test::email_client::SENDER.to_owned())).unwrap();
 
-    let http_client = Client::builder()
-        .timeout(test::email_client::TIMEOUT)
-        .build()
-        .expect("Failed to build HTTP client");
+//     let http_client = Client::builder()
+//         .timeout(test::email_client::TIMEOUT)
+//         .build()
+//         .expect("Failed to build HTTP client");
 
-    PostmarkEmailClient::new(base_url, sender, postmark_auth_token, http_client)
-}
+//     PostmarkEmailClient::new(base_url, sender, postmark_auth_token, http_client)
+// }
 
 async fn setup_and_connect_user_store_container() -> (ContainerAsync<postgres::Postgres>, PgPool) {
     let container = postgres::Postgres::default()

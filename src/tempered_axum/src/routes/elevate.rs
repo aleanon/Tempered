@@ -4,7 +4,7 @@ use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
 use tempered_adapters::handlers;
-use tempered_core::{Email, HttpElevationScheme, Password, SupportsElevation};
+use tempered_core::{Email, HttpElevationScheme, Password};
 use thiserror::Error;
 
 use crate::adapters::response_builder;
@@ -19,7 +19,7 @@ pub async fn elevate<S>(
     Json(request): Json<ElevateRequest>,
 ) -> Result<impl IntoResponse, ElevateError>
 where
-    S: HttpElevationScheme + SupportsElevation,
+    S: HttpElevationScheme,
 {
     // Parse domain entities
     let email =

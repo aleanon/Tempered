@@ -52,30 +52,11 @@ pub use core::{
 };
 
 // ============================================================================
-// Use Cases (Application Layer)
-// ============================================================================
-
-/// Application use cases
-pub mod use_cases {
-    pub use tempered_application::*;
-}
-
-// Re-export use cases at root level
-pub use tempered_application::{
-    ChangePasswordUseCase, DeleteAccountUseCase, ElevateUseCase, LoginUseCase, LogoutUseCase,
-    SignupUseCase, Verify2FaUseCase,
-};
-
-// ============================================================================
 // Adapters (Infrastructure)
 // ============================================================================
 
 /// Infrastructure adapters
 pub mod adapters {
-    /// HTTP route handlers
-    pub mod http {
-        pub use tempered_adapters::http::*;
-    }
 
     /// Persistence implementations
     pub mod persistence {
@@ -91,11 +72,6 @@ pub mod adapters {
     pub mod auth {
         pub use tempered_adapters::auth_validation::*;
     }
-
-    /// Configuration
-    pub mod config {
-        pub use tempered_adapters::config::*;
-    }
 }
 
 // Re-export commonly used adapters at root level
@@ -107,15 +83,6 @@ pub use tempered_adapters::{
         HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore, PostgresUserStore,
         RedisBannedTokenStore, RedisTwoFaCodeStore,
     },
-};
-
-// ============================================================================
-// Auth Service (Main Entry Point)
-// ============================================================================
-
-/// Main auth service
-pub use tempered_auth_service::{
-    AuthService, configure_postgresql, configure_redis, get_redis_client,
 };
 
 // ============================================================================

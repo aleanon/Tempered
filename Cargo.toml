@@ -7,9 +7,8 @@ edition.workspace = true
 [dependencies]
 # Internal crates - re-export all public APIs
 tempered_core.workspace = true
-tempered_application.workspace = true
 tempered_adapters.workspace = true
-tempered_auth_service.workspace = true
+tempered_axum.workspace = true
 
 # Re-export key dependencies that are part of the public API
 async-trait.workspace = true
@@ -30,13 +29,7 @@ tracing-subscriber.workspace = true
 
 [workspace]
 resolver = "2"
-members = [
-    "src/tempered_core",
-    "src/tempered_application",
-    "src/tempered_adapters",
-    "src/tempered_axum",
-    "src/tempered_auth_service",
-]
+members = ["src/tempered_core", "src/tempered_adapters", "src/tempered_axum"]
 
 [workspace.package]
 version = "0.1.0"
@@ -45,10 +38,8 @@ edition = "2024"
 [workspace.dependencies]
 # Internal crates
 tempered_core = { path = "src/tempered_core" }
-tempered_application = { path = "src/tempered_application" }
 tempered_adapters = { path = "src/tempered_adapters" }
 tempered_axum = { path = "src/tempered_axum" }
-tempered_auth_service = { path = "src/tempered_auth_service" }
 
 # Web framework
 axum = "0.8"

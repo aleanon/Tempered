@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use axum::{Router, routing::post};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
@@ -17,8 +19,7 @@ where
         IntoStatusMessage,
 {
     struct Instance<S> {
-        schema: S,
-        assets_dir: String,
+        _schema: PhantomData<S>,
         login_path: String,
         logout_path: String,
         verify_token_path: String,
@@ -66,15 +67,7 @@ where
             self.logout_path.clone()
         }
 
-        fn get_scheme(&self) -> &Self::Scheme {
-            &self.schema
-        }
-
-        fn get_assets_dir(&self) -> &str {
-            &self.assets_dir
-        }
-
-        fn build(self) -> Router {
+        fn build(self, assets_dir: String, scheme: S) -> Router {
             use axum::middleware;
             use tower_http::services::{ServeDir, ServeFile};
 
@@ -91,7 +84,7 @@ where
                 configured
                     .validated_router
                     .layer(middleware::from_fn_with_state(
-                        configured.schema.clone(),
+                        scheme.clone(),
                         crate::middleware::validate_token::<S>,
                     ));
 
@@ -99,14 +92,11 @@ where
             let router = configured.main_router.merge(validated_router);
 
             // Static assets
-            let assets_service = ServeDir::new(&configured.assets_dir).not_found_service(
-                ServeFile::new(format!("{}/index.html", configured.assets_dir)),
-            );
+            let assets_service = ServeDir::new(&assets_dir)
+                .not_found_service(ServeFile::new(format!("{}/index.html", assets_dir)));
 
             // Final router with state and assets
-            router
-                .with_state(configured.schema)
-                .fallback_service(assets_service)
+            router.with_state(scheme).fallback_service(assets_service)
         }
 
         fn login_route(mut self) -> Self {
@@ -141,8 +131,7 @@ where
     }
 
     let instance = Instance {
-        schema,
-        assets_dir,
+        _schema: PhantomData,
         login_path: "/login".to_string(),
         logout_path: "/logout".to_string(),
         verify_token_path: "/verify-token".to_string(),
@@ -151,37 +140,47 @@ where
         elevated_router: None,
     };
 
-    AuthService { instance }
+    AuthService {
+        instance,
+        assets_dir,
+        schema,
+    }
 }
 
-pub struct AuthService<R> {
+pub struct AuthService<R: RouteConfig> {
     instance: R,
+    assets_dir: String,
+    schema: R::Scheme,
 }
 
 impl<R> AuthService<R>
 where
     R: RouteConfig,
 {
-    pub fn with_login_path(mut self, path: &str) -> Self {
+    /// Overrides the default login path
+    pub fn login_route(mut self, path: &str) -> Self {
         validate_path(path);
         self.instance.set_login_path(path.to_string());
         self
     }
 
-    pub fn with_logout_path(mut self, path: &str) -> Self {
+    /// Overrides the default logout path
+    pub fn logout_route(mut self, path: &str) -> Self {
         validate_path(path);
         self.instance.set_logout_path(path.to_string());
         self
     }
 
-    pub fn with_verify_token_path(mut self, path: &str) -> Self {
+    /// Overrides the default verify token path
+    pub fn verify_token_route(mut self, path: &str) -> Self {
         validate_path(path);
         self.instance.set_verify_token_path(path.to_string());
         self
     }
 
+    /// Runs the Authentication Service as a standalone axum server
     pub async fn run(self, listener: TcpListener) -> Result<(), std::io::Error> {
-        let router = self.instance.build();
+        let router = self.instance.build(self.assets_dir, self.schema);
 
         axum::serve(listener, router).await
     }
@@ -193,7 +192,9 @@ where
     R::Scheme: SupportsRegistration,
     <R::Scheme as SupportsRegistration>::RegistrationError: IntoStatusMessage,
 {
-    pub fn with_registration(
+    /// Overrides the default signup route path, or adds a new route for signup
+    /// if it does not already exist
+    pub fn signup_route(
         self,
         path: Option<&str>,
     ) -> AuthService<impl RouteConfig<Scheme = R::Scheme>> {
@@ -203,6 +204,8 @@ where
 
         AuthService {
             instance: route_config::with_signup_route(self.instance, path),
+            assets_dir: self.assets_dir,
+            schema: self.schema,
         }
     }
 }
@@ -213,6 +216,7 @@ where
     R::Scheme: HttpAuthenticationScheme + SupportsTwoFactor,
     <R::Scheme as SupportsTwoFactor>::TwoFactorError: IntoStatusMessage,
 {
+    /// Adds support for two factor authentication and creates a route for verifying two factor authentication
     pub fn with_2fa(self, path: Option<&str>) -> AuthService<impl RouteConfig<Scheme = R::Scheme>> {
         let path = path.unwrap_or("/verify-2fa");
 
@@ -220,6 +224,8 @@ where
 
         AuthService {
             instance: route_config::with_2fa_route(self.instance, path),
+            assets_dir: self.assets_dir,
+            schema: self.schema,
         }
     }
 }
@@ -227,14 +233,13 @@ where
 impl<R> AuthService<R>
 where
     R: RouteConfig,
-    R::Scheme: HttpElevationScheme + SupportsElevation,
-    <R::Scheme as tempered_core::AuthenticationScheme>::Validator:
-        tempered_core::AuthValidator<RequestParts = http::request::Parts>,
-    <<R::Scheme as tempered_core::AuthenticationScheme>::Validator as tempered_core::AuthValidator>::Error:
-    IntoStatusMessage,
+    R::Scheme: HttpElevationScheme,
+    <R::Scheme as AuthenticationScheme>::Validator:
+        AuthValidator<RequestParts = http::request::Parts>,
+    <<R::Scheme as AuthenticationScheme>::Validator as AuthValidator>::Error: IntoStatusMessage,
     <R::Scheme as SupportsElevation>::ElevatedValidator:
-        tempered_core::AuthValidator<RequestParts = http::request::Parts>,
-    <<R::Scheme as SupportsElevation>::ElevatedValidator as tempered_core::AuthValidator>::Error:
+        AuthValidator<RequestParts = http::request::Parts>,
+    <<R::Scheme as SupportsElevation>::ElevatedValidator as AuthValidator>::Error:
         IntoStatusMessage,
 {
     pub fn with_elevation<F>(
@@ -260,6 +265,8 @@ where
                 verify_elevated_token_path,
                 configure,
             ),
+            assets_dir: self.assets_dir,
+            schema: self.schema,
         }
     }
 }
@@ -269,7 +276,7 @@ where
     R: RouteConfig,
 {
     fn into(self) -> Router {
-        self.instance.build()
+        self.instance.build(self.assets_dir, self.schema)
     }
 }
 

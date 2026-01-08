@@ -1,12 +1,14 @@
 use redis::Client;
 use reqwest::Client as HttpClient;
+use secrecy::ExposeSecret;
 use sqlx::postgres::PgPoolOptions;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tempered::{
-    AuthService, Email, ExposeSecret, JwtAuthConfig, JwtScheme, PostgresUserStore,
-    PostmarkEmailClient, RedisBannedTokenStore, RedisTwoFaCodeStore, Secret,
-    adapters::config::AuthServiceSetting,
+    Email, EmailClient, HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
+    JwtAuthConfig, JwtScheme, MockEmailClient, PostgresUserStore, PostmarkEmailClient,
+    RedisBannedTokenStore, RedisTwoFaCodeStore, Secret, async_trait,
 };
+use tempered_axum::auth_service::auth_service;
 use tokio::sync::RwLock;
 use tracing_error::ErrorLayer;
 use tracing_subscriber::{
@@ -18,76 +20,60 @@ use tracing_subscriber::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing().expect("Failed to initialize tracing");
 
-    // Load configuration
-    let config = AuthServiceSetting::load();
-
-    // Setup database connection pool
-    let pg_pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(config.postgres.url.expose_secret())
-        .await?;
-
-    // Run migrations
-    sqlx::migrate!("examples/migrations").run(&pg_pool).await?;
-
-    // Setup Redis connection
-    let redis_client = Client::open(format!("redis://{}/", config.redis.host_name))?;
-    let redis_conn = Arc::new(RwLock::new(redis_client.get_connection()?));
-
     // Create stores
-    let user_store = PostgresUserStore::new(pg_pool);
-    let banned_token_store =
-        RedisBannedTokenStore::new(redis_conn.clone(), config.auth.jwt.time_to_live as u64);
-    let two_fa_code_store = RedisTwoFaCodeStore::new(redis_conn);
+    let user_store = HashMapUserStore::new();
+    let two_fa_code_store = HashMapTwoFaCodeStore::new();
 
-    // Create email client
-    let http_client = HttpClient::builder()
-        .timeout(config.email_client.timeout_in_millis)
-        .build()?;
-
-    let email_client = PostmarkEmailClient::new(
-        config.email_client.base_url.clone(),
-        Email::try_from(Secret::new(config.email_client.sender.clone()))?,
-        config.email_client.auth_token.clone(),
-        http_client,
-    );
+    let email_client = DummyEmailClient;
 
     // Create JWT configuration for the scheme
     let jwt_config = JwtAuthConfig {
-        jwt_cookie_name: config.auth.jwt.cookie_name.clone(),
-        jwt_secret: config.auth.jwt.secret.clone(),
-        token_ttl_in_seconds: config.auth.jwt.time_to_live,
+        jwt_cookie_name: "jwt".to_string(),
+        jwt_secret: Secret::new("input a long random generated string here".to_string()),
+        token_ttl_in_seconds: 3600,
     };
 
     let elevated_jwt_config = JwtAuthConfig {
         jwt_cookie_name: "elevated_jwt".to_string(),
-        jwt_secret: config.auth.jwt.secret.clone(),
+        jwt_secret: Secret::new("Input a long random generated string here".to_string()),
         token_ttl_in_seconds: 900, // 15 minutes for elevated tokens
     };
+
+    let banned_token_store = HashSetBannedTokenStore::new();
+    let elevated_banned_token_store = HashSetBannedTokenStore::new();
 
     // Create the JwtScheme with all required stores
     let jwt_scheme = JwtScheme::new(
         user_store,
         two_fa_code_store,
         email_client,
-        banned_token_store.clone(),
-        jwt_config,
         banned_token_store,
+        jwt_config,
+        elevated_banned_token_store,
         elevated_jwt_config,
     );
 
     // Create the auth service using the library
-    let auth_service = AuthService::new(jwt_scheme, "examples/assets".to_string());
-
-    // Get allowed origins from config
-    let allowed_origins = config.auth.allowed_origins.clone();
+    let auth_service = auth_service(jwt_scheme, "examples/assets".to_string())
+        .login_route("/login")
+        .logout_route("/logout")
+        .verify_token_route("/verify-token")
+        .signup_route(Some("/signup"))
+        .with_2fa(Some("/verify-2fa"))
+        .with_elevation(
+            Some("/elevate"),
+            Some("/verify-elevated-token"),
+            |elevated| {
+                elevated
+                    .with_change_password(Some("/change-password"))
+                    .with_delete_account(Some("/delete-account"))
+            },
+        );
 
     // Run as standalone server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
 
-    auth_service
-        .run_standalone(listener, Some(allowed_origins))
-        .await?;
+    auth_service.run(listener).await?;
 
     Ok(())
 }
@@ -104,4 +90,25 @@ pub fn init_tracing() -> Result<(), ParseError> {
         .init();
 
     Ok(())
+}
+
+#[derive(Clone)]
+struct DummyEmailClient;
+
+#[async_trait]
+impl EmailClient for DummyEmailClient {
+    async fn send_email(
+        &self,
+        recipient: &Email,
+        subject: &str,
+        content: &str,
+    ) -> Result<(), String> {
+        println!(
+            "recipient:{}, subject:{}, content:{}",
+            recipient.as_ref().expose_secret(),
+            subject,
+            content
+        );
+        Ok(())
+    }
 }
