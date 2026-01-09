@@ -3,15 +3,15 @@
 //! These traits bridge domain-level authentication (`AuthenticationScheme`)
 //! with HTTP-specific concerns like how tokens are delivered to clients.
 
-use super::http_abstraction::{AuthRequest, AuthResponseBuilder};
+use super::http_abstraction::{AuthRequest, ResponseBuilder};
 use crate::{AuthenticationScheme, LoginOutcome, SupportsElevation};
 
 /// Framework-agnostic HTTP-level abstraction for authentication schemes.
 ///
-/// This trait uses zero-cost trait abstractions (`AuthRequest`, `AuthResponseBuilder`)
+/// This trait uses zero-cost trait abstractions (`AuthRequest`, `ResponseBuilder`)
 /// making it compatible with any Rust web framework (Axum, Actix, Hyper, etc.).
 ///
-/// Framework-specific crates implement `AuthRequest` and `AuthResponseBuilder` on
+/// Framework-specific crates implement `AuthRequest` and `ResponseBuilder` on
 /// newtype wrappers of their types, and this trait uses those implementations -
 /// resulting in zero allocation overhead.
 ///
@@ -32,7 +32,7 @@ use crate::{AuthenticationScheme, LoginOutcome, SupportsElevation};
 /// ```ignore
 /// // A JWT scheme that delivers tokens via cookies
 /// impl HttpAuthenticationScheme for JwtScheme<...> {
-///     fn create_login_response<B: AuthResponseBuilder>(
+///     fn create_login_response<B: ResponseBuilder>(
 ///         &self,
 ///         builder: B,
 ///         outcome: LoginOutcome<Self::Token>,
@@ -75,11 +75,11 @@ pub trait HttpAuthenticationScheme: AuthenticationScheme {
     /// This uses generic type parameters, so it compiles to direct calls
     /// with zero runtime overhead. Each framework's response builder is
     /// used directly without any intermediate allocations.
-    fn create_login_response<B: AuthResponseBuilder>(
+    fn create_login_response<B: ResponseBuilder>(
         &self,
         builder: B,
         outcome: LoginOutcome<Self::Token>,
-    ) -> B::Response;
+    ) -> Result<B::Response, crate::ResponseBuilderError>;
 
     /// Create an HTTP response for logout.
     ///
@@ -95,11 +95,11 @@ pub trait HttpAuthenticationScheme: AuthenticationScheme {
     /// # Type Parameters
     ///
     /// * `B` - The response builder type (framework-specific newtype wrapper)
-    fn create_logout_response<B: AuthResponseBuilder>(
+    fn create_logout_response<B: ResponseBuilder>(
         &self,
         builder: B,
         cookie_name: Option<String>,
-    ) -> B::Response;
+    ) -> Result<B::Response, crate::ResponseBuilderError>;
 
     /// Create an HTTP response from a 2FA verification outcome.
     ///
@@ -109,11 +109,11 @@ pub trait HttpAuthenticationScheme: AuthenticationScheme {
     /// # Type Parameters
     ///
     /// * `B` - The response builder type (framework-specific newtype wrapper)
-    fn create_2fa_response<B: AuthResponseBuilder>(
+    fn create_2fa_response<B: ResponseBuilder>(
         &self,
         builder: B,
         token: Self::Token,
-    ) -> B::Response {
+    ) -> Result<B::Response, crate::ResponseBuilderError> {
         // Default: treat 2FA success same as login success
         self.create_login_response(builder, LoginOutcome::Success(token))
     }
@@ -161,7 +161,7 @@ pub trait HttpAuthenticationScheme: AuthenticationScheme {
 ///
 /// ```ignore
 /// impl HttpElevationScheme for JwtScheme {
-///     fn create_elevation_response<B: AuthResponseBuilder>(
+///     fn create_elevation_response<B: ResponseBuilder>(
 ///         &self,
 ///         builder: B,
 ///         elevated_token: Self::ElevatedToken,
@@ -189,11 +189,11 @@ pub trait HttpElevationScheme: HttpAuthenticationScheme + SupportsElevation {
     /// # Type Parameters
     ///
     /// * `B` - The response builder type (framework-specific newtype wrapper)
-    fn create_elevation_response<B: AuthResponseBuilder>(
+    fn create_elevation_response<B: ResponseBuilder>(
         &self,
         builder: B,
         elevated_token: Self::ElevatedToken,
-    ) -> B::Response;
+    ) -> Result<B::Response, crate::ResponseBuilderError>;
 
     /// Extract an elevated token from an HTTP request.
     ///

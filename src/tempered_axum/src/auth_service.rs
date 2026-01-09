@@ -6,6 +6,7 @@ use tempered_core::{
     IntoStatusMessage, SupportsElevation, SupportsRegistration, SupportsTwoFactor,
 };
 use tokio::net::TcpListener;
+use tracing::info;
 
 use crate::route_config::{self, RouteConfig, Routers};
 
@@ -181,6 +182,13 @@ where
     /// Runs the Authentication Service as a standalone axum server
     pub async fn run(self, listener: TcpListener) -> Result<(), std::io::Error> {
         let router = self.instance.build(self.assets_dir, self.schema);
+
+        info!(
+            "listening on {}",
+            listener
+                .local_addr()
+                .expect("Failed to get address from listener")
+        );
 
         axum::serve(listener, router).await
     }

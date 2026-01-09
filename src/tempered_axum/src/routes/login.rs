@@ -1,10 +1,10 @@
 //! Axum-specific login route.
 
 use axum::{Json, extract::State, response::IntoResponse};
-use tempered_adapters::handlers;
+use tempered_adapters::{handlers, http::HttpResponseBuilder};
 use tempered_core::{HttpAuthenticationScheme, IntoStatusMessage};
 
-use crate::adapters::response_builder;
+use crate::adapters::into_axum_response;
 
 /// Axum login route.
 ///
@@ -19,10 +19,10 @@ where
     S: HttpAuthenticationScheme,
     S::AuthError: IntoStatusMessage,
 {
-    let builder = response_builder();
+    let builder = HttpResponseBuilder::new();
 
     match handlers::handle_login(&scheme, credentials, builder).await {
-        Ok(response) => response.into_response(),
+        Ok(http_response) => into_axum_response(http_response).into_response(),
         Err(e) => {
             let (status, message) = e.into_status_message();
             (status, Json(serde_json::json!({ "error": message }))).into_response()

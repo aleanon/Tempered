@@ -2,7 +2,7 @@
 //!
 //! Account deletion is a sensitive operation that typically requires elevated authentication.
 
-use tempered_core::{AuthResponseBuilder, Email, SupportsAccountDeletion};
+use tempered_core::{ResponseBuilder, HttpResponseBuilderExt, Email, SupportsAccountDeletion};
 
 /// Framework-agnostic account deletion handler.
 ///
@@ -27,7 +27,7 @@ pub async fn handle_delete_account<S, B>(
 ) -> Result<B::Response, String>
 where
     S: SupportsAccountDeletion,
-    B: AuthResponseBuilder,
+    B: ResponseBuilder,
 {
     // Use the scheme's account deletion capability
     scheme
@@ -42,5 +42,5 @@ where
             "status": "success",
             "message": "Account deleted successfully"
         }))
-        .build())
+        .build().map_err(|e| e.message)?)
 }

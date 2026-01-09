@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use reqwest::{
     Client, Url,
@@ -34,6 +34,10 @@ pub const JWT_ELEVATED_COOKIE_NAME: &str = "elevated_jwt";
 pub const JWT_SECRET: &str = "secret";
 pub const JWT_ELEVATED_SECRET: &str = "elevated_secret";
 
+// Test constants for email client
+pub const SENDER: &str = "test@email.com";
+pub const TIMEOUT: Duration = std::time::Duration::from_millis(200);
+
 pub struct TestApp {
     pub address: String,
     pub cookie_jar: Arc<Jar>,
@@ -56,8 +60,8 @@ impl TestApp {
         let two_fa_code_store = RedisTwoFaCodeStore::new(redis_connection);
 
         let email_server = MockServer::start().await;
-        // let base_url = email_server.uri();
-        let email_client = tempered_adapters::email::MockEmailClient::new();
+        let base_url = email_server.uri();
+        let email_client = configure_postmark_email_client(base_url);
 
         let (user_store_container, pool) = setup_and_connect_user_store_container().await;
 
@@ -294,18 +298,18 @@ pub fn get_standard_test_user(two_fa: bool) -> Value {
     })
 }
 
-// fn configure_postmark_email_client(base_url: String) -> PostmarkEmailClient {
-//     let postmark_auth_token = Secret::new("auth_token".to_owned());
+fn configure_postmark_email_client(base_url: String) -> PostmarkEmailClient {
+    let postmark_auth_token = Secret::new("auth_token".to_owned());
 
-//     let sender = Email::try_from(Secret::new(test::email_client::SENDER.to_owned())).unwrap();
+    let sender = Email::try_from(Secret::new(SENDER.to_owned())).unwrap();
 
-//     let http_client = Client::builder()
-//         .timeout(test::email_client::TIMEOUT)
-//         .build()
-//         .expect("Failed to build HTTP client");
+    let http_client = Client::builder()
+        .timeout(TIMEOUT)
+        .build()
+        .expect("Failed to build HTTP client");
 
-//     PostmarkEmailClient::new(base_url, sender, postmark_auth_token, http_client)
-// }
+    PostmarkEmailClient::new(base_url, sender, postmark_auth_token, http_client)
+}
 
 async fn setup_and_connect_user_store_container() -> (ContainerAsync<postgres::Postgres>, PgPool) {
     let container = postgres::Postgres::default()

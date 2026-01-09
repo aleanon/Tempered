@@ -7,7 +7,7 @@ use chrono::Utc;
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation, decode, encode};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
-use tempered_core::{AuthValidator, BannedTokenStore, Email};
+use tempered_core::{AuthValidator, BannedTokenStore, Email, IntoStatusMessage};
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -72,7 +72,7 @@ pub enum TokenAuthError {
     UnexpectedError(String),
 }
 
-impl tempered_core::IntoStatusMessage for TokenAuthError {
+impl IntoStatusMessage for TokenAuthError {
     fn into_status_message(self) -> (http::StatusCode, String) {
         match self {
             TokenAuthError::MissingToken => {

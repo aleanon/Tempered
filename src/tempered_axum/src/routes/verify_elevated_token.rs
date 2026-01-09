@@ -1,11 +1,11 @@
 //! Axum-specific elevated token verification route.
 
 use axum::{Json, http::StatusCode, response::IntoResponse};
-use tempered_adapters::handlers;
+use tempered_adapters::{handlers, http::HttpResponseBuilder};
 use tempered_core::HttpElevationScheme;
 use thiserror::Error;
 
-use crate::adapters::response_builder;
+use crate::adapters::into_axum_response;
 
 /// Axum elevated token verification route.
 ///
@@ -16,10 +16,10 @@ pub async fn verify_elevated_token<S>() -> impl IntoResponse
 where
     S: HttpElevationScheme + Clone + Send + Sync + 'static,
 {
-    let builder = response_builder();
+    let builder = HttpResponseBuilder::new();
 
     match handlers::handle_verify_elevated_token(builder).await {
-        Ok(resp) => resp.into_response(),
+        Ok(http_response) => into_axum_response(http_response).into_response(),
         Err(e) => VerifyElevatedTokenError::Failed(e).into_response(),
     }
 }

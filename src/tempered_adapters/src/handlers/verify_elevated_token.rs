@@ -3,7 +3,7 @@
 //! Elevated tokens have stricter validation requirements and shorter lifetimes
 //! than regular authentication tokens.
 
-use tempered_core::AuthResponseBuilder;
+use tempered_core::{ResponseBuilder, HttpResponseBuilderExt};
 
 /// Framework-agnostic elevated token verification handler.
 ///
@@ -20,12 +20,12 @@ use tempered_core::AuthResponseBuilder;
 /// A success response indicating the elevated token is valid
 pub async fn handle_verify_elevated_token<B>(builder: B) -> Result<B::Response, String>
 where
-    B: AuthResponseBuilder,
+    B: ResponseBuilder,
 {
     // If we reached this handler, the middleware already validated the elevated token
     // Just return success
     Ok(builder
         .status(200)
         .json_body(serde_json::json!({"status": "valid"}))
-        .build())
+        .build().map_err(|e| e.message)?)
 }

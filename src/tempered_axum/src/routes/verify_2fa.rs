@@ -3,13 +3,16 @@
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
-use tempered_adapters::handlers::{
-    self,
-    verify_2fa::{Verify2FaData, Verify2FaError},
+use tempered_adapters::{
+    handlers::{
+        self,
+        verify_2fa::{Verify2FaData, Verify2FaError},
+    },
+    http::HttpResponseBuilder,
 };
 use tempered_core::{HttpAuthenticationScheme, IntoStatusMessage, SupportsTwoFactor};
 
-use crate::adapters::response_builder;
+use crate::adapters::into_axum_response;
 
 /// Axum 2FA verification route.
 ///
@@ -31,10 +34,10 @@ where
         two_factor_code: request.two_factor_code,
     };
 
-    let builder = response_builder();
+    let builder = HttpResponseBuilder::new();
 
     match handlers::handle_verify_2fa(&scheme, data, builder).await {
-        Ok(response) => response.into_response(),
+        Ok(http_response) => into_axum_response(http_response).into_response(),
         Err(e) => {
             let (status, message) = match e {
                 Verify2FaError::InvalidEmail(err) => (StatusCode::BAD_REQUEST, err.to_string()),

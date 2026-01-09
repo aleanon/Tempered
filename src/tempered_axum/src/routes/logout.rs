@@ -1,11 +1,11 @@
 //! Axum-specific logout route.
 
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use tempered_adapters::handlers;
+use tempered_adapters::{handlers, http::HttpResponseBuilder};
 use tempered_core::{HttpAuthenticationScheme, HttpElevationScheme, SupportsElevation};
 use thiserror::Error;
 
-use crate::adapters::{AuthRequestExtractor, response_builder};
+use crate::adapters::{AuthRequestExtractor, into_axum_response};
 
 /// Axum logout route (base version without elevation support).
 ///
@@ -18,10 +18,10 @@ pub async fn logout<S>(State(scheme): State<S>, req: AuthRequestExtractor) -> im
 where
     S: HttpAuthenticationScheme<LogoutOutput = String> + Clone + Send + Sync + 'static,
 {
-    let builder = response_builder();
+    let builder = HttpResponseBuilder::new();
 
     match handlers::handle_logout(&scheme, &req, builder).await {
-        Ok(resp) => resp.into_response(),
+        Ok(http_response) => into_axum_response(http_response).into_response(),
         Err(e) => LogoutError::Failed(e).into_response(),
     }
 }
@@ -47,10 +47,10 @@ where
         + Sync
         + 'static,
 {
-    let builder = response_builder();
+    let builder = HttpResponseBuilder::new();
 
     match handlers::handle_logout_with_elevation(&scheme, &req, builder).await {
-        Ok(resp) => resp.into_response(),
+        Ok(http_response) => into_axum_response(http_response).into_response(),
         Err(e) => LogoutError::Failed(e).into_response(),
     }
 }

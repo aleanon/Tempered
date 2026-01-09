@@ -3,10 +3,13 @@
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
-use tempered_adapters::handlers::{self, signup::SignupData};
+use tempered_adapters::{
+    handlers::{self, signup::SignupData},
+    http::HttpResponseBuilder,
+};
 use tempered_core::{Email, IntoStatusMessage, Password, SupportsRegistration};
 
-use crate::adapters::response_builder;
+use crate::adapters::into_axum_response;
 
 /// Axum signup route.
 ///
@@ -51,10 +54,10 @@ where
         registration_data: request.registration_data,
     };
 
-    let builder = response_builder();
+    let builder = HttpResponseBuilder::new();
 
     match handlers::handle_signup(&scheme, data, builder).await {
-        Ok(response) => response.into_response(),
+        Ok(http_response) => into_axum_response(http_response).into_response(),
         Err(e) => {
             let (status, message) = e.into_status_message();
             (status, Json(serde_json::json!({ "error": message }))).into_response()

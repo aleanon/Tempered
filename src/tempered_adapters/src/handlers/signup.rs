@@ -1,6 +1,8 @@
 //! Framework-agnostic signup handler.
 
-use tempered_core::{AuthResponseBuilder, Email, Password, SupportsRegistration};
+use tempered_core::{
+    Email, HttpResponseBuilderExt, Password, ResponseBuilder, SupportsRegistration,
+};
 
 /// Request data for user signup.
 ///
@@ -33,7 +35,7 @@ pub async fn handle_signup<S, B>(
 ) -> Result<B::Response, S::RegistrationError>
 where
     S: SupportsRegistration,
-    B: AuthResponseBuilder,
+    B: ResponseBuilder,
 {
     // Register the user
     scheme
@@ -41,11 +43,16 @@ where
         .await?;
 
     // Return success response
-    Ok(builder
+    builder
         .status(201)
         .json_body(serde_json::json!({
             "status": "success",
             "message": "User created successfully"
         }))
-        .build())
+        .build()
+        .map_err(|_e| {
+            // ResponseBuilder errors are programming errors (invalid status codes, etc.)
+            // This should never happen as we're using valid status 201
+            panic!("ResponseBuilder error in signup handler - this is a bug")
+        })
 }

@@ -1,8 +1,7 @@
 //! Framework-agnostic logout handler.
 
 use tempered_core::{
-    AuthRequest, AuthResponseBuilder, HttpAuthenticationScheme, HttpElevationScheme,
-    SupportsElevation,
+    AuthRequest, HttpAuthenticationScheme, HttpElevationScheme, ResponseBuilder, SupportsElevation,
 };
 
 /// Handle logout request - framework agnostic (base version without elevation support).
@@ -27,7 +26,7 @@ pub async fn handle_logout<S, R, B>(
 where
     S: HttpAuthenticationScheme<LogoutOutput = String>,
     R: AuthRequest,
-    B: AuthResponseBuilder,
+    B: ResponseBuilder,
 {
     // Extract regular token from request (scheme decides where to look: cookie, header, etc.)
     let token = scheme
@@ -41,7 +40,9 @@ where
         .map_err(|e| format!("Logout failed: {}", e))?;
 
     // Create the logout response
-    Ok(scheme.create_logout_response(builder, Some(cookie_name)))
+    Ok(scheme
+        .create_logout_response(builder, Some(cookie_name))
+        .map_err(|e| e.message)?)
 }
 
 /// Handle logout request with elevation support - framework agnostic.
@@ -65,7 +66,7 @@ pub async fn handle_logout_with_elevation<S, R, B>(
 where
     S: HttpAuthenticationScheme + HttpElevationScheme + SupportsElevation,
     R: AuthRequest,
-    B: AuthResponseBuilder,
+    B: ResponseBuilder,
 {
     // Extract regular token from request (scheme decides where to look: cookie, header, etc.)
     let token = scheme
@@ -85,6 +86,8 @@ where
         let _ = scheme.revoke_elevated_token(&elevated_token).await;
     }
 
-    // Create the logout response
-    Ok(scheme.create_logout_response(builder, None))
+    let response = scheme.create_logout_response(builder, None)
+        .expect("ResponseBuilder error in create_logout_response - this is a bug in the scheme implementation");
+
+    Ok(response)
 }

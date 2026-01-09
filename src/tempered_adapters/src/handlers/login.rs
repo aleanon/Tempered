@@ -1,6 +1,6 @@
 //! Framework-agnostic login handler.
 
-use tempered_core::{AuthResponseBuilder, HttpAuthenticationScheme};
+use tempered_core::{HttpAuthenticationScheme, ResponseBuilder};
 
 /// Handle login request - framework agnostic.
 ///
@@ -38,11 +38,11 @@ pub async fn handle_login<S, B>(
 ) -> Result<B::Response, S::AuthError>
 where
     S: HttpAuthenticationScheme,
-    B: AuthResponseBuilder,
+    B: ResponseBuilder,
 {
     // Call the scheme's login method (domain logic)
     let outcome = scheme.login(credentials).await?;
 
     // Let the scheme decide how to deliver the token via HTTP
-    Ok(scheme.create_login_response(builder, outcome))
+    Ok(scheme.create_login_response(builder, outcome).expect("ResponseBuilder error in create_login_response - this is a bug in the scheme implementation"))
 }

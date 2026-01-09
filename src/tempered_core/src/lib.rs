@@ -32,6 +32,9 @@ pub use strategies::{
     },
 };
 
-pub use http_abstraction::{AuthRequest, AuthResponseBuilder, AuthResponseHelpers};
+pub use http_abstraction::{
+    AuthRequest, AuthResponseBuilder, AuthResponseHelpers, HttpResponseBuilderExt, ResponseBuilder,
+    ResponseBuilderError,
+};
 pub use http_authentication_scheme::{HttpAuthenticationScheme, HttpElevationScheme};
 pub use http_error::IntoStatusMessage;

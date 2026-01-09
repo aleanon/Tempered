@@ -101,10 +101,13 @@ pub trait AuthRequest {
     fn path(&self) -> &str;
 }
 
-/// Trait for building HTTP responses for authentication.
+/// Protocol-agnostic trait for building responses.
 ///
-/// Web frameworks implement this trait on newtype wrappers of their response
-/// builder types to enable authentication responses without allocations.
+/// This trait can be implemented for any protocol:
+/// - HTTP (headers, cookies, status codes)
+/// - gRPC (metadata, status codes)
+/// - WebSocket (message types)
+/// - GraphQL (response structure)
 ///
 /// # Design
 ///
@@ -112,60 +115,160 @@ pub trait AuthRequest {
 /// ```ignore
 /// builder
 ///     .status(200)
-///     .header("content-type", "application/json")
-///     .cookie("auth=token; HttpOnly; Secure")
-///     .json_body(json!({"message": "success"}))
+///     .metadata("content-type", "application/json")
+///     .body(json!({"message": "success"}))
 ///     .build()
 /// ```
 ///
-/// # Example
+/// # HTTP Example
 ///
 /// ```ignore
-/// // In tempered-axum crate
-/// pub struct AxumResponseBuilder(pub axum::http::response::Builder);
+/// // In tempered-adapters crate
+/// pub struct HttpResponseBuilder { ... }
 ///
-/// impl AuthResponseBuilder for AxumResponseBuilder {
-///     type Response = axum::Response;
+/// impl ResponseBuilder for HttpResponseBuilder {
+///     type Response = http::Response<String>;
 ///
 ///     fn status(mut self, code: u16) -> Self {
-///         self.0 = self.0.status(code);
+///         self.status_code = code;
 ///         self
 ///     }
 ///
-///     fn header(mut self, name: &str, value: &str) -> Self {
-///         self.0 = self.0.header(name, value);
+///     fn metadata(mut self, key: &str, value: &str) -> Self {
+///         if key.starts_with("cookie:") {
+///             self.cookies.push(...);
+///         } else {
+///             self.headers.push((key, value));
+///         }
 ///         self
 ///     }
 ///
-///     fn cookie(self, cookie_value: &str) -> Self {
-///         self.header("set-cookie", cookie_value)
-///     }
-///
-///     fn json_body(self, body: serde_json::Value) -> Self {
-///         // Implementation details
+///     fn body<T: Serialize>(mut self, body: T) -> Self {
+///         self.body = Some(serde_json::to_value(body).unwrap());
+///         self
 ///     }
 ///
 ///     fn build(self) -> Self::Response {
-///         self.0.body(axum::body::Body::empty()).unwrap()
+///         // Build http::Response
 ///     }
 /// }
 /// ```
-pub trait AuthResponseBuilder: Sized {
+///
+/// # gRPC Example
+///
+/// ```ignore
+/// pub struct GrpcResponseBuilder { ... }
+///
+/// impl ResponseBuilder for GrpcResponseBuilder {
+///     type Response = tonic::Response<ProtoMessage>;
+///
+///     fn status(self, code: u16) -> Self {
+///         // Map to gRPC status codes
+///     }
+///
+///     fn metadata(self, key: &str, value: &str) -> Self {
+///         // Add to gRPC metadata
+///     }
+///
+///     fn body<T: Serialize>(self, body: T) -> Self {
+///         // Convert to protobuf
+///     }
+///
+///     fn build(self) -> Self::Response {
+///         // Build tonic::Response
+///     }
+/// }
+/// ```
+/// Error type for response building operations
+#[derive(Debug, Clone)]
+pub struct ResponseBuilderError {
+    pub message: String,
+}
+
+impl std::fmt::Display for ResponseBuilderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Response builder error: {}", self.message)
+    }
+}
+
+impl std::error::Error for ResponseBuilderError {}
+
+impl ResponseBuilderError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+pub trait ResponseBuilder: Sized {
     /// The final response type produced by this builder
     type Response;
 
-    /// Set the HTTP status code
+    /// Set the response status/result code
+    ///
+    /// For HTTP: 200, 404, 500, etc.
+    /// For gRPC: maps to Status codes
+    /// For WebSocket: success/error indicators
+    ///
+    /// This method is infallible - invalid status codes are stored and validated during `build()`.
     fn status(self, code: u16) -> Self;
 
+    /// Add metadata (protocol-specific)
+    ///
+    /// For HTTP: headers and cookies (use "cookie:" prefix for cookies)
+    /// For gRPC: metadata entries
+    /// For WebSocket: custom message headers
+    ///
+    /// This method is infallible - invalid keys/values are stored and validated during `build()`.
+    fn metadata(self, key: &str, value: &str) -> Self;
+
+    /// Set response body from serializable data
+    ///
+    /// For HTTP: JSON body
+    /// For gRPC: protobuf message
+    /// For WebSocket: message payload
+    ///
+    /// This method is infallible - the body is stored and serialized during `build()`.
+    fn body<T: serde::Serialize>(self, body: T) -> Self;
+
+    /// Build the final response
+    ///
+    /// This consumes the builder and produces the protocol's response type.
+    ///
+    /// This is the only fallible operation - it validates all collected data,
+    /// performs serialization, and constructs the final response.
+    ///
+    /// Returns an error if:
+    /// - The status code is invalid for this protocol
+    /// - Metadata keys/values are invalid
+    /// - Serialization fails
+    /// - Required fields are missing
+    fn build(self) -> Result<Self::Response, ResponseBuilderError>;
+}
+
+/// Type alias for backward compatibility
+///
+/// This allows existing code using `AuthResponseBuilder` to continue working
+/// while we transition to the more generic `ResponseBuilder` name.
+#[deprecated(since = "0.1.0", note = "Use ResponseBuilder instead")]
+pub trait AuthResponseBuilder: ResponseBuilder {}
+
+/// HTTP-specific extension methods for ResponseBuilder.
+///
+/// These provide HTTP-specific conveniences like headers, cookies, and JSON bodies.
+pub trait HttpResponseBuilderExt: ResponseBuilder {
     /// Add an HTTP header
-    fn header(self, name: &str, value: &str) -> Self;
+    fn header(self, name: &str, value: &str) -> Self {
+        self.metadata(name, value)
+    }
 
     /// Add a Set-Cookie header
     ///
     /// The cookie_value should be a complete cookie string like:
     /// `"auth=token; HttpOnly; Secure; SameSite=Lax; Max-Age=3600"`
     fn cookie(self, cookie_value: &str) -> Self {
-        self.header("set-cookie", cookie_value)
+        self.metadata("set-cookie", cookie_value)
     }
 
     /// Set a JSON body with Content-Type header
@@ -174,53 +277,56 @@ pub trait AuthResponseBuilder: Sized {
     /// 1. Sets Content-Type: application/json
     /// 2. Serializes the JSON value to a string
     /// 3. Sets it as the response body
-    fn json_body(self, body: serde_json::Value) -> Self;
-
-    /// Build the final response
-    ///
-    /// This consumes the builder and produces the framework's response type.
-    fn build(self) -> Self::Response;
+    fn json_body(self, body: serde_json::Value) -> Self {
+        self.metadata("content-type", "application/json").body(body)
+    }
 }
+
+// Blanket implementation for all ResponseBuilder types
+impl<T: ResponseBuilder> HttpResponseBuilderExt for T {}
 
 /// Helper methods for creating common authentication responses.
 ///
 /// This trait provides convenience methods for common response types.
-/// It's automatically implemented for all types that implement `AuthResponseBuilder`.
-pub trait AuthResponseHelpers: AuthResponseBuilder {
+/// It's automatically implemented for all types that implement `ResponseBuilder`.
+pub trait AuthResponseHelpers: ResponseBuilder {
     /// Create a 200 OK JSON response
-    fn ok_json(self, body: serde_json::Value) -> Self::Response {
+    fn ok_json(self, body: serde_json::Value) -> Result<Self::Response, ResponseBuilderError> {
         self.status(200).json_body(body).build()
     }
 
     /// Create a 401 Unauthorized response
-    fn unauthorized(self, message: &str) -> Self::Response {
+    fn unauthorized(self, message: &str) -> Result<Self::Response, ResponseBuilderError> {
         self.status(401)
             .json_body(serde_json::json!({ "error": message }))
             .build()
     }
 
     /// Create a 400 Bad Request response
-    fn bad_request(self, message: &str) -> Self::Response {
+    fn bad_request(self, message: &str) -> Result<Self::Response, ResponseBuilderError> {
         self.status(400)
             .json_body(serde_json::json!({ "error": message }))
             .build()
     }
 
     /// Create a 500 Internal Server Error response
-    fn internal_error(self, message: &str) -> Self::Response {
+    fn internal_error(self, message: &str) -> Result<Self::Response, ResponseBuilderError> {
         self.status(500)
             .json_body(serde_json::json!({ "error": message }))
             .build()
     }
 
     /// Create a 206 Partial Content response (used for 2FA required)
-    fn partial_content(self, body: serde_json::Value) -> Self::Response {
+    fn partial_content(
+        self,
+        body: serde_json::Value,
+    ) -> Result<Self::Response, ResponseBuilderError> {
         self.status(206).json_body(body).build()
     }
 }
 
-// Blanket implementation for all AuthResponseBuilder types
-impl<T: AuthResponseBuilder> AuthResponseHelpers for T {}
+// Blanket implementation for all ResponseBuilder types
+impl<T: ResponseBuilder> AuthResponseHelpers for T {}
 
 #[cfg(test)]
 mod tests {

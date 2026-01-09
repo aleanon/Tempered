@@ -2,7 +2,7 @@
 //!
 //! Password changes are sensitive operations that typically require elevated authentication.
 
-use tempered_core::{AuthResponseBuilder, Email, Password, SupportsPasswordChange};
+use tempered_core::{ResponseBuilder, HttpResponseBuilderExt, Email, Password, SupportsPasswordChange};
 
 /// Framework-agnostic password change handler.
 ///
@@ -29,7 +29,7 @@ pub async fn handle_change_password<S, B>(
 ) -> Result<B::Response, String>
 where
     S: SupportsPasswordChange,
-    B: AuthResponseBuilder,
+    B: ResponseBuilder,
 {
     // Use the scheme's password change capability
     scheme
@@ -44,5 +44,5 @@ where
             "status": "success",
             "message": "Password changed successfully"
         }))
-        .build())
+        .build().map_err(|e| e.message)?)
 }

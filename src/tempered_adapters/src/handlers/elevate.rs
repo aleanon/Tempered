@@ -3,7 +3,7 @@
 //! This handler implements the "sudo" pattern - users must re-authenticate
 //! with their password to receive an elevated token for sensitive operations.
 
-use tempered_core::{AuthResponseBuilder, Email, HttpElevationScheme, Password};
+use tempered_core::{ResponseBuilder, Email, HttpElevationScheme, Password};
 
 /// Framework-agnostic elevation handler.
 ///
@@ -30,7 +30,7 @@ pub async fn handle_elevate<S, B>(
 ) -> Result<B::Response, String>
 where
     S: HttpElevationScheme,
-    B: AuthResponseBuilder,
+    B: ResponseBuilder,
 {
     // Re-authenticate the user to create elevated token
     let elevated_token = scheme
@@ -39,5 +39,5 @@ where
         .map_err(|e| format!("Elevation failed: {}", e))?;
 
     // Create HTTP response with elevated token
-    Ok(scheme.create_elevation_response(builder, elevated_token))
+    Ok(scheme.create_elevation_response(builder, elevated_token).map_err(|e| e.message)?)
 }

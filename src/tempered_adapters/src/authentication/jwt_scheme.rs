@@ -2,10 +2,11 @@ use async_trait::async_trait;
 use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
 use tempered_core::{
-    AuthRequest, AuthResponseBuilder, BannedTokenStore, BannedTokenStoreError, Email, EmailClient,
-    HttpAuthenticationScheme, Password, SupportsAccountDeletion, SupportsElevation,
-    SupportsPasswordChange, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError,
-    TwoFaError, User, UserError, UserStore, UserStoreError, ValidatedUser,
+    AuthRequest, BannedTokenStore, BannedTokenStoreError, Email, EmailClient,
+    HttpAuthenticationScheme, HttpResponseBuilderExt, Password, ResponseBuilder,
+    SupportsAccountDeletion, SupportsElevation, SupportsPasswordChange, TwoFaAttemptId, TwoFaCode,
+    TwoFaCodeStore, TwoFaCodeStoreError, TwoFaError, User, UserError, UserStore, UserStoreError,
+    ValidatedUser,
     strategies::authenticator::{
         AuthenticationScheme, LoginOutcome, SupportsRegistration, SupportsTwoFactor,
     },
@@ -107,11 +108,11 @@ where
     E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
 {
-    fn create_login_response<RB: AuthResponseBuilder>(
+    fn create_login_response<RB: ResponseBuilder>(
         &self,
         builder: RB,
         outcome: LoginOutcome<Self::Token>,
-    ) -> RB::Response {
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
         match outcome {
             LoginOutcome::Success(token) => {
                 // For JWT, we deliver the token via HTTP-only cookie
@@ -144,11 +145,11 @@ where
         }
     }
 
-    fn create_logout_response<RB: AuthResponseBuilder>(
+    fn create_logout_response<RB: ResponseBuilder>(
         &self,
         builder: RB,
         cookie_name: Option<String>,
-    ) -> RB::Response {
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
         let cookie_name = cookie_name.unwrap_or_else(|| self.jwt_config.jwt_cookie_name.clone());
 
         // Create cookies that expire immediately to clear them
@@ -512,11 +513,11 @@ where
     E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
 {
-    fn create_elevation_response<RB: AuthResponseBuilder>(
+    fn create_elevation_response<RB: ResponseBuilder>(
         &self,
         builder: RB,
         elevated_token: Self::ElevatedToken,
-    ) -> RB::Response {
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
         // Use the elevated JWT config's cookie name
         let cookie = create_auth_cookie(
             elevated_token.into_string(),

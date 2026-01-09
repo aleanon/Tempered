@@ -1,8 +1,8 @@
 //! Framework-agnostic 2FA verification handler.
 
 use tempered_core::{
-    AuthResponseBuilder, Email, HttpAuthenticationScheme, SupportsTwoFactor, TwoFaAttemptId,
-    TwoFaCode, TwoFaError, UserError,
+    Email, HttpAuthenticationScheme, ResponseBuilder, SupportsTwoFactor, TwoFaAttemptId, TwoFaCode,
+    TwoFaError, UserError,
 };
 
 /// Request data for 2FA verification.
@@ -56,7 +56,7 @@ pub async fn handle_verify_2fa<S, B>(
 ) -> Result<B::Response, Verify2FaError<S::TwoFactorError>>
 where
     S: HttpAuthenticationScheme + SupportsTwoFactor,
-    B: AuthResponseBuilder,
+    B: ResponseBuilder,
 {
     // Parse email
     let email =
@@ -76,7 +76,10 @@ where
         .map_err(Verify2FaError::VerificationFailed)?;
 
     // Create the 2FA success response
-    Ok(scheme.create_2fa_response(builder, token))
+    // ResponseBuilder errors here are programming errors in the scheme implementation
+    Ok(scheme.create_2fa_response(builder, token).expect(
+        "ResponseBuilder error in create_2fa_response - this is a bug in the scheme implementation",
+    ))
 }
 
 /// Errors that can occur during 2FA verification

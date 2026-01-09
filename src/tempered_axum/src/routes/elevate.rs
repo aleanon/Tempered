@@ -3,11 +3,11 @@
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
-use tempered_adapters::handlers;
+use tempered_adapters::{handlers, http::HttpResponseBuilder};
 use tempered_core::{Email, HttpElevationScheme, Password};
 use thiserror::Error;
 
-use crate::adapters::response_builder;
+use crate::adapters::into_axum_response;
 
 /// Axum elevation route.
 ///
@@ -27,11 +27,13 @@ where
     let password = Password::try_from(request.password)
         .map_err(|e| ElevateError::InvalidPassword(e.to_string()))?;
 
-    let builder = response_builder();
+    let builder = HttpResponseBuilder::new();
 
-    handlers::handle_elevate(&scheme, email, password, builder)
+    let http_response = handlers::handle_elevate(&scheme, email, password, builder)
         .await
-        .map_err(ElevateError::Failed)
+        .map_err(ElevateError::Failed)?;
+
+    Ok(into_axum_response(http_response))
 }
 
 /// Axum-specific request body for elevation

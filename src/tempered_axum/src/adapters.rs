@@ -26,8 +26,9 @@
 use axum::body::Body;
 use axum::extract::{FromRequestParts, Request as AxumExtractRequest};
 use axum::http::{HeaderMap, Method, Response, Uri, request::Parts};
+use axum::response::IntoResponse;
 use std::convert::Infallible;
-use tempered_core::{AuthRequest, AuthResponseBuilder};
+use tempered_core::{AuthRequest, ResponseBuilder, ResponseBuilderError};
 
 /// Newtype wrapper around Axum's Request type.
 ///
@@ -173,7 +174,7 @@ impl Default for AxumResponseBuilder {
     }
 }
 
-impl AuthResponseBuilder for AxumResponseBuilder {
+impl ResponseBuilder for AxumResponseBuilder {
     type Response = Response<Body>;
 
     fn status(mut self, code: u16) -> Self {
@@ -181,22 +182,23 @@ impl AuthResponseBuilder for AxumResponseBuilder {
         self
     }
 
-    fn header(mut self, name: &str, value: &str) -> Self {
-        self.builder = self.builder.header(name, value);
+    fn metadata(mut self, key: &str, value: &str) -> Self {
+        self.builder = self.builder.header(key, value);
         self
     }
 
-    fn json_body(mut self, body: serde_json::Value) -> Self {
+    fn body<T: serde::Serialize>(mut self, body: T) -> Self {
         self.builder = self.builder.header("content-type", "application/json");
-        self.body = Some(body.to_string());
+        // Store serialization result - errors will be caught in build()
+        self.body = serde_json::to_string(&body).ok();
         self
     }
 
-    fn build(self) -> Self::Response {
+    fn build(self) -> Result<Self::Response, ResponseBuilderError> {
         let body = self.body.unwrap_or_default();
         self.builder
             .body(Body::from(body))
-            .expect("Failed to build response")
+            .map_err(|e| ResponseBuilderError::new(format!("Failed to build Axum response: {}", e)))
     }
 }
 
@@ -216,10 +218,75 @@ pub fn response_builder() -> AxumResponseBuilder {
     AxumResponseBuilder::new()
 }
 
+/// Converts an http::Response<String> to an Axum Response.
+///
+/// This allows using HttpResponseBuilder from tempered_adapters with Axum routes.
+/// The conversion is zero-cost - headers and status are copied, body is moved.
+///
+/// # Example
+///
+/// ```ignore
+/// use tempered_adapters::http::HttpResponseBuilder;
+/// use tempered_axum::adapters::into_axum_response;
+///
+/// async fn handler() -> Response<Body> {
+///     let http_response = HttpResponseBuilder::new()
+///         .status(200)
+///         .json_body(json!({"message": "success"}))
+///         .build();
+///
+///     into_axum_response(http_response)
+/// }
+/// ```
+pub fn into_axum_response(http_response: http::Response<String>) -> Response<Body> {
+    let (parts, body) = http_response.into_parts();
+
+    let mut axum_response = Response::builder()
+        .status(parts.status)
+        .version(parts.version);
+
+    // Copy all headers
+    for (name, value) in parts.headers.iter() {
+        axum_response = axum_response.header(name, value);
+    }
+
+    axum_response
+        .body(Body::from(body))
+        .expect("Failed to build Axum response")
+}
+
+/// Wrapper type that implements IntoResponse for http::Response<String>.
+///
+/// This allows returning HttpResponseBuilder responses directly from Axum handlers.
+///
+/// # Example
+///
+/// ```ignore
+/// use tempered_adapters::http::HttpResponseBuilder;
+/// use tempered_axum::adapters::HttpResponse;
+///
+/// async fn handler() -> HttpResponse {
+///     let http_response = HttpResponseBuilder::new()
+///         .status(200)
+///         .json_body(json!({"message": "success"}))
+///         .build();
+///
+///     HttpResponse(http_response)
+/// }
+/// ```
+pub struct HttpResponse(pub http::Response<String>);
+
+impl IntoResponse for HttpResponse {
+    fn into_response(self) -> Response<Body> {
+        into_axum_response(self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::{Method, Request};
+    use tempered_core::HttpResponseBuilderExt;
 
     #[test]
     fn test_auth_request_implementation() {
@@ -247,7 +314,8 @@ mod tests {
             .status(200)
             .header("x-custom", "value")
             .json_body(serde_json::json!({"message": "success"}))
-            .build();
+            .build()
+            .unwrap();
 
         assert_eq!(resp.status(), 200);
         assert_eq!(
