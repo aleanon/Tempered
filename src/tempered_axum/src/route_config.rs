@@ -16,30 +16,30 @@ pub trait RouteConfig: Sized {
     fn get_routers(&mut self) -> Routers<Self::Scheme>;
     fn set_routers(&mut self, routers: Routers<Self::Scheme>);
 
-    // Path customization methods
-    fn set_login_path(&mut self, path: String);
-    fn set_logout_path(&mut self, path: String);
-    fn set_verify_token_path(&mut self, path: String);
-    fn get_logout_path(&self) -> String;
-
     // Build method - consumes self and returns final Router
     fn build(self, assets_dir: String, scheme: Self::Scheme) -> Router;
 
-    // Required routes (always present)
-    fn login_route(self) -> Self;
-    fn logout_route(self) -> Self;
+    // Required routes (always present) - paths passed as parameters
+    fn login_route(self, login_path: &str, verify_token_path: &str) -> Self;
+    fn logout_route(self, logout_path: &str) -> Self;
 
-    // Optional routes (default no-op implementations)
-    fn with_signup_route(self) -> Self;
-    fn with_2fa_route(self) -> Self;
-    fn with_elevate_route(self) -> Self;
+    // Optional routes (default no-op implementations) - paths passed as parameters
+    fn with_signup_route(self, _signup_path: Option<&str>) -> Self {
+        self // Default: no-op
+    }
+    fn with_2fa_route(self, _verify_2fa_path: Option<&str>) -> Self {
+        self // Default: no-op
+    }
+    fn with_elevate_route(self, _elevate_path: Option<&str>) -> Self {
+        self // Default: no-op
+    }
 }
 
 // ============================================================================
 // WithSignupRoute
 // ============================================================================
 
-pub fn with_signup_route<R>(instance: R, path: &str) -> impl RouteConfig<Scheme = R::Scheme>
+pub fn with_signup_route<R>(instance: R) -> impl RouteConfig<Scheme = R::Scheme>
 where
     R: RouteConfig,
     R::Scheme: SupportsRegistration,
@@ -47,7 +47,6 @@ where
 {
     struct WithSignupRoute<R: RouteConfig> {
         instance: R,
-        signup_path: String,
     }
 
     impl<R> RouteConfig for WithSignupRoute<R>
@@ -66,68 +65,50 @@ where
             self.instance.set_routers(routers)
         }
 
-        fn set_login_path(&mut self, path: String) {
-            self.instance.set_login_path(path)
-        }
-
-        fn set_logout_path(&mut self, path: String) {
-            self.instance.set_logout_path(path)
-        }
-
-        fn set_verify_token_path(&mut self, path: String) {
-            self.instance.set_verify_token_path(path);
-        }
-
-        fn get_logout_path(&self) -> String {
-            self.instance.get_logout_path()
-        }
-
         fn build(self, assets_dir: String, scheme: Self::Scheme) -> Router {
             self.instance.build(assets_dir, scheme)
         }
 
-        fn login_route(mut self) -> Self {
-            self.instance = self.instance.login_route();
+        fn login_route(mut self, login_path: &str, verify_token_path: &str) -> Self {
+            self.instance = self.instance.login_route(login_path, verify_token_path);
             self
         }
 
-        fn logout_route(mut self) -> Self {
-            self.instance = self.instance.logout_route();
+        fn logout_route(mut self, logout_path: &str) -> Self {
+            self.instance = self.instance.logout_route(logout_path);
             self
         }
 
-        fn with_signup_route(mut self) -> Self {
-            let mut routers = self.get_routers();
-            routers.main_router = routers.main_router.route(
-                &self.signup_path,
-                post(crate::routes::signup::<Self::Scheme>),
-            );
-            self.set_routers(routers);
+        fn with_signup_route(mut self, signup_path: Option<&str>) -> Self {
+            if let Some(path) = signup_path {
+                let mut routers = self.get_routers();
+                routers.main_router = routers
+                    .main_router
+                    .route(path, post(crate::routes::signup::<Self::Scheme>));
+                self.set_routers(routers);
+            }
             self
         }
 
-        fn with_2fa_route(mut self) -> Self {
-            self.instance = self.instance.with_2fa_route();
+        fn with_2fa_route(mut self, verify_2fa_path: Option<&str>) -> Self {
+            self.instance = self.instance.with_2fa_route(verify_2fa_path);
             self
         }
 
-        fn with_elevate_route(mut self) -> Self {
-            self.instance = self.instance.with_elevate_route();
+        fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
+            self.instance = self.instance.with_elevate_route(elevate_path);
             self
         }
     }
 
-    WithSignupRoute {
-        instance,
-        signup_path: path.to_string(),
-    }
+    WithSignupRoute { instance }
 }
 
 // ============================================================================
 // With2FaRoute
 // ============================================================================
 
-pub fn with_2fa_route<R>(instance: R, path: &str) -> impl RouteConfig<Scheme = R::Scheme>
+pub fn with_2fa_route<R>(instance: R) -> impl RouteConfig<Scheme = R::Scheme>
 where
     R: RouteConfig,
     R::Scheme: HttpAuthenticationScheme + SupportsTwoFactor,
@@ -135,7 +116,6 @@ where
 {
     struct With2FaRoute<R: RouteConfig> {
         instance: R,
-        verify_2fa_path: String,
     }
 
     impl<R> RouteConfig for With2FaRoute<R>
@@ -154,61 +134,43 @@ where
             self.instance.set_routers(routers)
         }
 
-        fn set_login_path(&mut self, path: String) {
-            self.instance.set_login_path(path)
-        }
-
-        fn set_logout_path(&mut self, path: String) {
-            self.instance.set_logout_path(path)
-        }
-
-        fn set_verify_token_path(&mut self, path: String) {
-            self.instance.set_verify_token_path(path);
-        }
-
-        fn get_logout_path(&self) -> String {
-            self.instance.get_logout_path()
-        }
-
         fn build(self, assets_dir: String, scheme: Self::Scheme) -> Router {
             self.instance.build(assets_dir, scheme)
         }
 
-        fn login_route(mut self) -> Self {
-            self.instance = self.instance.login_route();
+        fn login_route(mut self, login_path: &str, verify_token_path: &str) -> Self {
+            self.instance = self.instance.login_route(login_path, verify_token_path);
             self
         }
 
-        fn logout_route(mut self) -> Self {
-            self.instance = self.instance.logout_route();
+        fn logout_route(mut self, logout_path: &str) -> Self {
+            self.instance = self.instance.logout_route(logout_path);
             self
         }
 
-        fn with_signup_route(mut self) -> Self {
-            self.instance = self.instance.with_signup_route();
+        fn with_signup_route(mut self, signup_path: Option<&str>) -> Self {
+            self.instance = self.instance.with_signup_route(signup_path);
             self
         }
 
-        fn with_2fa_route(mut self) -> Self {
-            let mut routers = self.get_routers();
-            routers.main_router = routers.main_router.route(
-                &self.verify_2fa_path,
-                post(crate::routes::verify_2fa::<Self::Scheme>),
-            );
-            self.set_routers(routers);
+        fn with_2fa_route(mut self, verify_2fa_path: Option<&str>) -> Self {
+            if let Some(path) = verify_2fa_path {
+                let mut routers = self.get_routers();
+                routers.main_router = routers
+                    .main_router
+                    .route(path, post(crate::routes::verify_2fa::<Self::Scheme>));
+                self.set_routers(routers);
+            }
             self
         }
 
-        fn with_elevate_route(mut self) -> Self {
-            self.instance = self.instance.with_elevate_route();
+        fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
+            self.instance = self.instance.with_elevate_route(elevate_path);
             self
         }
     }
 
-    With2FaRoute {
-        instance,
-        verify_2fa_path: path.to_string(),
-    }
+    With2FaRoute { instance }
 }
 
 // ============================================================================
@@ -217,7 +179,6 @@ where
 
 pub fn with_elevate_route<R, F>(
     instance: R,
-    elevate_path: &str,
     verify_elevated_token_path: &str,
     configure: F,
 ) -> impl RouteConfig<Scheme = R::Scheme>
@@ -235,7 +196,6 @@ where
 {
     struct WithElevateRoute<R: RouteConfig> {
         instance: R,
-        elevate_path: String,
         elevated_router: Option<Router<R::Scheme>>,
     }
 
@@ -261,34 +221,12 @@ where
             self.instance.set_routers(routers)
         }
 
-        fn set_login_path(&mut self, path: String) {
-            self.instance.set_login_path(path)
-        }
-
-        fn set_logout_path(&mut self, path: String) {
-            self.instance.set_logout_path(path)
-        }
-
-        fn set_verify_token_path(&mut self, path: String) {
-            self.instance.set_verify_token_path(path)
-        }
-
-        fn get_logout_path(&self) -> String {
-            self.instance.get_logout_path()
-        }
-
-        fn build(self, assets_dir: String, scheme: Self::Scheme) -> Router {
+        fn build(mut self, assets_dir: String, scheme: Self::Scheme) -> Router {
             use axum::middleware;
             use tower_http::services::{ServeDir, ServeFile};
 
-            let mut config = self
-                .login_route()
-                .logout_route()
-                .with_signup_route()
-                .with_2fa_route()
-                .with_elevate_route();
-
-            let routers = config.get_routers();
+            // Get the routers that have been configured with all routes
+            let routers = self.get_routers();
 
             // Apply middleware to validated routes
             let validated_router = routers
@@ -321,19 +259,18 @@ where
             router.with_state(scheme).fallback_service(assets_service)
         }
 
-        fn login_route(mut self) -> Self {
-            self.instance = self.instance.login_route();
+        fn login_route(mut self, login_path: &str, verify_token_path: &str) -> Self {
+            self.instance = self.instance.login_route(login_path, verify_token_path);
             self
         }
 
-        fn logout_route(mut self) -> Self {
+        fn logout_route(mut self, logout_path: &str) -> Self {
             // Override to use logout_with_elevation since this wrapper supports elevation
-            let logout_path = self.get_logout_path();
             let mut routers = self.get_routers();
 
             // Register logout route with elevation support
             routers.validated_router = routers.validated_router.route(
-                &logout_path,
+                logout_path,
                 post(crate::routes::logout_with_elevation::<Self::Scheme>),
             );
 
@@ -341,31 +278,32 @@ where
             self
         }
 
-        fn with_signup_route(mut self) -> Self {
-            self.instance = self.instance.with_signup_route();
+        fn with_signup_route(mut self, signup_path: Option<&str>) -> Self {
+            self.instance = self.instance.with_signup_route(signup_path);
             self
         }
 
-        fn with_2fa_route(mut self) -> Self {
-            self.instance = self.instance.with_2fa_route();
+        fn with_2fa_route(mut self, verify_2fa_path: Option<&str>) -> Self {
+            self.instance = self.instance.with_2fa_route(verify_2fa_path);
             self
         }
 
-        fn with_elevate_route(mut self) -> Self {
-            let mut routers = self.get_routers();
+        fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
+            if let Some(path) = elevate_path {
+                let mut routers = self.get_routers();
 
-            // Use the pre-configured elevated router from the closure
-            if routers.elevated_router.is_none() && self.elevated_router.is_some() {
-                routers.elevated_router = self.elevated_router.take();
+                // Use the pre-configured elevated router from the closure
+                if routers.elevated_router.is_none() && self.elevated_router.is_some() {
+                    routers.elevated_router = self.elevated_router.take();
 
-                // Add elevate route to validated router
-                routers.validated_router = routers.validated_router.route(
-                    &self.elevate_path,
-                    post(crate::routes::elevate::<Self::Scheme>),
-                );
+                    // Add elevate route to validated router
+                    routers.validated_router = routers
+                        .validated_router
+                        .route(path, post(crate::routes::elevate::<Self::Scheme>));
+                }
+
+                self.set_routers(routers);
             }
-
-            self.set_routers(routers);
             self
         }
     }
@@ -376,7 +314,6 @@ where
 
     WithElevateRoute {
         instance,
-        elevate_path: elevate_path.to_string(),
         elevated_router: Some(configured_elevated.0),
     }
 }

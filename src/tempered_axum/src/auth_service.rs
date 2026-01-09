@@ -21,9 +21,6 @@ where
 {
     struct Instance<S> {
         _schema: PhantomData<S>,
-        login_path: String,
-        logout_path: String,
-        verify_token_path: String,
         main_router: Router<S>,
         validated_router: Router<S>,
         elevated_router: Option<Router<S>>,
@@ -52,45 +49,20 @@ where
             self.elevated_router = routers.elevated_router;
         }
 
-        fn set_login_path(&mut self, path: String) {
-            self.login_path = path;
-        }
-
-        fn set_logout_path(&mut self, path: String) {
-            self.logout_path = path;
-        }
-
-        fn set_verify_token_path(&mut self, path: String) {
-            self.verify_token_path = path;
-        }
-
-        fn get_logout_path(&self) -> String {
-            self.logout_path.clone()
-        }
-
         fn build(self, assets_dir: String, scheme: S) -> Router {
             use axum::middleware;
             use tower_http::services::{ServeDir, ServeFile};
 
-            // Register required routes by calling trait methods
-            let configured = self
-                .login_route()
-                .logout_route()
-                .with_signup_route()
-                .with_2fa_route()
-                .with_elevate_route();
-
+            // Note: This build() should not be called directly on Instance
+            // AuthService manages the build process and passes paths
             // Apply middleware to validated routes
-            let validated_router =
-                configured
-                    .validated_router
-                    .layer(middleware::from_fn_with_state(
-                        scheme.clone(),
-                        crate::middleware::validate_token::<S>,
-                    ));
+            let validated_router = self.validated_router.layer(middleware::from_fn_with_state(
+                scheme.clone(),
+                crate::middleware::validate_token::<S>,
+            ));
 
             // Merge all routers
-            let router = configured.main_router.merge(validated_router);
+            let router = self.main_router.merge(validated_router);
 
             // Static assets
             let assets_service = ServeDir::new(&assets_dir)
@@ -100,42 +72,27 @@ where
             router.with_state(scheme).fallback_service(assets_service)
         }
 
-        fn login_route(mut self) -> Self {
+        fn login_route(mut self, login_path: &str, verify_token_path: &str) -> Self {
             self.main_router = self
                 .main_router
-                .route(&self.login_path, post(crate::routes::login::<S>));
+                .route(login_path, post(crate::routes::login::<S>));
             self.validated_router = self.validated_router.route(
-                &self.verify_token_path,
+                verify_token_path,
                 post(crate::routes::verify_token::<Self::Scheme>),
             );
             self
         }
 
-        fn logout_route(mut self) -> Self {
+        fn logout_route(mut self, logout_path: &str) -> Self {
             self.validated_router = self
                 .validated_router
-                .route(&self.logout_path, post(crate::routes::logout::<S>));
-            self
-        }
-
-        fn with_signup_route(self) -> Self {
-            self
-        }
-
-        fn with_2fa_route(self) -> Self {
-            self
-        }
-
-        fn with_elevate_route(self) -> Self {
+                .route(logout_path, post(crate::routes::logout::<S>));
             self
         }
     }
 
     let instance = Instance {
         _schema: PhantomData,
-        login_path: "/login".to_string(),
-        logout_path: "/logout".to_string(),
-        verify_token_path: "/verify-token".to_string(),
         main_router: Router::new(),
         validated_router: Router::new(),
         elevated_router: None,
@@ -145,6 +102,12 @@ where
         instance,
         assets_dir,
         schema,
+        login_path: "/login".to_string(),
+        logout_path: "/logout".to_string(),
+        verify_token_path: "/verify-token".to_string(),
+        signup_path: None,
+        verify_2fa_path: None,
+        elevate_path: None,
     }
 }
 
@@ -152,6 +115,12 @@ pub struct AuthService<R: RouteConfig> {
     instance: R,
     assets_dir: String,
     schema: R::Scheme,
+    login_path: String,
+    logout_path: String,
+    verify_token_path: String,
+    signup_path: Option<String>,
+    verify_2fa_path: Option<String>,
+    elevate_path: Option<String>,
 }
 
 impl<R> AuthService<R>
@@ -161,27 +130,36 @@ where
     /// Overrides the default login path
     pub fn login_route(mut self, path: &str) -> Self {
         validate_path(path);
-        self.instance.set_login_path(path.to_string());
+        self.login_path = path.to_string();
         self
     }
 
     /// Overrides the default logout path
     pub fn logout_route(mut self, path: &str) -> Self {
         validate_path(path);
-        self.instance.set_logout_path(path.to_string());
+        self.logout_path = path.to_string();
         self
     }
 
     /// Overrides the default verify token path
     pub fn verify_token_route(mut self, path: &str) -> Self {
         validate_path(path);
-        self.instance.set_verify_token_path(path.to_string());
+        self.verify_token_path = path.to_string();
         self
     }
 
     /// Runs the Authentication Service as a standalone axum server
     pub async fn run(self, listener: TcpListener) -> Result<(), std::io::Error> {
-        let router = self.instance.build(self.assets_dir, self.schema);
+        // Register routes by calling trait methods with stored paths
+        let configured = self
+            .instance
+            .login_route(&self.login_path, &self.verify_token_path)
+            .logout_route(&self.logout_path)
+            .with_signup_route(self.signup_path.as_deref())
+            .with_2fa_route(self.verify_2fa_path.as_deref())
+            .with_elevate_route(self.elevate_path.as_deref());
+
+        let router = configured.build(self.assets_dir, self.schema);
 
         info!(
             "listening on {}",
@@ -211,9 +189,15 @@ where
         validate_path(&path);
 
         AuthService {
-            instance: route_config::with_signup_route(self.instance, path),
+            instance: route_config::with_signup_route(self.instance),
             assets_dir: self.assets_dir,
             schema: self.schema,
+            login_path: self.login_path,
+            logout_path: self.logout_path,
+            verify_token_path: self.verify_token_path,
+            signup_path: Some(path.to_string()),
+            verify_2fa_path: self.verify_2fa_path,
+            elevate_path: self.elevate_path,
         }
     }
 }
@@ -231,9 +215,15 @@ where
         validate_path(&path);
 
         AuthService {
-            instance: route_config::with_2fa_route(self.instance, path),
+            instance: route_config::with_2fa_route(self.instance),
             assets_dir: self.assets_dir,
             schema: self.schema,
+            login_path: self.login_path,
+            logout_path: self.logout_path,
+            verify_token_path: self.verify_token_path,
+            signup_path: self.signup_path,
+            verify_2fa_path: Some(path.to_string()),
+            elevate_path: self.elevate_path,
         }
     }
 }
@@ -269,12 +259,17 @@ where
         AuthService {
             instance: route_config::with_elevate_route(
                 self.instance,
-                elevate_path,
                 verify_elevated_token_path,
                 configure,
             ),
             assets_dir: self.assets_dir,
             schema: self.schema,
+            login_path: self.login_path,
+            logout_path: self.logout_path,
+            verify_token_path: self.verify_token_path,
+            signup_path: self.signup_path,
+            verify_2fa_path: self.verify_2fa_path,
+            elevate_path: Some(elevate_path.to_string()),
         }
     }
 }
@@ -284,7 +279,16 @@ where
     R: RouteConfig,
 {
     fn into(self) -> Router {
-        self.instance.build(self.assets_dir, self.schema)
+        // Register routes by calling trait methods with stored paths
+        let configured = self
+            .instance
+            .login_route(&self.login_path, &self.verify_token_path)
+            .logout_route(&self.logout_path)
+            .with_signup_route(self.signup_path.as_deref())
+            .with_2fa_route(self.verify_2fa_path.as_deref())
+            .with_elevate_route(self.elevate_path.as_deref());
+
+        configured.build(self.assets_dir, self.schema)
     }
 }
 
