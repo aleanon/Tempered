@@ -10,6 +10,7 @@ pub mod strategies;
 pub use domain::{
     email::Email,
     password::Password,
+    password_reset_token::PasswordResetToken,
     two_fa_attempt_id::TwoFaAttemptId,
     two_fa_code::TwoFaCode,
     two_fa_error::TwoFaError,
@@ -18,7 +19,8 @@ pub use domain::{
 
 pub use ports::{
     repositories::{
-        BannedTokenStore, BannedTokenStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
+        BannedTokenStore, BannedTokenStoreError, PasswordResetTokenStore,
+        PasswordResetTokenStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
         UserStoreError,
     },
     services::EmailClient,

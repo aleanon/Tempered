@@ -1,7 +1,8 @@
 use axum::{Router, routing::post};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    IntoStatusMessage, SupportsElevation, SupportsRegistration, SupportsTwoFactor,
+    IntoStatusMessage, SupportsElevation, SupportsPasswordReset, SupportsRegistration,
+    SupportsTwoFactor,
 };
 
 pub struct Routers<Scheme> {
@@ -31,6 +32,13 @@ pub trait RouteConfig: Sized {
         self // Default: no-op
     }
     fn with_elevate_route(self, _elevate_path: Option<&str>) -> Self {
+        self // Default: no-op
+    }
+    fn with_password_reset_route(
+        self,
+        _initiate_path: Option<&str>,
+        _complete_path: Option<&str>,
+    ) -> Self {
         self // Default: no-op
     }
 }
@@ -97,6 +105,15 @@ where
 
         fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
             self.instance = self.instance.with_elevate_route(elevate_path);
+            self
+        }
+
+        fn with_password_reset_route(
+            mut self,
+            initiate_path: Option<&str>,
+            complete_path: Option<&str>,
+        ) -> Self {
+            self.instance = self.instance.with_password_reset_route(initiate_path, complete_path);
             self
         }
     }
@@ -166,6 +183,15 @@ where
 
         fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
             self.instance = self.instance.with_elevate_route(elevate_path);
+            self
+        }
+
+        fn with_password_reset_route(
+            mut self,
+            initiate_path: Option<&str>,
+            complete_path: Option<&str>,
+        ) -> Self {
+            self.instance = self.instance.with_password_reset_route(initiate_path, complete_path);
             self
         }
     }
@@ -306,6 +332,15 @@ where
             }
             self
         }
+
+        fn with_password_reset_route(
+            mut self,
+            initiate_path: Option<&str>,
+            complete_path: Option<&str>,
+        ) -> Self {
+            self.instance = self.instance.with_password_reset_route(initiate_path, complete_path);
+            self
+        }
     }
 
     // Create ElevatedRouter and pass to closure for configuration
@@ -316,4 +351,87 @@ where
         instance,
         elevated_router: Some(configured_elevated.0),
     }
+}
+
+// ============================================================================
+// WithPasswordResetRoute
+// ============================================================================
+
+pub fn with_password_reset_route<R>(instance: R) -> impl RouteConfig<Scheme = R::Scheme>
+where
+    R: RouteConfig,
+    R::Scheme: SupportsPasswordReset,
+{
+    struct WithPasswordResetRoute<R: RouteConfig> {
+        instance: R,
+    }
+
+    impl<R> RouteConfig for WithPasswordResetRoute<R>
+    where
+        R: RouteConfig,
+        R::Scheme: SupportsPasswordReset,
+    {
+        type Scheme = R::Scheme;
+
+        fn get_routers(&mut self) -> Routers<Self::Scheme> {
+            self.instance.get_routers()
+        }
+
+        fn set_routers(&mut self, routers: Routers<Self::Scheme>) {
+            self.instance.set_routers(routers)
+        }
+
+        fn build(self, assets_dir: String, scheme: Self::Scheme) -> Router {
+            self.instance.build(assets_dir, scheme)
+        }
+
+        fn login_route(mut self, login_path: &str, verify_token_path: &str) -> Self {
+            self.instance = self.instance.login_route(login_path, verify_token_path);
+            self
+        }
+
+        fn logout_route(mut self, logout_path: &str) -> Self {
+            self.instance = self.instance.logout_route(logout_path);
+            self
+        }
+
+        fn with_signup_route(mut self, signup_path: Option<&str>) -> Self {
+            self.instance = self.instance.with_signup_route(signup_path);
+            self
+        }
+
+        fn with_2fa_route(mut self, verify_2fa_path: Option<&str>) -> Self {
+            self.instance = self.instance.with_2fa_route(verify_2fa_path);
+            self
+        }
+
+        fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
+            self.instance = self.instance.with_elevate_route(elevate_path);
+            self
+        }
+
+        fn with_password_reset_route(
+            mut self,
+            initiate_path: Option<&str>,
+            complete_path: Option<&str>,
+        ) -> Self {
+            if let (Some(initiate), Some(complete)) = (initiate_path, complete_path) {
+                let mut routers = self.get_routers();
+                routers.main_router = routers
+                    .main_router
+                    .route(
+                        initiate,
+                        post(crate::routes::initiate_password_reset::<Self::Scheme>),
+                    )
+                    .route(
+                        complete,
+                        post(crate::routes::complete_password_reset::<Self::Scheme>),
+                    );
+                self.set_routers(routers);
+            }
+            self
+        }
+    }
+
+    WithPasswordResetRoute { instance }
 }

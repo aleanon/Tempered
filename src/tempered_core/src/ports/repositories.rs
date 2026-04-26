@@ -4,6 +4,7 @@ use thiserror::Error;
 use crate::domain::{
     email::Email,
     password::Password,
+    password_reset_token::PasswordResetToken,
     two_fa_attempt_id::TwoFaAttemptId,
     two_fa_code::TwoFaCode,
     user::{User, ValidatedUser},
@@ -88,6 +89,36 @@ impl PartialEq for TwoFaCodeStoreError {
             _ => false,
         }
     }
+}
+
+// PasswordResetTokenStore port trait and errors
+//
+// Maps token → email so complete_password_reset can recover the email from only the token.
+#[derive(Debug, Error)]
+pub enum PasswordResetTokenStoreError {
+    #[error("Token not found")]
+    TokenNotFound,
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+#[async_trait]
+pub trait PasswordResetTokenStore: Send + Sync {
+    async fn store_token(
+        &self,
+        token: PasswordResetToken,
+        email: Email,
+    ) -> Result<(), PasswordResetTokenStoreError>;
+
+    async fn get_email_for_token(
+        &self,
+        token: &PasswordResetToken,
+    ) -> Result<Email, PasswordResetTokenStoreError>;
+
+    async fn delete_token(
+        &self,
+        token: &PasswordResetToken,
+    ) -> Result<(), PasswordResetTokenStoreError>;
 }
 
 #[async_trait]

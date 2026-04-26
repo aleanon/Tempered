@@ -3,7 +3,8 @@ use std::marker::PhantomData;
 use axum::{Router, routing::post};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    IntoStatusMessage, SupportsElevation, SupportsRegistration, SupportsTwoFactor,
+    IntoStatusMessage, SupportsElevation, SupportsPasswordReset, SupportsRegistration,
+    SupportsTwoFactor,
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -108,6 +109,8 @@ where
         signup_path: None,
         verify_2fa_path: None,
         elevate_path: None,
+        password_reset_initiate_path: None,
+        password_reset_complete_path: None,
     }
 }
 
@@ -121,6 +124,8 @@ pub struct AuthService<R: RouteConfig> {
     signup_path: Option<String>,
     verify_2fa_path: Option<String>,
     elevate_path: Option<String>,
+    password_reset_initiate_path: Option<String>,
+    password_reset_complete_path: Option<String>,
 }
 
 impl<R> AuthService<R>
@@ -157,7 +162,11 @@ where
             .logout_route(&self.logout_path)
             .with_signup_route(self.signup_path.as_deref())
             .with_2fa_route(self.verify_2fa_path.as_deref())
-            .with_elevate_route(self.elevate_path.as_deref());
+            .with_elevate_route(self.elevate_path.as_deref())
+            .with_password_reset_route(
+                self.password_reset_initiate_path.as_deref(),
+                self.password_reset_complete_path.as_deref(),
+            );
 
         let router = configured.build(self.assets_dir, self.schema);
 
@@ -198,6 +207,8 @@ where
             signup_path: Some(path.to_string()),
             verify_2fa_path: self.verify_2fa_path,
             elevate_path: self.elevate_path,
+            password_reset_initiate_path: self.password_reset_initiate_path,
+            password_reset_complete_path: self.password_reset_complete_path,
         }
     }
 }
@@ -224,6 +235,41 @@ where
             signup_path: self.signup_path,
             verify_2fa_path: Some(path.to_string()),
             elevate_path: self.elevate_path,
+            password_reset_initiate_path: self.password_reset_initiate_path,
+            password_reset_complete_path: self.password_reset_complete_path,
+        }
+    }
+}
+
+impl<R> AuthService<R>
+where
+    R: RouteConfig,
+    R::Scheme: SupportsPasswordReset,
+{
+    /// Adds password reset routes (initiate + complete) to the service.
+    pub fn with_password_reset(
+        self,
+        initiate_path: Option<&str>,
+        complete_path: Option<&str>,
+    ) -> AuthService<impl RouteConfig<Scheme = R::Scheme>> {
+        let initiate_path = initiate_path.unwrap_or("/password-reset/initiate");
+        let complete_path = complete_path.unwrap_or("/password-reset/complete");
+
+        validate_path(initiate_path);
+        validate_path(complete_path);
+
+        AuthService {
+            instance: route_config::with_password_reset_route(self.instance),
+            assets_dir: self.assets_dir,
+            schema: self.schema,
+            login_path: self.login_path,
+            logout_path: self.logout_path,
+            verify_token_path: self.verify_token_path,
+            signup_path: self.signup_path,
+            verify_2fa_path: self.verify_2fa_path,
+            elevate_path: self.elevate_path,
+            password_reset_initiate_path: Some(initiate_path.to_string()),
+            password_reset_complete_path: Some(complete_path.to_string()),
         }
     }
 }
@@ -270,6 +316,8 @@ where
             signup_path: self.signup_path,
             verify_2fa_path: self.verify_2fa_path,
             elevate_path: Some(elevate_path.to_string()),
+            password_reset_initiate_path: self.password_reset_initiate_path,
+            password_reset_complete_path: self.password_reset_complete_path,
         }
     }
 }
@@ -286,7 +334,11 @@ where
             .logout_route(&self.logout_path)
             .with_signup_route(self.signup_path.as_deref())
             .with_2fa_route(self.verify_2fa_path.as_deref())
-            .with_elevate_route(self.elevate_path.as_deref());
+            .with_elevate_route(self.elevate_path.as_deref())
+            .with_password_reset_route(
+                self.password_reset_initiate_path.as_deref(),
+                self.password_reset_complete_path.as_deref(),
+            );
 
         configured.build(self.assets_dir, self.schema)
     }

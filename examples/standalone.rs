@@ -4,9 +4,8 @@ use secrecy::ExposeSecret;
 use sqlx::postgres::PgPoolOptions;
 use std::{sync::Arc, time::Duration};
 use tempered::{
-    Email, EmailClient, HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
-    JwtAuthConfig, JwtScheme, MockEmailClient, PostgresUserStore, PostmarkEmailClient,
-    RedisBannedTokenStore, RedisTwoFaCodeStore, Secret, async_trait,
+    Email, EmailClient, HashMapPasswordResetTokenStore, HashMapTwoFaCodeStore, HashMapUserStore,
+    HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, Secret, async_trait,
 };
 use tempered_axum::auth_service::auth_service;
 use tokio::sync::RwLock;
@@ -41,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let banned_token_store = HashSetBannedTokenStore::new();
     let elevated_banned_token_store = HashSetBannedTokenStore::new();
+    let password_reset_token_store = HashMapPasswordResetTokenStore::new();
 
     // Create the JwtScheme with all required stores
     let jwt_scheme = JwtScheme::new(
@@ -51,6 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         jwt_config,
         elevated_banned_token_store,
         elevated_jwt_config,
+        password_reset_token_store,
     );
 
     // Create the auth service using the library
@@ -68,7 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .with_change_password(Some("/change-password"))
                     .with_delete_account(Some("/delete-account"))
             },
-        );
+        )
+        .with_password_reset(None, None);
 
     // Run as standalone server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;

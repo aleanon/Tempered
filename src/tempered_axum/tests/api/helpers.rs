@@ -13,7 +13,7 @@ use tempered_adapters::{
     authentication::jwt_scheme::JwtScheme,
     email::PostmarkEmailClient,
     persistence::{
-        PostgresUserStore, RedisBannedTokenStore, RedisTwoFaCodeStore,
+        PostgresUserStore, RedisBannedTokenStore, RedisPasswordResetTokenStore, RedisTwoFaCodeStore,
         postgres_user_store::get_postgres_pool,
     },
 };
@@ -57,7 +57,8 @@ impl TestApp {
         let redis_connection = Arc::new(RwLock::new(redis_connection));
 
         let banned_token_store = RedisBannedTokenStore::new(redis_connection.clone(), 600);
-        let two_fa_code_store = RedisTwoFaCodeStore::new(redis_connection);
+        let two_fa_code_store = RedisTwoFaCodeStore::new(redis_connection.clone());
+        let password_reset_token_store = RedisPasswordResetTokenStore::new(redis_connection);
 
         let email_server = MockServer::start().await;
         let base_url = email_server.uri();
@@ -89,6 +90,7 @@ impl TestApp {
             jwt_config,
             banned_token_store.clone(),
             elevated_jwt_config,
+            password_reset_token_store,
         );
 
         let listener = TcpListener::bind("127.0.0.1:0")

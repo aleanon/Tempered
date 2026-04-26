@@ -80,8 +80,9 @@ pub use tempered_adapters::{
     authentication::jwt_scheme::JwtScheme,
     email::{MockEmailClient, PostmarkEmailClient},
     persistence::{
-        HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore, PostgresUserStore,
-        RedisBannedTokenStore, RedisTwoFaCodeStore,
+        HashMapPasswordResetTokenStore, HashMapTwoFaCodeStore, HashMapUserStore,
+        HashSetBannedTokenStore, PostgresUserStore, RedisBannedTokenStore,
+        RedisPasswordResetTokenStore, RedisTwoFaCodeStore,
     },
 };
 
