@@ -3,8 +3,8 @@ use std::marker::PhantomData;
 use axum::{Router, routing::post};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    IntoStatusMessage, SupportsElevation, SupportsPasswordReset, SupportsRegistration,
-    SupportsTwoFactor,
+    IntoStatusMessage, RequiresEmailVerification, SupportsElevation, SupportsPasswordReset,
+    SupportsRegistration, SupportsTwoFactor,
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -111,6 +111,7 @@ where
         elevate_path: None,
         password_reset_initiate_path: None,
         password_reset_complete_path: None,
+        email_verification_path: None,
     }
 }
 
@@ -126,6 +127,7 @@ pub struct AuthService<R: RouteConfig> {
     elevate_path: Option<String>,
     password_reset_initiate_path: Option<String>,
     password_reset_complete_path: Option<String>,
+    email_verification_path: Option<String>,
 }
 
 impl<R> AuthService<R>
@@ -166,7 +168,8 @@ where
             .with_password_reset_route(
                 self.password_reset_initiate_path.as_deref(),
                 self.password_reset_complete_path.as_deref(),
-            );
+            )
+            .with_email_verification_route(self.email_verification_path.as_deref());
 
         let router = configured.build(self.assets_dir, self.schema);
 
@@ -209,6 +212,7 @@ where
             elevate_path: self.elevate_path,
             password_reset_initiate_path: self.password_reset_initiate_path,
             password_reset_complete_path: self.password_reset_complete_path,
+            email_verification_path: self.email_verification_path,
         }
     }
 }
@@ -237,6 +241,7 @@ where
             elevate_path: self.elevate_path,
             password_reset_initiate_path: self.password_reset_initiate_path,
             password_reset_complete_path: self.password_reset_complete_path,
+            email_verification_path: self.email_verification_path,
         }
     }
 }
@@ -270,6 +275,7 @@ where
             elevate_path: self.elevate_path,
             password_reset_initiate_path: Some(initiate_path.to_string()),
             password_reset_complete_path: Some(complete_path.to_string()),
+            email_verification_path: self.email_verification_path,
         }
     }
 }
@@ -318,6 +324,7 @@ where
             elevate_path: Some(elevate_path.to_string()),
             password_reset_initiate_path: self.password_reset_initiate_path,
             password_reset_complete_path: self.password_reset_complete_path,
+            email_verification_path: self.email_verification_path,
         }
     }
 }
@@ -338,9 +345,46 @@ where
             .with_password_reset_route(
                 self.password_reset_initiate_path.as_deref(),
                 self.password_reset_complete_path.as_deref(),
-            );
+            )
+            .with_email_verification_route(self.email_verification_path.as_deref());
 
         configured.build(self.assets_dir, self.schema)
+    }
+}
+
+impl<R> AuthService<R>
+where
+    R: RouteConfig,
+    R::Scheme: RequiresEmailVerification,
+    <R::Scheme as RequiresEmailVerification>::EmailVerificationError: IntoStatusMessage,
+{
+    /// Adds an email verification route to the service.
+    ///
+    /// After registering, call [`RequiresEmailVerification::initiate_email_verification`]
+    /// (e.g. from a custom signup handler) to send the verification email.
+    /// The user then POSTs the token to this route to verify their address.
+    pub fn with_email_verification(
+        self,
+        path: Option<&str>,
+    ) -> AuthService<impl RouteConfig<Scheme = R::Scheme>> {
+        let path = path.unwrap_or("/verify-email");
+
+        validate_path(path);
+
+        AuthService {
+            instance: route_config::with_email_verification_route(self.instance),
+            assets_dir: self.assets_dir,
+            schema: self.schema,
+            login_path: self.login_path,
+            logout_path: self.logout_path,
+            verify_token_path: self.verify_token_path,
+            signup_path: self.signup_path,
+            verify_2fa_path: self.verify_2fa_path,
+            elevate_path: self.elevate_path,
+            password_reset_initiate_path: self.password_reset_initiate_path,
+            password_reset_complete_path: self.password_reset_complete_path,
+            email_verification_path: Some(path.to_string()),
+        }
     }
 }
 

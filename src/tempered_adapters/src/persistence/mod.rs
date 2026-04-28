@@ -5,6 +5,7 @@ pub mod redis_password_reset_token_store;
 pub mod redis_two_fa_code_store;
 
 // Test-only persistence adapters
+pub mod hashmap_email_verification_token_store;
 pub mod hashmap_password_reset_token_store;
 pub mod hashmap_two_fa_code_store;
 pub mod hashmap_user_store;
@@ -16,6 +17,7 @@ pub use redis_banned_token_store::RedisBannedTokenStore;
 pub use redis_password_reset_token_store::RedisPasswordResetTokenStore;
 pub use redis_two_fa_code_store::RedisTwoFaCodeStore;
 
+pub use hashmap_email_verification_token_store::HashMapEmailVerificationTokenStore;
 pub use hashmap_password_reset_token_store::HashMapPasswordResetTokenStore;
 pub use hashmap_two_fa_code_store::HashMapTwoFaCodeStore;
 pub use hashmap_user_store::HashMapUserStore;

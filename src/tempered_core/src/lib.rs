@@ -9,6 +9,7 @@ pub mod strategies;
 // Re-export commonly used types for convenience
 pub use domain::{
     email::Email,
+    email_verification_token::EmailVerificationToken,
     password::Password,
     password_reset_token::PasswordResetToken,
     two_fa_attempt_id::TwoFaAttemptId,
@@ -19,9 +20,9 @@ pub use domain::{
 
 pub use ports::{
     repositories::{
-        BannedTokenStore, BannedTokenStoreError, PasswordResetTokenStore,
-        PasswordResetTokenStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
-        UserStoreError,
+        BannedTokenStore, BannedTokenStoreError, EmailVerificationStoreError,
+        EmailVerificationTokenStore, PasswordResetTokenStore, PasswordResetTokenStoreError,
+        TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError,
     },
     services::EmailClient,
 };
@@ -29,9 +30,9 @@ pub use ports::{
 pub use strategies::{
     auth_validator::AuthValidator,
     authenticator::{
-        AuthenticationScheme, LoginOutcome, SupportsAccountDeletion, SupportsElevation,
-        SupportsOAuth2, SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
-        SupportsTokenRevocation, SupportsTwoFactor,
+        AuthenticationScheme, LoginOutcome, RequiresEmailVerification, SupportsAccountDeletion,
+        SupportsElevation, SupportsOAuth2, SupportsPasswordChange, SupportsPasswordReset,
+        SupportsRegistration, SupportsTokenRevocation, SupportsTwoFactor,
     },
 };
 

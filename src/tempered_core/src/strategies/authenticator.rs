@@ -294,6 +294,39 @@ pub trait SupportsPasswordChange: AuthenticationScheme {
 }
 
 // ============================================================================
+// Optional Capability: Email Verification
+// ============================================================================
+
+/// Optional trait for authentication schemes that require users to verify their email.
+///
+/// Schemes implementing this can send verification emails after registration and
+/// validate verification tokens submitted by the user.  Whether login is blocked
+/// for unverified users is the application's responsibility — this trait only
+/// exposes the verification flow itself.
+#[async_trait]
+pub trait RequiresEmailVerification: AuthenticationScheme {
+    /// Errors that can occur during email verification
+    type EmailVerificationError: std::error::Error + Send + Sync + 'static;
+
+    /// Generate a verification token, persist it, and send the verification email.
+    ///
+    /// Typically called right after a new user registers.
+    async fn initiate_email_verification(
+        &self,
+        email: Email,
+    ) -> Result<(), Self::EmailVerificationError>;
+
+    /// Verify the email by consuming the token from the verification link.
+    async fn verify_email(&self, token: String) -> Result<(), Self::EmailVerificationError>;
+
+    /// Returns `true` if the given email address has been verified.
+    async fn is_email_verified(
+        &self,
+        email: &Email,
+    ) -> Result<bool, Self::EmailVerificationError>;
+}
+
+// ============================================================================
 // Optional Capability: Account Deletion
 // ============================================================================
 

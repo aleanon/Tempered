@@ -14,6 +14,7 @@ pub mod logout;
 pub mod signup;
 pub mod verify_2fa;
 pub mod verify_elevated_token;
+pub mod verify_email;
 pub mod verify_token;
 
 pub use change_password::handle_change_password;
@@ -26,4 +27,5 @@ pub use logout::{handle_logout, handle_logout_with_elevation};
 pub use signup::handle_signup;
 pub use verify_2fa::handle_verify_2fa;
 pub use verify_elevated_token::handle_verify_elevated_token;
+pub use verify_email::handle_verify_email;
 pub use verify_token::handle_verify_token;

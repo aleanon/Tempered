@@ -30,7 +30,8 @@ pub mod core {
 
 // Re-export most commonly used core types at the root level
 pub use tempered_core::{
-    Email, Password, TwoFaAttemptId, TwoFaCode, TwoFaError, User, UserError, ValidatedUser,
+    Email, EmailVerificationToken, Password, TwoFaAttemptId, TwoFaCode, TwoFaError, User,
+    UserError, ValidatedUser,
 };
 
 // ============================================================================
@@ -47,7 +48,8 @@ pub mod repositories {
 
 // Re-export repository traits at root level
 pub use core::{
-    BannedTokenStore, BannedTokenStoreError, EmailClient, TwoFaCodeStore, TwoFaCodeStoreError,
+    BannedTokenStore, BannedTokenStoreError, EmailClient, EmailVerificationStoreError,
+    EmailVerificationTokenStore, RequiresEmailVerification, TwoFaCodeStore, TwoFaCodeStoreError,
     UserStore, UserStoreError,
 };
 
@@ -80,8 +82,8 @@ pub use tempered_adapters::{
     authentication::jwt_scheme::JwtScheme,
     email::{MockEmailClient, PostmarkEmailClient},
     persistence::{
-        HashMapPasswordResetTokenStore, HashMapTwoFaCodeStore, HashMapUserStore,
-        HashSetBannedTokenStore, PostgresUserStore, RedisBannedTokenStore,
+        HashMapEmailVerificationTokenStore, HashMapPasswordResetTokenStore, HashMapTwoFaCodeStore,
+        HashMapUserStore, HashSetBannedTokenStore, PostgresUserStore, RedisBannedTokenStore,
         RedisPasswordResetTokenStore, RedisTwoFaCodeStore,
     },
 };

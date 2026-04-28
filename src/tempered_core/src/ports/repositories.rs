@@ -3,6 +3,7 @@ use thiserror::Error;
 
 use crate::domain::{
     email::Email,
+    email_verification_token::EmailVerificationToken,
     password::Password,
     password_reset_token::PasswordResetToken,
     two_fa_attempt_id::TwoFaAttemptId,
@@ -119,6 +120,38 @@ pub trait PasswordResetTokenStore: Send + Sync {
         &self,
         token: &PasswordResetToken,
     ) -> Result<(), PasswordResetTokenStoreError>;
+}
+
+// EmailVerificationTokenStore port trait and errors
+#[derive(Debug, Error)]
+pub enum EmailVerificationStoreError {
+    #[error("Token not found or expired")]
+    TokenNotFound,
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+/// Maps verification tokens to emails (pending verifications) and tracks verified status.
+#[async_trait]
+pub trait EmailVerificationTokenStore: Send + Sync {
+    /// Store a pending verification token for the given email.
+    async fn store_pending_verification(
+        &self,
+        token: EmailVerificationToken,
+        email: Email,
+    ) -> Result<(), EmailVerificationStoreError>;
+
+    /// Retrieve and remove the email associated with a token.
+    async fn consume_token(
+        &self,
+        token: &EmailVerificationToken,
+    ) -> Result<Email, EmailVerificationStoreError>;
+
+    /// Mark an email address as verified.
+    async fn mark_verified(&self, email: &Email) -> Result<(), EmailVerificationStoreError>;
+
+    /// Check whether the email address has been verified.
+    async fn is_verified(&self, email: &Email) -> Result<bool, EmailVerificationStoreError>;
 }
 
 #[async_trait]
