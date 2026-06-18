@@ -30,8 +30,9 @@ pub mod core {
 
 // Re-export most commonly used core types at the root level
 pub use tempered_core::{
-    Email, EmailVerificationToken, Password, TwoFaAttemptId, TwoFaCode, TwoFaError, User,
-    UserError, ValidatedUser,
+    ApiKeyId, CredentialId, Email, EmailVerificationToken, OAuthProviderConfig, OAuthUserInfo,
+    PasskeyCredential, Password, SessionId, TwoFaAttemptId, TwoFaCode, TwoFaError, User, UserError,
+    ValidatedUser, WebAuthnChallenge,
 };
 
 // ============================================================================
@@ -48,9 +49,12 @@ pub mod repositories {
 
 // Re-export repository traits at root level
 pub use core::{
-    BannedTokenStore, BannedTokenStoreError, EmailClient, EmailVerificationStoreError,
-    EmailVerificationTokenStore, RequiresEmailVerification, TwoFaCodeStore, TwoFaCodeStoreError,
-    UserStore, UserStoreError,
+    ApiKeyStore, ApiKeyStoreError, BannedTokenStore, BannedTokenStoreError, ChallengeStore,
+    ChallengeStoreError, EmailClient, EmailVerificationStoreError, EmailVerificationTokenStore,
+    OAuthHttpClient, OAuthHttpError, OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore,
+    PasskeyStoreError, RequiresEmailVerification, SessionStore, SessionStoreError,
+    SupportsApiKeyIssuance, TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError,
+    WebAuthnVerifier,
 };
 
 // ============================================================================
@@ -79,10 +83,16 @@ pub mod adapters {
 // Re-export commonly used adapters at root level
 pub use tempered_adapters::{
     auth_validation::local_jwt_validator::JwtAuthConfig,
+    authentication::api_key_scheme::ApiKeyScheme,
     authentication::jwt_scheme::JwtScheme,
+    authentication::session_scheme::{SessionConfig, SessionScheme},
     email::{MockEmailClient, PostmarkEmailClient},
+    oauth::{AuthorizationRequest, OAuthFlow, OAuthFlowError, ReqwestOAuthHttpClient},
+    passkey::{PasskeyFlow, PasskeyFlowError},
     persistence::{
-        HashMapEmailVerificationTokenStore, HashMapPasswordResetTokenStore, HashMapTwoFaCodeStore,
+        HashMapApiKeyStore, HashMapChallengeStore, HashMapEmailVerificationTokenStore,
+        HashMapOAuthIdentityStore, HashMapOAuthStateStore, HashMapPasskeyCredentialStore,
+        HashMapPasswordResetTokenStore, HashMapSessionStore, HashMapTwoFaCodeStore,
         HashMapUserStore, HashSetBannedTokenStore, PostgresUserStore, RedisBannedTokenStore,
         RedisPasswordResetTokenStore, RedisTwoFaCodeStore,
     },
