@@ -19,6 +19,20 @@ use tempered_core::{
 };
 use thiserror::Error;
 
+/// The result of [`OAuthFlow::begin`].
+///
+/// `state` must be **bound to the initiating browser** by the delivery layer —
+/// set it as an `HttpOnly; Secure; SameSite=Lax` cookie (e.g. `oauth_state`) on
+/// the redirect response. On the callback, pass that cookie's value to
+/// [`OAuthFlow::complete`] as `cookie_state`; the flow rejects the request
+/// unless it matches the `state` query parameter. Without this binding the
+/// server-side store alone would let any browser complete any pending flow
+/// (login CSRF).
+pub struct AuthorizationRequest {
+    pub authorize_url: String,
+    pub state: String,
+}
+
 pub struct OAuthFlow<ST, ID, HC> {
     state_store: ST,
     identity_store: ID,
@@ -48,28 +62,46 @@ where
     }
 
     /// Step 1: build the provider authorize URL and persist the anti-CSRF state.
-    pub async fn begin(&self, provider: &str) -> Result<String, OAuthFlowError> {
+    ///
+    /// The returned [`AuthorizationRequest::state`] must be bound to the
+    /// initiating browser (see that type's docs) and presented back to
+    /// [`complete`](Self::complete).
+    pub async fn begin(&self, provider: &str) -> Result<AuthorizationRequest, OAuthFlowError> {
         let config = self.provider(provider)?;
         let state = random_state();
         self.state_store
             .store_state(state.clone())
             .await
             .map_err(|e| OAuthFlowError::State(e.to_string()))?;
-        Ok(build_authorize_url(config, &state))
+        Ok(AuthorizationRequest {
+            authorize_url: build_authorize_url(config, &state),
+            state,
+        })
     }
 
     /// Step 2: validate state, exchange the code, fetch userinfo, link the
     /// identity, and return the verified local email.
+    ///
+    /// `query_state` is the `state` returned by the provider on the callback;
+    /// `cookie_state` is the value previously bound to the initiating browser
+    /// (see [`AuthorizationRequest`]). The two must match, which proves the same
+    /// browser that began the flow is completing it.
     pub async fn complete(
         &self,
         provider: &str,
         code: &str,
-        state: &str,
+        query_state: &str,
+        cookie_state: &str,
     ) -> Result<Email, OAuthFlowError> {
         let config = self.provider(provider)?;
 
+        // Bind the callback to the initiating browser before trusting `state`.
+        if cookie_state.is_empty() || !constant_time_eq(query_state, cookie_state) {
+            return Err(OAuthFlowError::InvalidState);
+        }
+
         self.state_store
-            .consume_state(state)
+            .consume_state(query_state)
             .await
             .map_err(|_| OAuthFlowError::InvalidState)?;
 
@@ -108,6 +140,19 @@ fn random_state() -> String {
     let mut buf = [0u8; 16];
     rand::rng().fill_bytes(&mut buf);
     buf.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Length-independent comparison so a mismatch doesn't leak via timing.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn build_authorize_url(config: &OAuthProviderConfig, state: &str) -> String {
@@ -232,19 +277,24 @@ mod tests {
     #[tokio::test]
     async fn begin_builds_url_with_state_and_client_id() {
         let f = flow("user@example.com");
-        let url = f.begin("google").await.unwrap();
-        assert!(url.contains("client_id=cid"));
-        assert!(url.contains("response_type=code"));
-        assert!(url.contains("state="));
+        let req = f.begin("google").await.unwrap();
+        assert!(req.authorize_url.contains("client_id=cid"));
+        assert!(req.authorize_url.contains("response_type=code"));
+        assert!(req.authorize_url.contains("state="));
+        // The returned state is the one embedded in the URL (to be cookie-bound).
+        assert_eq!(state_from_url(&req.authorize_url), req.state);
     }
 
     #[tokio::test]
     async fn full_flow_links_identity_and_returns_email() {
         let f = flow("user@example.com");
-        let url = f.begin("google").await.unwrap();
-        let state = state_from_url(&url);
+        let req = f.begin("google").await.unwrap();
 
-        let email = f.complete("google", "auth-code", &state).await.unwrap();
+        // cookie_state == query_state proves the same browser is completing.
+        let email = f
+            .complete("google", "auth-code", &req.state, &req.state)
+            .await
+            .unwrap();
         let expected = Email::try_from(Secret::new("user@example.com".to_string())).unwrap();
         assert_eq!(email, expected);
 
@@ -255,12 +305,26 @@ mod tests {
     #[tokio::test]
     async fn replayed_state_is_rejected() {
         let f = flow("user@example.com");
-        let url = f.begin("google").await.unwrap();
-        let state = state_from_url(&url);
+        let req = f.begin("google").await.unwrap();
 
-        f.complete("google", "code", &state).await.unwrap();
-        let replay = f.complete("google", "code", &state).await;
+        f.complete("google", "code", &req.state, &req.state)
+            .await
+            .unwrap();
+        let replay = f.complete("google", "code", &req.state, &req.state).await;
         assert!(matches!(replay, Err(OAuthFlowError::InvalidState)));
+    }
+
+    #[tokio::test]
+    async fn callback_with_mismatched_cookie_state_is_rejected() {
+        let f = flow("user@example.com");
+        let req = f.begin("google").await.unwrap();
+
+        // Attacker injects a valid pending `state` from a different browser, but
+        // cannot forge the victim's `oauth_state` cookie.
+        let result = f
+            .complete("google", "code", &req.state, "attacker-cookie")
+            .await;
+        assert!(matches!(result, Err(OAuthFlowError::InvalidState)));
     }
 
     #[tokio::test]
