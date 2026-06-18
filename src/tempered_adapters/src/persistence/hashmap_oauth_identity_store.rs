@@ -26,11 +26,18 @@ impl OAuthIdentityStore for HashMapOAuthIdentityStore {
         subject: String,
         email: Email,
     ) -> Result<(), OAuthIdentityStoreError> {
-        self.identities
-            .write()
-            .await
-            .insert((provider, subject), email);
-        Ok(())
+        let mut identities = self.identities.write().await;
+        let key = (provider, subject);
+        match identities.get(&key) {
+            // Re-linking the same identity to the same email is idempotent.
+            Some(existing) if existing == &email => Ok(()),
+            // Refuse to silently move an existing identity to another account.
+            Some(_) => Err(OAuthIdentityStoreError::AlreadyLinked),
+            None => {
+                identities.insert(key, email);
+                Ok(())
+            }
+        }
     }
 
     async fn find_email(

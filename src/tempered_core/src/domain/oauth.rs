@@ -27,4 +27,7 @@ pub struct OAuthUserInfo {
     /// Stable, provider-unique subject identifier (`sub`).
     pub subject: String,
     pub email: String,
+    /// Whether the provider asserts the email is verified (OIDC `email_verified`).
+    /// Identity must never be derived from an unverified email.
+    pub email_verified: bool,
 }

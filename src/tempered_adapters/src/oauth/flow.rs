@@ -15,7 +15,8 @@ use std::collections::HashMap;
 use rand::RngCore;
 use secrecy::Secret;
 use tempered_core::{
-    Email, OAuthHttpClient, OAuthIdentityStore, OAuthProviderConfig, OAuthStateStore, UserError,
+    Email, OAuthHttpClient, OAuthIdentityStore, OAuthIdentityStoreError, OAuthProviderConfig,
+    OAuthStateStore, UserError,
 };
 use thiserror::Error;
 
@@ -108,11 +109,21 @@ where
         let access_token = self.http_client.exchange_code(config, code).await?;
         let info = self.http_client.fetch_user_info(config, &access_token).await?;
 
+        // Never derive identity from an unverified provider email: an attacker
+        // could register a victim's address (unverified) at the provider and
+        // take over the linked local account.
+        if !info.email_verified {
+            return Err(OAuthFlowError::EmailNotVerified);
+        }
+
         let email = Email::try_from(Secret::new(info.email))?;
         self.identity_store
             .link_identity(provider.to_string(), info.subject, email.clone())
             .await
-            .map_err(|e| OAuthFlowError::Identity(e.to_string()))?;
+            .map_err(|e| match e {
+                OAuthIdentityStoreError::AlreadyLinked => OAuthFlowError::IdentityConflict,
+                other => OAuthFlowError::Identity(other.to_string()),
+            })?;
 
         Ok(email)
     }
@@ -177,6 +188,10 @@ pub enum OAuthFlowError {
     Http(#[from] tempered_core::OAuthHttpError),
     #[error("Invalid email from provider: {0}")]
     Email(#[from] UserError),
+    #[error("Provider did not assert a verified email")]
+    EmailNotVerified,
+    #[error("Identity already linked to a different account")]
+    IdentityConflict,
     #[error("State store error: {0}")]
     State(String),
     #[error("Identity store error: {0}")]
@@ -194,9 +209,22 @@ impl tempered_core::IntoStatusMessage for OAuthFlowError {
                 "Invalid or expired OAuth state".to_string(),
             ),
             OAuthFlowError::Email(e) => (http::StatusCode::BAD_REQUEST, e.to_string()),
-            OAuthFlowError::Http(e) => (http::StatusCode::BAD_GATEWAY, e.to_string()),
-            OAuthFlowError::State(m) | OAuthFlowError::Identity(m) => {
-                (http::StatusCode::INTERNAL_SERVER_ERROR, m)
+            OAuthFlowError::EmailNotVerified => (
+                http::StatusCode::UNAUTHORIZED,
+                "Provider email is not verified".to_string(),
+            ),
+            OAuthFlowError::IdentityConflict => (
+                http::StatusCode::CONFLICT,
+                "Identity already linked to a different account".to_string(),
+            ),
+            // Don't leak provider/internal detail to clients; the full cause
+            // stays available server-side via the error's Display (for logging).
+            OAuthFlowError::Http(_) => (
+                http::StatusCode::BAD_GATEWAY,
+                "OAuth provider error".to_string(),
+            ),
+            OAuthFlowError::State(_) | OAuthFlowError::Identity(_) => {
+                (http::StatusCode::INTERNAL_SERVER_ERROR, "Internal error".to_string())
             }
         }
     }
@@ -214,6 +242,7 @@ mod tests {
     struct MockClient {
         subject: String,
         email: String,
+        email_verified: bool,
     }
 
     #[async_trait]
@@ -234,6 +263,7 @@ mod tests {
             Ok(OAuthUserInfo {
                 subject: self.subject.clone(),
                 email: self.email.clone(),
+                email_verified: self.email_verified,
             })
         }
     }
@@ -259,6 +289,7 @@ mod tests {
             MockClient {
                 subject: "sub-123".to_string(),
                 email: email.to_string(),
+                email_verified: true,
             },
         )
         .with_provider(provider())
@@ -334,5 +365,55 @@ mod tests {
             f.begin("github").await,
             Err(OAuthFlowError::UnknownProvider(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn unverified_provider_email_is_rejected() {
+        let f = OAuthFlow::new(
+            HashMapOAuthStateStore::new(),
+            HashMapOAuthIdentityStore::new(),
+            MockClient {
+                subject: "sub-1".to_string(),
+                email: "victim@example.com".to_string(),
+                email_verified: false,
+            },
+        )
+        .with_provider(provider());
+
+        let req = f.begin("google").await.unwrap();
+        let result = f.complete("google", "code", &req.state, &req.state).await;
+        assert!(matches!(result, Err(OAuthFlowError::EmailNotVerified)));
+    }
+
+    #[tokio::test]
+    async fn relinking_identity_to_a_different_email_is_rejected() {
+        let identity_store = HashMapOAuthIdentityStore::new();
+
+        let link = |email: &'static str| {
+            OAuthFlow::new(
+                HashMapOAuthStateStore::new(),
+                identity_store.clone(),
+                MockClient {
+                    subject: "sub-123".to_string(),
+                    email: email.to_string(),
+                    email_verified: true,
+                },
+            )
+            .with_provider(provider())
+        };
+
+        // First sign-in links (google, sub-123) -> a@.
+        let f1 = link("a@example.com");
+        let r1 = f1.begin("google").await.unwrap();
+        f1.complete("google", "code", &r1.state, &r1.state)
+            .await
+            .unwrap();
+
+        // The same provider identity now returning a different email must not
+        // silently re-bind the account.
+        let f2 = link("b@example.com");
+        let r2 = f2.begin("google").await.unwrap();
+        let result = f2.complete("google", "code", &r2.state, &r2.state).await;
+        assert!(matches!(result, Err(OAuthFlowError::IdentityConflict)));
     }
 }

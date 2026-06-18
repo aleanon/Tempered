@@ -232,6 +232,8 @@ pub trait OAuthStateStore: Send + Sync {
 
 #[derive(Debug, Error)]
 pub enum OAuthIdentityStoreError {
+    #[error("Identity already linked to a different account")]
+    AlreadyLinked,
     #[error("Unexpected error: {0}")]
     UnexpectedError(String),
 }
@@ -239,7 +241,13 @@ pub enum OAuthIdentityStoreError {
 /// Maps an external provider identity `(provider, subject)` to a local user email.
 #[async_trait]
 pub trait OAuthIdentityStore: Send + Sync {
-    /// Link (or re-link) a provider identity to a local email.
+    /// Link a provider identity to a local email.
+    ///
+    /// Idempotent when the identity already maps to the *same* email, but must
+    /// fail with [`OAuthIdentityStoreError::AlreadyLinked`] if `(provider,
+    /// subject)` is already bound to a *different* email — silently moving the
+    /// binding would enable account takeover. Re-linking to a different account
+    /// must be a deliberate, re-authenticated action.
     async fn link_identity(
         &self,
         provider: String,

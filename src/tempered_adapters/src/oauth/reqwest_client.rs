@@ -42,6 +42,8 @@ impl OAuthHttpClient for ReqwestOAuthHttpClient {
             .form(&params)
             .send()
             .await
+            .map_err(|e| OAuthHttpError::TokenExchange(e.to_string()))?
+            .error_for_status()
             .map_err(|e| OAuthHttpError::TokenExchange(e.to_string()))?;
 
         let json: serde_json::Value = resp
@@ -67,6 +69,8 @@ impl OAuthHttpClient for ReqwestOAuthHttpClient {
             .header("accept", "application/json")
             .send()
             .await
+            .map_err(|e| OAuthHttpError::UserInfo(e.to_string()))?
+            .error_for_status()
             .map_err(|e| OAuthHttpError::UserInfo(e.to_string()))?;
 
         let json: serde_json::Value = resp
@@ -88,6 +92,17 @@ impl OAuthHttpClient for ReqwestOAuthHttpClient {
             .ok_or_else(|| OAuthHttpError::UserInfo("missing email in userinfo".into()))?
             .to_string();
 
-        Ok(OAuthUserInfo { subject, email })
+        // Default to false when absent so providers that don't assert
+        // verification are treated as unverified (and rejected by the flow).
+        let email_verified = json
+            .get("email_verified")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        Ok(OAuthUserInfo {
+            subject,
+            email,
+            email_verified,
+        })
     }
 }
