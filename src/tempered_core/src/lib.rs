@@ -12,6 +12,7 @@ pub use domain::{
     email::Email,
     email_verification_token::EmailVerificationToken,
     oauth::{OAuthProviderConfig, OAuthUserInfo},
+    passkey::{CredentialId, PasskeyCredential, WebAuthnChallenge},
     password::Password,
     password_reset_token::PasswordResetToken,
     session_id::SessionId,
@@ -24,12 +25,16 @@ pub use domain::{
 pub use ports::{
     repositories::{
         ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, BannedTokenStore,
-        BannedTokenStoreError, EmailVerificationStoreError,
+        BannedTokenStoreError, ChallengeStore, ChallengeStoreError, EmailVerificationStoreError,
         EmailVerificationTokenStore, OAuthIdentityStore, OAuthIdentityStoreError, OAuthStateStore,
-        OAuthStateStoreError, PasswordResetTokenStore, PasswordResetTokenStoreError, SessionStore,
-        SessionStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError,
+        OAuthStateStoreError, PasskeyCredentialStore, PasskeyStoreError, PasswordResetTokenStore,
+        PasswordResetTokenStoreError, SessionStore, SessionStoreError, TwoFaCodeStore,
+        TwoFaCodeStoreError, UserStore, UserStoreError,
     },
-    services::{EmailClient, OAuthHttpClient, OAuthHttpError},
+    services::{
+        EmailClient, OAuthHttpClient, OAuthHttpError, VerifiedAssertion, VerifiedRegistration,
+        WebAuthnError, WebAuthnVerifier,
+    },
 };
 
 pub use strategies::{

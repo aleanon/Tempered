@@ -2,6 +2,7 @@ pub mod api_key;
 pub mod email;
 pub mod email_verification_token;
 pub mod oauth;
+pub mod passkey;
 pub mod password;
 pub mod password_reset_token;
 pub mod session_id;

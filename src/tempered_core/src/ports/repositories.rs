@@ -5,6 +5,7 @@ use crate::domain::{
     api_key::ApiKeyId,
     email::Email,
     email_verification_token::EmailVerificationToken,
+    passkey::{CredentialId, PasskeyCredential, WebAuthnChallenge},
     password::Password,
     password_reset_token::PasswordResetToken,
     session_id::SessionId,
@@ -154,6 +155,59 @@ pub trait EmailVerificationTokenStore: Send + Sync {
 
     /// Check whether the email address has been verified.
     async fn is_verified(&self, email: &Email) -> Result<bool, EmailVerificationStoreError>;
+}
+
+// Passkey (WebAuthn) ports and errors
+#[derive(Debug, Error)]
+pub enum PasskeyStoreError {
+    #[error("Credential not found")]
+    CredentialNotFound,
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+#[async_trait]
+pub trait PasskeyCredentialStore: Send + Sync {
+    async fn add_credential(&self, cred: PasskeyCredential) -> Result<(), PasskeyStoreError>;
+    async fn get_credential(
+        &self,
+        id: &CredentialId,
+    ) -> Result<PasskeyCredential, PasskeyStoreError>;
+    async fn list_for_user(
+        &self,
+        owner: &Email,
+    ) -> Result<Vec<PasskeyCredential>, PasskeyStoreError>;
+    async fn update_sign_count(
+        &self,
+        id: &CredentialId,
+        new_count: u32,
+    ) -> Result<(), PasskeyStoreError>;
+}
+
+#[derive(Debug, Error)]
+pub enum ChallengeStoreError {
+    #[error("Challenge not found or expired")]
+    ChallengeNotFound,
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+/// Stores single-use WebAuthn challenges. A registration challenge is bound to
+/// the enrolling user's email; a usernameless authentication challenge carries
+/// `None`.
+#[async_trait]
+pub trait ChallengeStore: Send + Sync {
+    async fn store_challenge(
+        &self,
+        challenge: WebAuthnChallenge,
+        email: Option<Email>,
+    ) -> Result<(), ChallengeStoreError>;
+
+    /// Consume a challenge, returning the email it was bound to (if any).
+    async fn consume_challenge(
+        &self,
+        challenge: &WebAuthnChallenge,
+    ) -> Result<Option<Email>, ChallengeStoreError>;
 }
 
 // OAuth ports and errors
