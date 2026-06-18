@@ -6,6 +6,7 @@ use crate::domain::{
     email_verification_token::EmailVerificationToken,
     password::Password,
     password_reset_token::PasswordResetToken,
+    session_id::SessionId,
     two_fa_attempt_id::TwoFaAttemptId,
     two_fa_code::TwoFaCode,
     user::{User, ValidatedUser},
@@ -152,6 +153,37 @@ pub trait EmailVerificationTokenStore: Send + Sync {
 
     /// Check whether the email address has been verified.
     async fn is_verified(&self, email: &Email) -> Result<bool, EmailVerificationStoreError>;
+}
+
+// SessionStore port trait and errors
+//
+// Backs the opaque server-side session scheme: maps a random SessionId to the
+// authenticated user's email. Deleting an entry instantly revokes the session.
+#[derive(Debug, Error)]
+pub enum SessionStoreError {
+    #[error("Session not found")]
+    SessionNotFound,
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+#[async_trait]
+pub trait SessionStore: Send + Sync {
+    /// Create a new session for the given user.
+    async fn create_session(&self, id: SessionId, email: Email)
+    -> Result<(), SessionStoreError>;
+
+    /// Look up the user associated with a session id.
+    async fn get_session(&self, id: &SessionId) -> Result<Email, SessionStoreError>;
+
+    /// Refresh a session's expiry (sliding-window). In-memory stores may no-op.
+    async fn touch_session(&self, id: &SessionId) -> Result<(), SessionStoreError>;
+
+    /// Delete a single session (logout).
+    async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError>;
+
+    /// Delete every session belonging to a user (logout-everywhere / password change).
+    async fn delete_all_for_user(&self, email: &Email) -> Result<(), SessionStoreError>;
 }
 
 #[async_trait]

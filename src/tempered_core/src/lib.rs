@@ -12,6 +12,7 @@ pub use domain::{
     email_verification_token::EmailVerificationToken,
     password::Password,
     password_reset_token::PasswordResetToken,
+    session_id::SessionId,
     two_fa_attempt_id::TwoFaAttemptId,
     two_fa_code::TwoFaCode,
     two_fa_error::TwoFaError,
@@ -22,7 +23,8 @@ pub use ports::{
     repositories::{
         BannedTokenStore, BannedTokenStoreError, EmailVerificationStoreError,
         EmailVerificationTokenStore, PasswordResetTokenStore, PasswordResetTokenStoreError,
-        TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError,
+        SessionStore, SessionStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
+        UserStoreError,
     },
     services::EmailClient,
 };
