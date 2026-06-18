@@ -79,6 +79,7 @@ jsonwebtoken = { version = "10.2", default-features = false, features = [
     "rust_crypto",
 ] }
 argon2 = { version = "0.5.3", features = ["std"] }
+sha2 = "0.10"
 
 # Configuration
 config = { version = "0.15.19", features = ["json"] }

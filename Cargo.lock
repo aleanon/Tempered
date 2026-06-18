@@ -3432,6 +3432,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tempered_core",
  "testcontainers-modules",

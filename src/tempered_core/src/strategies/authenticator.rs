@@ -3,8 +3,10 @@ use serde::Deserialize;
 
 use crate::{
     domain::{
-        email::Email, password::Password, two_fa_attempt_id::TwoFaAttemptId, two_fa_code::TwoFaCode,
+        api_key::ApiKeyId, email::Email, password::Password, two_fa_attempt_id::TwoFaAttemptId,
+        two_fa_code::TwoFaCode,
     },
+    ports::repositories::ApiKeyMetadata,
     strategies::auth_validator::AuthValidator,
 };
 
@@ -324,6 +326,41 @@ pub trait RequiresEmailVerification: AuthenticationScheme {
         &self,
         email: &Email,
     ) -> Result<bool, Self::EmailVerificationError>;
+}
+
+// ============================================================================
+// Optional Capability: API Key Issuance
+// ============================================================================
+
+/// Optional trait for schemes that can issue, revoke and list API keys.
+///
+/// API keys are *issued* to an already-identified owner (not "logged into"),
+/// then presented on each request via a header and checked by the scheme's
+/// validator. Issuance/revocation are management operations that a delivery
+/// layer typically exposes behind an authenticated (or elevated) route.
+#[async_trait]
+pub trait SupportsApiKeyIssuance: AuthenticationScheme {
+    /// Errors that can occur during issuance/revocation/listing.
+    type IssuanceError: std::error::Error + Send + Sync + 'static;
+
+    /// Issue a new key for `owner` with the given scopes.
+    ///
+    /// Returns the key id and the **plaintext** key, which must be shown to the
+    /// caller exactly once and is never recoverable afterwards.
+    async fn issue_api_key(
+        &self,
+        owner: Email,
+        scopes: Vec<String>,
+    ) -> Result<(ApiKeyId, String), Self::IssuanceError>;
+
+    /// Revoke a previously-issued key.
+    async fn revoke_api_key(&self, id: &ApiKeyId) -> Result<(), Self::IssuanceError>;
+
+    /// List non-secret metadata for all of a user's keys.
+    async fn list_api_keys(
+        &self,
+        owner: &Email,
+    ) -> Result<Vec<ApiKeyMetadata>, Self::IssuanceError>;
 }
 
 // ============================================================================

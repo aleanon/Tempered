@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::domain::{
+    api_key::ApiKeyId,
     email::Email,
     email_verification_token::EmailVerificationToken,
     password::Password,
@@ -153,6 +154,52 @@ pub trait EmailVerificationTokenStore: Send + Sync {
 
     /// Check whether the email address has been verified.
     async fn is_verified(&self, email: &Email) -> Result<bool, EmailVerificationStoreError>;
+}
+
+// ApiKeyStore port, records and errors
+//
+// Keys are stored as a SHA-256 hash of the secret half only — the plaintext is
+// shown to the caller exactly once at creation and never persisted.
+#[derive(Debug, Clone)]
+pub struct ApiKeyRecord {
+    pub id: ApiKeyId,
+    /// Non-secret lookup handle (the part before the `.`).
+    pub prefix: String,
+    /// Hex SHA-256 of the secret half.
+    pub secret_hash: String,
+    pub owner: Email,
+    pub scopes: Vec<String>,
+}
+
+/// Non-secret metadata returned when listing a user's keys.
+#[derive(Debug, Clone)]
+pub struct ApiKeyMetadata {
+    pub id: ApiKeyId,
+    pub prefix: String,
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Error)]
+pub enum ApiKeyStoreError {
+    #[error("API key not found")]
+    NotFound,
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+#[async_trait]
+pub trait ApiKeyStore: Send + Sync {
+    /// Persist a newly-issued key record.
+    async fn create_key(&self, record: ApiKeyRecord) -> Result<(), ApiKeyStoreError>;
+
+    /// Look up a key record by its non-secret prefix.
+    async fn find_by_prefix(&self, prefix: &str) -> Result<ApiKeyRecord, ApiKeyStoreError>;
+
+    /// Revoke (delete) a key by id.
+    async fn revoke_key(&self, id: &ApiKeyId) -> Result<(), ApiKeyStoreError>;
+
+    /// List non-secret metadata for all of a user's keys.
+    async fn list_for_user(&self, owner: &Email) -> Result<Vec<ApiKeyMetadata>, ApiKeyStoreError>;
 }
 
 // SessionStore port trait and errors

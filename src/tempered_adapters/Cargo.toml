@@ -37,6 +37,7 @@ http.workspace = true
 # Authentication
 jsonwebtoken.workspace = true
 argon2.workspace = true
+sha2.workspace = true
 
 # Configuration
 config.workspace = true

@@ -1,3 +1,4 @@
+pub mod api_key;
 pub mod email;
 pub mod email_verification_token;
 pub mod password;
