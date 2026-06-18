@@ -11,6 +11,7 @@ pub use domain::{
     api_key::ApiKeyId,
     email::Email,
     email_verification_token::EmailVerificationToken,
+    oauth::{OAuthProviderConfig, OAuthUserInfo},
     password::Password,
     password_reset_token::PasswordResetToken,
     session_id::SessionId,
@@ -24,11 +25,11 @@ pub use ports::{
     repositories::{
         ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, BannedTokenStore,
         BannedTokenStoreError, EmailVerificationStoreError,
-        EmailVerificationTokenStore, PasswordResetTokenStore, PasswordResetTokenStoreError,
-        SessionStore, SessionStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
-        UserStoreError,
+        EmailVerificationTokenStore, OAuthIdentityStore, OAuthIdentityStoreError, OAuthStateStore,
+        OAuthStateStoreError, PasswordResetTokenStore, PasswordResetTokenStoreError, SessionStore,
+        SessionStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError,
     },
-    services::EmailClient,
+    services::{EmailClient, OAuthHttpClient, OAuthHttpError},
 };
 
 pub use strategies::{

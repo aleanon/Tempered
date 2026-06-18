@@ -156,6 +156,51 @@ pub trait EmailVerificationTokenStore: Send + Sync {
     async fn is_verified(&self, email: &Email) -> Result<bool, EmailVerificationStoreError>;
 }
 
+// OAuth ports and errors
+#[derive(Debug, Error)]
+pub enum OAuthStateStoreError {
+    #[error("Unknown or expired state")]
+    UnknownState,
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+/// Stores the single-use anti-CSRF `state` value between the authorize redirect
+/// and the callback. (A production implementation should also bind the PKCE
+/// verifier here and apply a short TTL.)
+#[async_trait]
+pub trait OAuthStateStore: Send + Sync {
+    async fn store_state(&self, state: String) -> Result<(), OAuthStateStoreError>;
+
+    /// Consume a `state` value, succeeding only if it was previously stored.
+    async fn consume_state(&self, state: &str) -> Result<(), OAuthStateStoreError>;
+}
+
+#[derive(Debug, Error)]
+pub enum OAuthIdentityStoreError {
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+/// Maps an external provider identity `(provider, subject)` to a local user email.
+#[async_trait]
+pub trait OAuthIdentityStore: Send + Sync {
+    /// Link (or re-link) a provider identity to a local email.
+    async fn link_identity(
+        &self,
+        provider: String,
+        subject: String,
+        email: Email,
+    ) -> Result<(), OAuthIdentityStoreError>;
+
+    /// Find the local email previously linked to a provider identity.
+    async fn find_email(
+        &self,
+        provider: &str,
+        subject: &str,
+    ) -> Result<Option<Email>, OAuthIdentityStoreError>;
+}
+
 // ApiKeyStore port, records and errors
 //
 // Keys are stored as a SHA-256 hash of the secret half only — the plaintext is
