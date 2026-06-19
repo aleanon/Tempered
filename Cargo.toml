@@ -19,8 +19,11 @@ http.workspace = true
 
 
 [dev-dependencies]
+axum-extra.workspace = true
 redis.workspace = true
 reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 tracing-error.workspace = true
