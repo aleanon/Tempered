@@ -19,11 +19,8 @@ http.workspace = true
 
 
 [dev-dependencies]
-axum-extra.workspace = true
 redis.workspace = true
 reqwest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 tracing-error.workspace = true
@@ -32,7 +29,14 @@ tracing-subscriber.workspace = true
 
 [workspace]
 resolver = "2"
-members = ["src/tempered_core", "src/tempered_adapters", "src/tempered_axum"]
+members = [
+    "src/tempered_core",
+    "src/tempered_adapters",
+    "src/tempered_axum",
+    "examples/api_key_axum",
+    "examples/oauth_axum",
+    "examples/jwt_standalone",
+]
 
 [workspace.package]
 version = "0.1.0"

@@ -3396,13 +3396,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "axum-extra",
  "http",
  "redis",
  "reqwest",
  "secrecy",
- "serde",
- "serde_json",
  "sqlx",
  "tempered_adapters",
  "tempered_axum",
@@ -3410,6 +3407,44 @@ dependencies = [
  "tokio",
  "tracing-error",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "tempered-example-api-key"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "tempered",
+ "tempered_adapters",
+ "tempered_axum",
+ "tokio",
+ "tower-http",
+]
+
+[[package]]
+name = "tempered-example-jwt"
+version = "0.1.0"
+dependencies = [
+ "tempered",
+ "tempered_axum",
+ "tokio",
+ "tracing-error",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "tempered-example-oauth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "axum-extra",
+ "serde",
+ "serde_json",
+ "tempered",
+ "tokio",
+ "tower-http",
 ]
 
 [[package]]

@@ -1,27 +1,20 @@
-//! Axum example: OAuth2 / OIDC login.
+//! Standalone Axum example crate: OAuth2 / OIDC login, with a browser frontend
+//! (see `assets/index.html`).
 //!
 //! ```bash
-//! cargo run --example oauth_axum
+//! cargo run -p tempered-example-oauth
+//! # open http://localhost:3000
 //! ```
-//! Then open <http://localhost:3000> and click "Log in".
 //!
-//! This example is fully self-contained: it embeds a tiny **mock OAuth
-//! provider** (the `/mock/*` routes) so it runs offline with no real client
-//! credentials. To target a real provider (Google, GitHub, …) instead, point
-//! the `OAuthProviderConfig` URLs at the provider and supply a real
-//! client id/secret + registered redirect URI.
+//! Fully self-contained: it embeds a tiny **mock OAuth provider** (`/mock/*`)
+//! so it runs offline with no real credentials. To target a real provider
+//! (Google, GitHub, …), repoint the `OAuthProviderConfig` URLs and supply real
+//! client credentials + a registered redirect URI.
 //!
-//! Flow:
-//!   GET /login/{provider}  -> OAuthFlow::begin: build authorize URL, bind the
-//!                             anti-CSRF `state` to the browser via an HttpOnly
-//!                             cookie, 302 to the provider.
-//!   GET /auth/{p}/callback -> OAuthFlow::complete: require the cookie `state`
-//!                             to match the query `state`, exchange the code,
-//!                             fetch userinfo, and return the verified Email.
-//!
-//! `OAuthFlow` yields a domain `Email` — it does not issue a token. A real app
-//! hands that Email to its primary scheme (JWT/session) to start a session;
-//! here we simply display it.
+//! `OAuthFlow` yields a verified `Email` — it does not issue a token. This demo
+//! then sets a (deliberately simple, plaintext) `demo_session` cookie to show
+//! the logged-in state; a real app would issue a JWT/session via its primary
+//! scheme here.
 
 use std::sync::Arc;
 
@@ -29,7 +22,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Redirect, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use axum_extra::extract::{
@@ -42,12 +35,15 @@ use tempered::{
     ExposeSecret, HashMapOAuthIdentityStore, HashMapOAuthStateStore, OAuthFlow, OAuthProviderConfig,
     ReqwestOAuthHttpClient, Secret,
 };
-use tempered_core::IntoStatusMessage;
+use tempered::core::IntoStatusMessage;
+use tower_http::services::ServeDir;
 
 type Flow = OAuthFlow<HashMapOAuthStateStore, HashMapOAuthIdentityStore, ReqwestOAuthHttpClient>;
 
 const BASE: &str = "http://localhost:3000";
+const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 const STATE_COOKIE: &str = "oauth_state";
+const SESSION_COOKIE: &str = "demo_session";
 
 #[derive(Clone)]
 struct AppState {
@@ -56,8 +52,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
-    // The provider URLs point back at this same server's mock endpoints, so the
-    // whole round-trip works locally with no external service.
+    // Provider URLs point back at this server's own mock endpoints.
     let provider = OAuthProviderConfig {
         name: "mock".to_string(),
         client_id: "demo-client".to_string(),
@@ -81,22 +76,20 @@ async fn main() {
     };
 
     let app = Router::new()
-        .route("/", get(index))
         .route("/login/{provider}", get(login))
         .route("/auth/{provider}/callback", get(callback))
-        // ---- embedded mock provider (stands in for Google/GitHub) ----
+        .route("/me", get(me))
+        .route("/logout", get(logout))
+        // ---- embedded mock provider ----
         .route("/mock/authorize", get(mock_authorize))
         .route("/mock/token", post(mock_token))
         .route("/mock/userinfo", get(mock_userinfo))
-        .with_state(state);
+        .with_state(state)
+        .fallback_service(ServeDir::new(ASSETS));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("listening on {BASE}  — open it and click 'Log in'");
+    println!("listening on {BASE}");
     axum::serve(listener, app).await.unwrap();
-}
-
-async fn index() -> Html<&'static str> {
-    Html(r#"<h1>OAuth example</h1><p><a href="/login/mock">Log in with the mock provider</a></p>"#)
 }
 
 /// Step 1: begin the flow and bind `state` to this browser via a cookie.
@@ -142,20 +135,35 @@ async fn callback(
         .await
     {
         Ok(email) => {
-            // One-time state cookie is no longer needed; a real app would set a
-            // session/JWT cookie here instead.
-            let cleared = jar.remove(Cookie::build((STATE_COOKIE, "")).path("/").build());
-            let body = Html(format!(
-                "<h1>Logged in</h1><p>Verified email: <b>{}</b></p>",
-                email.as_ref().expose_secret()
-            ));
-            (cleared, body).into_response()
+            let jar = jar
+                .remove(Cookie::build((STATE_COOKIE, "")).path("/").build())
+                .add(
+                    Cookie::build((SESSION_COOKIE, email.as_ref().expose_secret().clone()))
+                        .http_only(true)
+                        .same_site(SameSite::Lax)
+                        .path("/")
+                        .build(),
+                );
+            (jar, Redirect::to("/")).into_response()
         }
         Err(e) => {
             let (status, message) = e.into_status_message();
             (status, message).into_response()
         }
     }
+}
+
+/// Report the currently logged-in user (from the demo session cookie).
+async fn me(jar: CookieJar) -> Response {
+    match jar.get(SESSION_COOKIE) {
+        Some(c) => Json(json!({ "email": c.value() })).into_response(),
+        None => (StatusCode::UNAUTHORIZED, Json(json!({ "error": "not logged in" }))).into_response(),
+    }
+}
+
+async fn logout(jar: CookieJar) -> Response {
+    let jar = jar.remove(Cookie::build((SESSION_COOKIE, "")).path("/").build());
+    (jar, Redirect::to("/")).into_response()
 }
 
 // ---- Mock provider endpoints (a stand-in identity provider) ---------------
@@ -166,9 +174,8 @@ struct AuthorizeParams {
     state: String,
 }
 
-/// A real provider shows a consent screen; the mock immediately "approves" and
-/// redirects back with an authorization code.
 async fn mock_authorize(Query(p): Query<AuthorizeParams>) -> Redirect {
+    // A real provider shows a consent screen; the mock immediately approves.
     Redirect::to(&format!(
         "{}?code=demo-auth-code&state={}",
         p.redirect_uri, p.state

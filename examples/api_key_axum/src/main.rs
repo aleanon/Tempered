@@ -1,23 +1,15 @@
-//! Axum example: API key authentication.
+//! Standalone Axum example crate: API key authentication, with a browser
+//! frontend (see `assets/index.html`).
 //!
 //! ```bash
-//! cargo run --example api_key_axum
+//! cargo run -p tempered-example-api-key
+//! # open http://localhost:3000
 //! ```
 //!
-//! On startup it prints a demo key. Use it on the protected route:
-//! ```bash
-//! curl -H 'x-api-key: <KEY>' http://localhost:3000/protected
-//! ```
-//! Issue another key:
-//! ```bash
-//! curl -X POST http://localhost:3000/api-keys \
-//!   -H 'content-type: application/json' \
-//!   -d '{"email":"svc@example.com","scopes":["read","write"]}'
-//! ```
-//!
-//! The key is validated by `ApiKeyScheme`'s validator running as Axum
+//! The frontend lets you issue a key and call a protected route with it. The
+//! protected route is guarded by `ApiKeyScheme`'s validator running as Axum
 //! middleware (`tempered_axum::middleware::validate_token`), which inserts the
-//! `ApiKeyClaims` into the request extensions for the handler to read.
+//! validated `ApiKeyClaims` into the request extensions.
 
 use axum::{
     Extension, Json, Router,
@@ -30,26 +22,24 @@ use serde_json::json;
 use tempered::{ApiKeyScheme, Email, ExposeSecret, HashMapApiKeyStore, Secret, SupportsApiKeyIssuance};
 use tempered_adapters::authentication::api_key_scheme::ApiKeyClaims;
 use tempered_axum::middleware::validate_token;
+use tower_http::services::ServeDir;
 
 type Scheme = ApiKeyScheme<HashMapApiKeyStore>;
+
+const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 
 #[tokio::main]
 async fn main() {
     let scheme: Scheme = ApiKeyScheme::new(HashMapApiKeyStore::new());
 
-    // Seed a key so you can call the protected route right away.
+    // Seed a key so the protected route is usable immediately.
     let owner = Email::try_from(Secret::new("demo@service.example".to_string())).unwrap();
     let (id, plaintext) = scheme
         .issue_api_key(owner, vec!["read".to_string()])
         .await
         .unwrap();
-    println!("──────────────────────────────────────────────────────────");
-    println!("Demo API key (id={id}):\n  {plaintext}");
-    println!("Try: curl -H 'x-api-key: {plaintext}' http://localhost:3000/protected");
-    println!("──────────────────────────────────────────────────────────");
+    println!("Seeded demo key (id={id}): {plaintext}");
 
-    // Routes behind the API key validator. The middleware returns 401 if the
-    // key is missing/invalid, otherwise inserts ApiKeyClaims into extensions.
     let protected = Router::new()
         .route("/protected", get(protected))
         .layer(axum::middleware::from_fn_with_state(
@@ -58,18 +48,14 @@ async fn main() {
         ));
 
     let app = Router::new()
-        .route("/", get(index))
         .route("/api-keys", post(issue_key))
         .merge(protected)
-        .with_state(scheme);
+        .with_state(scheme)
+        .fallback_service(ServeDir::new(ASSETS));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("listening on http://localhost:3000");
     axum::serve(listener, app).await.unwrap();
-}
-
-async fn index() -> &'static str {
-    "API key example. POST /api-keys to issue a key; GET /protected with header 'x-api-key: <key>'."
 }
 
 #[derive(Deserialize)]
@@ -79,7 +65,7 @@ struct IssueRequest {
     scopes: Vec<String>,
 }
 
-/// Issue a new key for an owner. The plaintext is returned exactly once.
+/// Issue a new key for an owner; the plaintext is returned exactly once.
 async fn issue_key(
     State(scheme): State<Scheme>,
     Json(req): Json<IssueRequest>,

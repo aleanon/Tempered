@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tempered · OAuth example</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; text-align: center; }
+    h1 { font-size: 1.5rem; }
+    .card { border: 1px solid #8884; border-radius: 12px; padding: 2rem; margin: 1.5rem 0; }
+    a.button, button { display: inline-block; padding: .6rem 1.2rem; border-radius: 8px; border: 0; background: #3b82f6; color: #fff; font: inherit; cursor: pointer; text-decoration: none; }
+    a.button:hover, button:hover { background: #2563eb; }
+    button.secondary { background: #6b7280; }
+    .email { font-weight: 700; font-size: 1.2rem; }
+    .muted { color: #8889; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <h1>tempered · OAuth login</h1>
+  <p class="muted">Self-contained demo using an embedded mock provider.<br>The flow verifies the provider identity and yields an <code>Email</code>.</p>
+
+  <div class="card" id="card">
+    <p>Loading…</p>
+  </div>
+
+  <p class="muted">Tip: the callback rejects a mismatched <code>state</code> cookie (CSRF protection).</p>
+
+  <script>
+    const el = (tag, props = {}, text) => {
+      const e = Object.assign(document.createElement(tag), props);
+      if (text !== undefined) e.textContent = text; // textContent avoids XSS
+      return e;
+    };
+
+    async function render() {
+      const card = document.getElementById("card");
+      card.replaceChildren();
+      const res = await fetch("/me");
+      if (res.ok) {
+        const { email } = await res.json();
+        const logout = el("button", { className: "secondary" }, "Log out");
+        logout.onclick = () => (location.href = "/logout");
+        card.append(el("p", {}, "Logged in as"), el("p", { className: "email" }, email), logout);
+      } else {
+        card.append(
+          el("p", {}, "You are not logged in."),
+          el("a", { className: "button", href: "/login/mock" }, "Log in with the mock provider"),
+        );
+      }
+    }
+    render();
+  </script>
+</body>
+</html>

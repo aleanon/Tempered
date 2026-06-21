@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tempered · API key example</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    h1 { font-size: 1.4rem; }
+    section { border: 1px solid #8884; border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    label { display: block; font-weight: 600; margin: .5rem 0 .25rem; }
+    input { width: 100%; padding: .5rem; border-radius: 6px; border: 1px solid #8886; box-sizing: border-box; font: inherit; }
+    button { margin-top: .75rem; padding: .5rem 1rem; border-radius: 6px; border: 0; background: #3b82f6; color: #fff; font: inherit; cursor: pointer; }
+    button:hover { background: #2563eb; }
+    pre { background: #8881; padding: .75rem; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    .muted { color: #8889; font-size: .9rem; }
+    code { background: #8882; padding: .1rem .3rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>tempered · API key example</h1>
+  <p class="muted">Issue an API key, then call a protected route with it. Keys are presented in the <code>x-api-key</code> header (or <code>Authorization: Bearer</code>).</p>
+
+  <section>
+    <h2>1 · Issue a key</h2>
+    <label for="email">Owner email</label>
+    <input id="email" value="demo@service.example" />
+    <label for="scopes">Scopes (comma-separated)</label>
+    <input id="scopes" value="read,write" />
+    <button id="issue">Issue key</button>
+    <p class="muted">The plaintext key is shown once — it is auto-filled below.</p>
+    <pre id="issueOut">(no key yet)</pre>
+  </section>
+
+  <section>
+    <h2>2 · Call the protected route</h2>
+    <label for="key">API key</label>
+    <input id="key" placeholder="prefix.secret" />
+    <button id="call">GET /protected</button>
+    <button id="callBad" style="background:#6b7280">Call with no key (expect 401)</button>
+    <pre id="callOut">(no response yet)</pre>
+  </section>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    $("issue").onclick = async () => {
+      const scopes = $("scopes").value.split(",").map(s => s.trim()).filter(Boolean);
+      const res = await fetch("/api-keys", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: $("email").value, scopes }),
+      });
+      const body = await res.json().catch(() => ({}));
+      $("issueOut").textContent = `HTTP ${res.status}\n` + JSON.stringify(body, null, 2);
+      if (body.api_key) $("key").value = body.api_key;
+    };
+
+    async function callProtected(withKey) {
+      const headers = {};
+      if (withKey && $("key").value) headers["x-api-key"] = $("key").value;
+      const res = await fetch("/protected", { headers });
+      const text = await res.text();
+      let pretty = text;
+      try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+      $("callOut").textContent = `HTTP ${res.status}\n` + pretty;
+    }
+    $("call").onclick = () => callProtected(true);
+    $("callBad").onclick = () => callProtected(false);
+  </script>
+</body>
+</html>

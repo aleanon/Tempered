@@ -1,0 +1,15 @@
+[package]
+name = "tempered-example-api-key"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tempered = { path = "../.." }
+tempered_adapters.workspace = true
+tempered_axum.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
