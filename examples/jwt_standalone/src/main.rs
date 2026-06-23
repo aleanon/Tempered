@@ -43,16 +43,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elevated_banned_token_store = HashSetBannedTokenStore::new();
     let password_reset_token_store = HashMapPasswordResetTokenStore::new();
 
-    let jwt_scheme = JwtScheme::new(
-        user_store,
-        two_fa_code_store,
-        email_client,
-        banned_token_store,
-        jwt_config,
-        elevated_banned_token_store,
-        elevated_jwt_config,
-        password_reset_token_store,
-    );
+    // Build the scheme from a minimal core, opting into each capability. Only
+    // the `supports_*` methods that were called light up the matching trait —
+    // so `auth_service(...).with_2fa(...)` below only compiles because of them.
+    let jwt_scheme = JwtScheme::new(user_store, jwt_config, banned_token_store)
+        .supports_2fa(two_fa_code_store, email_client.clone())
+        .supports_elevation(elevated_banned_token_store, elevated_jwt_config)
+        .supports_password_reset(password_reset_token_store, email_client)
+        .build();
 
     let auth_service = auth_service(jwt_scheme, ASSETS.to_string())
         .login_route("/login")

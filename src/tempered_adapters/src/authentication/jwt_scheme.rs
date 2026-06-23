@@ -22,104 +22,261 @@ use crate::auth_validation::local_jwt_validator::{
 // ============================================================================
 // JWT Authentication Scheme
 // ============================================================================
+//
+// The scheme is built with a **type-state builder**: `new()` takes only the
+// mandatory core (user store + JWT config + banned-token store), and each
+// optional capability is opted into with a `supports_*` method that fills a
+// generic *slot* (which defaults to `()` = disabled).
+//
+// Crucially, every optional capability's trait `impl` is bound to its slot
+// being a *real* type, so a disabled capability's trait does not exist at all.
+// That makes the framework route builders (`auth_service(...).with_2fa(...)`)
+// fail to compile unless the matching `supports_*` was called — capability and
+// route can never drift apart.
 
 /// JWT-based authentication scheme using password credentials.
 ///
-/// This scheme:
-/// - Supports user registration with email/password
-/// - Supports password-based login
-/// - Supports optional 2FA via TOTP/email codes
-/// - Issues JWT tokens stored in HTTP-only cookies
-/// - Validates JWT signatures and checks banned token list
-///
-/// The sixth generic `V` is the email-verification store.  It defaults to `()`
-/// (no verification) and can be set via [`JwtScheme::with_email_verification`].
+/// Generic slots (each defaults to `()` = disabled):
+/// - `F` — two-factor   ([`TwoFa`],         via [`JwtScheme::supports_2fa`])
+/// - `L` — elevation    ([`Elevation`],     via [`JwtScheme::supports_elevation`])
+/// - `R` — password reset ([`PasswordReset`], via [`JwtScheme::supports_password_reset`])
+/// - `M` — email verify ([`EmailVerify`],   via [`JwtScheme::supports_email_verification`])
 #[derive(Clone)]
-pub struct JwtScheme<U, T, E, B, R, V = ()> {
+pub struct JwtScheme<U, B, F = (), L = (), R = (), M = ()> {
     user_store: U,
-    two_fa_code_store: T,
-    email_client: E,
     banned_token_store: B,
-    password_reset_token_store: R,
-    email_verification_store: V,
     jwt_validator: LocalJwtValidator<B>,
     jwt_config: JwtAuthConfig,
-    elevated_jwt_validator: LocalJwtValidator<B>,
-    elevated_jwt_config: JwtAuthConfig,
+    two_fa: F,
+    elevation: L,
+    password_reset: R,
+    email_verify: M,
 }
 
-impl<U, T, E, B, R> JwtScheme<U, T, E, B, R, ()>
+// ============================================================================
+// Capability slots (the "enabled" states for each optional capability)
+// ============================================================================
+
+/// Enabled two-factor slot: a code store plus the email client used to deliver codes.
+#[derive(Clone)]
+pub struct TwoFa<T, E> {
+    store: T,
+    email: E,
+}
+
+/// Enabled elevation ("sudo") slot: a separate validator/config for short-lived elevated tokens.
+#[derive(Clone)]
+pub struct Elevation<B> {
+    validator: LocalJwtValidator<B>,
+    config: JwtAuthConfig,
+}
+
+/// Enabled password-reset slot: a reset-token store plus the email client used to deliver links.
+#[derive(Clone)]
+pub struct PasswordReset<P, E> {
+    store: P,
+    email: E,
+}
+
+/// Enabled email-verification slot: a verification store plus the email client used to deliver links.
+#[derive(Clone)]
+pub struct EmailVerify<V, E> {
+    store: V,
+    email: E,
+}
+
+// ============================================================================
+// Internal slot traits
+// ============================================================================
+//
+// A handful of *core* paths must stay generic over the slots (e.g. `login`
+// issues a 2FA challenge; `logout` clears the elevated cookie). Rather than
+// duplicating those impls per slot-combination, the slot itself provides the
+// behavior through these sealed-ish internal traits — implemented for `()` as
+// a no-op/error and for the real slot as the actual behavior. The *public*
+// capability traits stay gated to the enabled slot only.
+
+/// Issues the 2FA challenge during `login`. `()` rejects (2FA not configured).
+#[async_trait]
+trait TwoFaChallenge {
+    async fn issue_challenge(&self, email: &Email) -> Result<TwoFaAttemptId, JwtAuthError>;
+}
+
+#[async_trait]
+impl TwoFaChallenge for () {
+    async fn issue_challenge(&self, _email: &Email) -> Result<TwoFaAttemptId, JwtAuthError> {
+        // A user requires 2FA but the scheme was built without `supports_2fa`.
+        Err(JwtAuthError::TwoFaNotConfigured)
+    }
+}
+
+#[async_trait]
+impl<T, E> TwoFaChallenge for TwoFa<T, E>
+where
+    T: TwoFaCodeStore + Send + Sync,
+    E: EmailClient + Send + Sync,
+{
+    async fn issue_challenge(&self, email: &Email) -> Result<TwoFaAttemptId, JwtAuthError> {
+        let attempt_id = TwoFaAttemptId::new();
+        let code = TwoFaCode::new();
+
+        self.store
+            .store_code(email.clone(), attempt_id.clone(), code.clone())
+            .await?;
+
+        self.email
+            .send_email(email, "2FA Code", code.as_str())
+            .await
+            .map_err(JwtAuthError::EmailError)?;
+
+        Ok(attempt_id)
+    }
+}
+
+/// Exposes the elevated cookie name (if elevation is enabled) so `logout` can clear it.
+trait ElevatedCookieName {
+    fn elevated_cookie_name(&self) -> Option<&str>;
+}
+
+impl ElevatedCookieName for () {
+    fn elevated_cookie_name(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl<B> ElevatedCookieName for Elevation<B> {
+    fn elevated_cookie_name(&self) -> Option<&str> {
+        Some(&self.config.jwt_cookie_name)
+    }
+}
+
+// ============================================================================
+// Builder: new() + supports_*()
+// ============================================================================
+
+impl<U, B> JwtScheme<U, B, (), (), (), ()>
 where
     U: UserStore,
-    T: TwoFaCodeStore,
-    E: EmailClient,
-    B: Clone,
-    R: PasswordResetTokenStore,
+    B: BannedTokenStore + Clone,
 {
-    pub fn new(
-        user_store: U,
-        two_fa_code_store: T,
-        email_client: E,
-        banned_token_store: B,
-        config: JwtAuthConfig,
-        elevated_banned_token_store: B,
-        elevated_jwt_config: JwtAuthConfig,
-        password_reset_token_store: R,
-    ) -> Self {
-        let validator = LocalJwtValidator::new(banned_token_store.clone(), config.clone());
-        let elevated_validator = LocalJwtValidator::new(
-            elevated_banned_token_store.clone(),
-            elevated_jwt_config.clone(),
-        );
+    /// Create the core scheme: password login, logout, and token validation.
+    ///
+    /// Opt into optional capabilities with the `supports_*` methods.
+    pub fn new(user_store: U, jwt_config: JwtAuthConfig, banned_token_store: B) -> Self {
+        let jwt_validator = LocalJwtValidator::new(banned_token_store.clone(), jwt_config.clone());
 
         Self {
             user_store,
-            two_fa_code_store,
-            email_client,
             banned_token_store,
-            password_reset_token_store,
-            email_verification_store: (),
-            jwt_validator: validator,
-            jwt_config: config,
-            elevated_jwt_validator: elevated_validator,
-            elevated_jwt_config,
+            jwt_validator,
+            jwt_config,
+            two_fa: (),
+            elevation: (),
+            password_reset: (),
+            email_verify: (),
         }
     }
 }
 
-impl<U, T, E, B, R, V> JwtScheme<U, T, E, B, R, V>
+impl<U, B, L, R, M> JwtScheme<U, B, (), L, R, M> {
+    /// Enable two-factor authentication, lighting up [`SupportsTwoFactor`].
+    pub fn supports_2fa<T, E>(self, store: T, email: E) -> JwtScheme<U, B, TwoFa<T, E>, L, R, M> {
+        JwtScheme {
+            user_store: self.user_store,
+            banned_token_store: self.banned_token_store,
+            jwt_validator: self.jwt_validator,
+            jwt_config: self.jwt_config,
+            two_fa: TwoFa { store, email },
+            elevation: self.elevation,
+            password_reset: self.password_reset,
+            email_verify: self.email_verify,
+        }
+    }
+}
+
+impl<U, B, F, R, M> JwtScheme<U, B, F, (), R, M>
 where
-    U: UserStore,
-    T: TwoFaCodeStore,
-    E: EmailClient,
     B: Clone,
-    R: PasswordResetTokenStore,
 {
+    /// Enable elevated ("sudo") tokens, lighting up [`SupportsElevation`] and
+    /// [`tempered_core::HttpElevationScheme`].
+    pub fn supports_elevation(
+        self,
+        elevated_banned_token_store: B,
+        elevated_jwt_config: JwtAuthConfig,
+    ) -> JwtScheme<U, B, F, Elevation<B>, R, M> {
+        let validator =
+            LocalJwtValidator::new(elevated_banned_token_store, elevated_jwt_config.clone());
+
+        JwtScheme {
+            user_store: self.user_store,
+            banned_token_store: self.banned_token_store,
+            jwt_validator: self.jwt_validator,
+            jwt_config: self.jwt_config,
+            two_fa: self.two_fa,
+            elevation: Elevation {
+                validator,
+                config: elevated_jwt_config,
+            },
+            password_reset: self.password_reset,
+            email_verify: self.email_verify,
+        }
+    }
+}
+
+impl<U, B, F, L, M> JwtScheme<U, B, F, L, (), M> {
+    /// Enable password reset, lighting up [`SupportsPasswordReset`].
+    pub fn supports_password_reset<P, E>(
+        self,
+        store: P,
+        email: E,
+    ) -> JwtScheme<U, B, F, L, PasswordReset<P, E>, M> {
+        JwtScheme {
+            user_store: self.user_store,
+            banned_token_store: self.banned_token_store,
+            jwt_validator: self.jwt_validator,
+            jwt_config: self.jwt_config,
+            two_fa: self.two_fa,
+            elevation: self.elevation,
+            password_reset: PasswordReset { store, email },
+            email_verify: self.email_verify,
+        }
+    }
+}
+
+impl<U, B, F, L, R> JwtScheme<U, B, F, L, R, ()> {
+    /// Enable email verification, lighting up [`RequiresEmailVerification`].
+    pub fn supports_email_verification<V, E>(
+        self,
+        store: V,
+        email: E,
+    ) -> JwtScheme<U, B, F, L, R, EmailVerify<V, E>> {
+        JwtScheme {
+            user_store: self.user_store,
+            banned_token_store: self.banned_token_store,
+            jwt_validator: self.jwt_validator,
+            jwt_config: self.jwt_config,
+            two_fa: self.two_fa,
+            elevation: self.elevation,
+            password_reset: self.password_reset,
+            email_verify: EmailVerify { store, email },
+        }
+    }
+}
+
+impl<U, B, F, L, R, M> JwtScheme<U, B, F, L, R, M> {
+    /// Finalizer for readability; the scheme is already usable after the last
+    /// `supports_*`. Returns `self` unchanged.
+    pub fn build(self) -> Self {
+        self
+    }
+
     pub fn cookie_name(&self) -> &str {
         &self.jwt_config.jwt_cookie_name
     }
 
     pub fn user_store(&self) -> &U {
         &self.user_store
-    }
-
-    /// Attach an email-verification store, enabling the `RequiresEmailVerification` capability.
-    pub fn with_email_verification<NV: EmailVerificationTokenStore>(
-        self,
-        store: NV,
-    ) -> JwtScheme<U, T, E, B, R, NV> {
-        JwtScheme {
-            user_store: self.user_store,
-            two_fa_code_store: self.two_fa_code_store,
-            email_client: self.email_client,
-            banned_token_store: self.banned_token_store,
-            password_reset_token_store: self.password_reset_token_store,
-            email_verification_store: store,
-            jwt_validator: self.jwt_validator,
-            jwt_config: self.jwt_config,
-            elevated_jwt_validator: self.elevated_jwt_validator,
-            elevated_jwt_config: self.elevated_jwt_config,
-        }
     }
 
     fn generate_token(&self, email: &Email) -> Result<JwtToken, TokenAuthError> {
@@ -138,14 +295,14 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B, R, V> HttpAuthenticationScheme for JwtScheme<U, T, E, B, R, V>
+impl<U, B, F, L, R, M> HttpAuthenticationScheme for JwtScheme<U, B, F, L, R, M>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
-    V: Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: ElevatedCookieName + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
 {
     fn create_login_response<RB: ResponseBuilder>(
         &self,
@@ -191,22 +348,24 @@ where
     ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
         let cookie_name = cookie_name.unwrap_or_else(|| self.jwt_config.jwt_cookie_name.clone());
 
-        // Create cookies that expire immediately to clear them
+        // Clear the primary auth cookie by expiring it immediately.
         let clear_cookie = format!(
             "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
             cookie_name
         );
+        let builder = builder.status(200).cookie(&clear_cookie);
 
-        // Also clear the elevated token cookie
-        let clear_elevated_cookie = format!(
-            "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
-            self.elevated_jwt_config.jwt_cookie_name
-        );
+        // Also clear the elevated cookie, but only if elevation is enabled —
+        // otherwise no elevated cookie could ever have been set.
+        let builder = match self.elevation.elevated_cookie_name() {
+            Some(name) => builder.cookie(&format!(
+                "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+                name
+            )),
+            None => builder,
+        };
 
         builder
-            .status(200)
-            .cookie(&clear_cookie)
-            .cookie(&clear_elevated_cookie)
             .json_body(serde_json::json!({
                 "message": "Logged out successfully"
             }))
@@ -224,14 +383,14 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B, R, V> AuthenticationScheme for JwtScheme<U, T, E, B, R, V>
+impl<U, B, F, L, R, M> AuthenticationScheme for JwtScheme<U, B, F, L, R, M>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
-    V: Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
 {
     type Token = JwtToken;
     type Validator = LocalJwtValidator<B>;
@@ -253,24 +412,13 @@ where
 
         match validated_user {
             ValidatedUser::Requires2Fa(email) => {
-                // Handle 2FA required scenario
-                let login_attempt_id = TwoFaAttemptId::new();
-                let code = TwoFaCode::new();
-
-                // Store the 2FA code
-                self.two_fa_code_store
-                    .store_code(email.clone(), login_attempt_id.clone(), code.clone())
-                    .await?;
-
-                // Send the 2FA code via email
-                self.email_client
-                    .send_email(&email, "2FA Code", code.as_str())
-                    .await
-                    .map_err(JwtAuthError::EmailError)?;
+                // Delegate to the 2FA slot: issues + delivers the challenge, or
+                // errors if the scheme was built without `supports_2fa`.
+                let attempt_id = self.two_fa.issue_challenge(&email).await?;
 
                 Ok(LoginOutcome::Requires2Fa {
                     email,
-                    attempt_id: login_attempt_id,
+                    attempt_id,
                 })
             }
             ValidatedUser::No2Fa(email) => {
@@ -293,18 +441,18 @@ where
 }
 
 // ============================================================================
-// Optional Capability: Registration
+// Optional Capability: Registration (needs only the user store → always on)
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B, R, V> SupportsRegistration for JwtScheme<U, T, E, B, R, V>
+impl<U, B, F, L, R, M> SupportsRegistration for JwtScheme<U, B, F, L, R, M>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
-    V: Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
 {
     type RegistrationData = RegistrationData;
     type RegistrationError = JwtAuthError;
@@ -327,18 +475,19 @@ where
 }
 
 // ============================================================================
-// Optional Capability: Two-Factor Authentication
+// Optional Capability: Two-Factor Authentication (gated on the `TwoFa` slot)
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B, R, V> SupportsTwoFactor for JwtScheme<U, T, E, B, R, V>
+impl<U, B, T, E, L, R, M> SupportsTwoFactor for JwtScheme<U, B, TwoFa<T, E>, L, R, M>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
-    V: Clone + Send + Sync + 'static,
+    T: TwoFaCodeStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
 {
     type TwoFactorError = JwtAuthError;
 
@@ -350,12 +499,13 @@ where
         code: TwoFaCode,
     ) -> Result<Self::Token, Self::TwoFactorError> {
         // Validate the 2FA code
-        self.two_fa_code_store
+        self.two_fa
+            .store
             .validate(&email, &attempt_id, &code)
             .await?;
 
         // Delete the used 2FA code
-        self.two_fa_code_store.delete(&email).await?;
+        self.two_fa.store.delete(&email).await?;
 
         // Generate token for verified user
         let token = self.generate_token(&email)?;
@@ -415,6 +565,9 @@ pub enum JwtAuthError {
     #[error("Two-factor authentication error: {0}")]
     TwoFaError(#[from] TwoFaError),
 
+    #[error("Two-factor authentication is required but not configured for this scheme")]
+    TwoFaNotConfigured,
+
     #[error("Token error: {0}")]
     TokenError(#[from] TokenAuthError),
 
@@ -471,6 +624,12 @@ impl tempered_core::IntoStatusMessage for JwtAuthError {
                 format!("2FA code store error: {}", e),
             ),
 
+            // Misconfiguration: a 2FA user on a scheme without 2FA -> 500
+            JwtAuthError::TwoFaNotConfigured => (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Two-factor authentication is required but not configured".to_string(),
+            ),
+
             // Token errors -> use their own mapping
             JwtAuthError::TokenError(e) => e.into_status_message(),
 
@@ -508,7 +667,7 @@ impl tempered_core::IntoStatusMessage for JwtAuthError {
 }
 
 // ============================================================================
-// Optional Capability: Elevated Tokens (Sudo Pattern)
+// Optional Capability: Elevated Tokens (Sudo Pattern) — gated on `Elevation`
 // ============================================================================
 
 /// Elevated JWT token with shorter TTL for sensitive operations
@@ -526,14 +685,13 @@ impl ElevatedJwtToken {
 }
 
 #[async_trait]
-impl<U, T, E, B, R, V> SupportsElevation for JwtScheme<U, T, E, B, R, V>
+impl<U, B, F, R, M> SupportsElevation for JwtScheme<U, B, F, Elevation<B>, R, M>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
-    V: Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
 {
     type ElevatedToken = ElevatedJwtToken;
     type ElevatedValidator = LocalJwtValidator<B>;
@@ -551,25 +709,23 @@ where
         // Generate an elevated token using the elevated config (with shorter TTL)
         let token_string = generate_auth_token(
             &email,
-            self.elevated_jwt_config.token_ttl_in_seconds,
-            self.elevated_jwt_config
-                .jwt_secret
-                .expose_secret()
-                .as_bytes(),
+            self.elevation.config.token_ttl_in_seconds,
+            self.elevation.config.jwt_secret.expose_secret().as_bytes(),
         )?;
 
         Ok(ElevatedJwtToken(token_string))
     }
 
     fn elevated_validator(&self) -> &Self::ElevatedValidator {
-        &self.elevated_jwt_validator
+        &self.elevation.validator
     }
 
     async fn revoke_elevated_token(
         &self,
         token: &Self::ElevatedToken,
     ) -> Result<(), Self::ElevationError> {
-        self.elevated_jwt_validator
+        self.elevation
+            .validator
             .banned_token_store
             .ban_token(token.0.clone())
             .await
@@ -582,14 +738,13 @@ where
 // HTTP Elevation Scheme - Framework-agnostic elevated token delivery
 // ============================================================================
 
-impl<U, T, E, B, R, V> tempered_core::HttpElevationScheme for JwtScheme<U, T, E, B, R, V>
+impl<U, B, F, R, M> tempered_core::HttpElevationScheme for JwtScheme<U, B, F, Elevation<B>, R, M>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
-    V: Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
 {
     fn create_elevation_response<RB: ResponseBuilder>(
         &self,
@@ -599,7 +754,7 @@ where
         // Use the elevated JWT config's cookie name
         let cookie = create_auth_cookie(
             elevated_token.into_string(),
-            &self.elevated_jwt_config.jwt_cookie_name,
+            &self.elevation.config.jwt_cookie_name,
         );
 
         builder
@@ -616,24 +771,24 @@ where
         &self,
         req: &Req,
     ) -> Option<Self::ElevatedToken> {
-        req.cookie(&self.elevated_jwt_config.jwt_cookie_name)
+        req.cookie(&self.elevation.config.jwt_cookie_name)
             .map(|token_str| ElevatedJwtToken(token_str.to_string()))
     }
 }
 
 // ============================================================================
-// Optional Capability: Password Change
+// Optional Capability: Password Change (needs only the user store → always on)
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B, R, V> SupportsPasswordChange for JwtScheme<U, T, E, B, R, V>
+impl<U, B, F, L, R, M> SupportsPasswordChange for JwtScheme<U, B, F, L, R, M>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
-    V: Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
 {
     type PasswordChangeError = JwtAuthError;
 
@@ -653,18 +808,18 @@ where
 }
 
 // ============================================================================
-// Optional Capability: Account Deletion
+// Optional Capability: Account Deletion (needs only the user store → always on)
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B, R, V> SupportsAccountDeletion for JwtScheme<U, T, E, B, R, V>
+impl<U, B, F, L, R, M> SupportsAccountDeletion for JwtScheme<U, B, F, L, R, M>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
-    V: Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
 {
     type AccountDeletionError = JwtAuthError;
 
@@ -678,18 +833,19 @@ where
 }
 
 // ============================================================================
-// Optional Capability: Password Reset
+// Optional Capability: Password Reset (gated on the `PasswordReset` slot)
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B, R, V> SupportsPasswordReset for JwtScheme<U, T, E, B, R, V>
+impl<U, B, F, L, P, E, M> SupportsPasswordReset for JwtScheme<U, B, F, L, PasswordReset<P, E>, M>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
-    V: Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    P: PasswordResetTokenStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
 {
     type PasswordResetError = JwtAuthError;
 
@@ -702,11 +858,13 @@ where
 
         let token = PasswordResetToken::new();
 
-        self.password_reset_token_store
+        self.password_reset
+            .store
             .store_token(token.clone(), email.clone())
             .await?;
 
-        self.email_client
+        self.password_reset
+            .email
             .send_email(&email, "Password Reset", &token.to_string())
             .await
             .map_err(JwtAuthError::EmailError)?;
@@ -720,49 +878,59 @@ where
         reset_token: String,
         new_password: Password,
     ) -> Result<(), Self::PasswordResetError> {
-        let token = PasswordResetToken::parse(&reset_token)
-            .ok_or(JwtAuthError::InvalidResetToken)?;
+        let token =
+            PasswordResetToken::parse(&reset_token).ok_or(JwtAuthError::InvalidResetToken)?;
 
         let email = self
-            .password_reset_token_store
+            .password_reset
+            .store
             .get_email_for_token(&token)
             .await
             .map_err(|_| JwtAuthError::InvalidResetToken)?;
 
-        self.user_store.set_new_password(&email, new_password).await?;
+        self.user_store
+            .set_new_password(&email, new_password)
+            .await?;
 
         // Best-effort deletion: token is already consumed, so ignore delete errors.
-        let _ = self.password_reset_token_store.delete_token(&token).await;
+        let _ = self.password_reset.store.delete_token(&token).await;
 
         Ok(())
     }
 }
 
 // ============================================================================
-// Optional Capability: Email Verification
+// Optional Capability: Email Verification (gated on the `EmailVerify` slot)
 // ============================================================================
 
 #[async_trait]
-impl<U, T, E, B, R, V> RequiresEmailVerification for JwtScheme<U, T, E, B, R, V>
+impl<U, B, F, L, R, V, E> RequiresEmailVerification
+    for JwtScheme<U, B, F, L, R, EmailVerify<V, E>>
 where
     U: UserStore + Clone + 'static,
-    T: TwoFaCodeStore + Clone + 'static,
-    E: EmailClient + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
-    R: PasswordResetTokenStore + Clone + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
     V: EmailVerificationTokenStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
 {
     type EmailVerificationError = JwtAuthError;
 
     #[tracing::instrument(name = "JwtScheme::initiate_email_verification", skip(self))]
-    async fn initiate_email_verification(&self, email: Email) -> Result<(), Self::EmailVerificationError> {
+    async fn initiate_email_verification(
+        &self,
+        email: Email,
+    ) -> Result<(), Self::EmailVerificationError> {
         let token = EmailVerificationToken::new();
 
-        self.email_verification_store
+        self.email_verify
+            .store
             .store_pending_verification(token.clone(), email.clone())
             .await?;
 
-        self.email_client
+        self.email_verify
+            .email
             .send_email(&email, "Verify your email", &token.to_string())
             .await
             .map_err(JwtAuthError::EmailError)?;
@@ -776,18 +944,22 @@ where
             .ok_or(JwtAuthError::InvalidVerificationToken)?;
 
         let email = self
-            .email_verification_store
+            .email_verify
+            .store
             .consume_token(&token)
             .await
             .map_err(|_| JwtAuthError::InvalidVerificationToken)?;
 
-        self.email_verification_store.mark_verified(&email).await?;
+        self.email_verify.store.mark_verified(&email).await?;
 
         Ok(())
     }
 
     #[tracing::instrument(name = "JwtScheme::is_email_verified", skip(self))]
-    async fn is_email_verified(&self, email: &Email) -> Result<bool, Self::EmailVerificationError> {
-        Ok(self.email_verification_store.is_verified(email).await?)
+    async fn is_email_verified(
+        &self,
+        email: &Email,
+    ) -> Result<bool, Self::EmailVerificationError> {
+        Ok(self.email_verify.store.is_verified(email).await?)
     }
 }

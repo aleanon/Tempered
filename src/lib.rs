@@ -84,7 +84,7 @@ pub mod adapters {
 pub use tempered_adapters::{
     auth_validation::local_jwt_validator::JwtAuthConfig,
     authentication::api_key_scheme::ApiKeyScheme,
-    authentication::jwt_scheme::JwtScheme,
+    authentication::jwt_scheme::{Elevation, EmailVerify, JwtScheme, PasswordReset, TwoFa},
     authentication::session_scheme::{SessionConfig, SessionScheme},
     email::{MockEmailClient, PostmarkEmailClient},
     oauth::{AuthorizationRequest, OAuthFlow, OAuthFlowError, ReqwestOAuthHttpClient},

@@ -81,17 +81,12 @@ impl TestApp {
             token_ttl_in_seconds: 900, // 15 minutes for elevated tokens
         };
 
-        // Create the JwtScheme with all required stores
-        let jwt_scheme = JwtScheme::new(
-            user_store,
-            two_fa_code_store.clone(),
-            email_client,
-            banned_token_store.clone(),
-            jwt_config,
-            banned_token_store.clone(),
-            elevated_jwt_config,
-            password_reset_token_store,
-        );
+        // Build the scheme from a minimal core, opting into each capability.
+        let jwt_scheme = JwtScheme::new(user_store, jwt_config, banned_token_store.clone())
+            .supports_2fa(two_fa_code_store.clone(), email_client.clone())
+            .supports_elevation(banned_token_store.clone(), elevated_jwt_config)
+            .supports_password_reset(password_reset_token_store, email_client)
+            .build();
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
