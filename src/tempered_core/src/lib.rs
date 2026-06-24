@@ -40,9 +40,10 @@ pub use ports::{
 pub use strategies::{
     auth_validator::AuthValidator,
     authenticator::{
-        AuthenticationScheme, LoginOutcome, RequiresEmailVerification, SupportsAccountDeletion,
-        SupportsApiKeyIssuance, SupportsElevation, SupportsOAuth2, SupportsPasswordChange,
-        SupportsPasswordReset, SupportsRegistration, SupportsTokenRevocation, SupportsTwoFactor,
+        AuthenticationScheme, AuthorizationRequest, LoginOutcome, RequiresEmailVerification,
+        SupportsAccountDeletion, SupportsApiKeyIssuance, SupportsElevation, SupportsOAuth2,
+        SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
+        SupportsTokenRevocation, SupportsTwoFactor,
     },
 };
 
@@ -50,5 +51,7 @@ pub use http_abstraction::{
     AuthRequest, AuthResponseBuilder, AuthResponseHelpers, HttpResponseBuilderExt, ResponseBuilder,
     ResponseBuilderError,
 };
-pub use http_authentication_scheme::{HttpAuthenticationScheme, HttpElevationScheme};
+pub use http_authentication_scheme::{
+    HttpAuthenticationScheme, HttpElevationScheme, HttpOAuth2Scheme,
+};
 pub use http_error::IntoStatusMessage;

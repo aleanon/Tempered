@@ -128,33 +128,57 @@ pub trait SupportsTwoFactor: AuthenticationScheme {
 // Optional Capability: OAuth2
 // ============================================================================
 
-/// Optional trait for authentication schemes that support OAuth2 flows.
+/// The result of beginning an OAuth2 / OIDC authorization-code flow.
 ///
-/// OAuth2 schemes typically don't support password-based registration,
-/// as user accounts are managed by the OAuth2 provider (Google, GitHub, etc.).
+/// `state` is the anti-CSRF nonce that the delivery layer must **bind to the
+/// initiating browser** — set it as an `HttpOnly; Secure; SameSite=Lax` cookie
+/// on the redirect response, then pass that cookie's value back to
+/// [`SupportsOAuth2::complete_oauth`] as `cookie_state`. Without this binding the
+/// server-side state store alone would let any browser complete any pending flow
+/// (login CSRF).
+pub struct AuthorizationRequest {
+    /// The provider URL to redirect the user to for authorization.
+    pub authorize_url: String,
+    /// The anti-CSRF state to bind to the initiating browser.
+    pub state: String,
+}
+
+/// Optional trait for authentication schemes that can authenticate users via an
+/// OAuth2 / OIDC provider (Google, GitHub, …).
+///
+/// Unlike credential login, OAuth is a two-leg redirect flow. The provider
+/// verifies the user's identity and yields a local [`Email`]; this scheme then
+/// issues its **own primary [`Token`](AuthenticationScheme::Token)** for that
+/// account — so an OAuth login is indistinguishable from any other once
+/// completed. Account provisioning/registration is the provider's concern, so
+/// OAuth-only schemes typically do not implement [`SupportsRegistration`].
 #[async_trait]
 pub trait SupportsOAuth2: AuthenticationScheme {
-    /// OAuth2 provider information
-    type Provider: Send;
-
-    /// The URL users should be redirected to for OAuth2 authorization
-    type AuthorizationUrl: Send;
-
-    /// Errors that can occur during OAuth2 flows
+    /// Errors that can occur during the OAuth flow.
     type OAuth2Error: std::error::Error + Send + Sync + 'static;
 
-    /// Begin an OAuth2 authorization flow.
+    /// Leg 1: begin an authorization-code flow for `provider`.
     ///
-    /// Returns a URL that the user should be redirected to for authorization.
-    async fn begin_oauth_flow(
-        &self,
-        provider: Self::Provider,
-    ) -> Result<Self::AuthorizationUrl, Self::OAuth2Error>;
+    /// Returns the provider authorize URL plus the anti-CSRF `state` the delivery
+    /// layer must bind to the initiating browser (see [`AuthorizationRequest`]).
+    async fn begin_oauth(&self, provider: &str)
+    -> Result<AuthorizationRequest, Self::OAuth2Error>;
 
-    /// Complete an OAuth2 authorization flow.
+    /// Leg 2: complete the callback and issue this scheme's primary token.
     ///
-    /// Called when the OAuth2 provider redirects back with an authorization code.
-    async fn complete_oauth_flow(&self, code: String) -> Result<Self::Token, Self::OAuth2Error>;
+    /// Validates `state`, exchanges `code`, verifies the provider identity, and
+    /// mints a [`Token`](AuthenticationScheme::Token) for the resulting account.
+    ///
+    /// `query_state` is the `state` the provider echoed on the callback;
+    /// `cookie_state` is the value previously bound to the browser. The two must
+    /// match, proving the same browser that began the flow is completing it.
+    async fn complete_oauth(
+        &self,
+        provider: &str,
+        code: &str,
+        query_state: &str,
+        cookie_state: &str,
+    ) -> Result<Self::Token, Self::OAuth2Error>;
 }
 
 // ============================================================================

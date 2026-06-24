@@ -49,12 +49,12 @@ pub mod repositories {
 
 // Re-export repository traits at root level
 pub use core::{
-    ApiKeyStore, ApiKeyStoreError, BannedTokenStore, BannedTokenStoreError, ChallengeStore,
-    ChallengeStoreError, EmailClient, EmailVerificationStoreError, EmailVerificationTokenStore,
-    OAuthHttpClient, OAuthHttpError, OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore,
-    PasskeyStoreError, RequiresEmailVerification, SessionStore, SessionStoreError,
-    SupportsApiKeyIssuance, TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError,
-    WebAuthnVerifier,
+    ApiKeyStore, ApiKeyStoreError, AuthorizationRequest, BannedTokenStore, BannedTokenStoreError,
+    ChallengeStore, ChallengeStoreError, EmailClient, EmailVerificationStoreError,
+    EmailVerificationTokenStore, HttpOAuth2Scheme, OAuthHttpClient, OAuthHttpError,
+    OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, PasskeyStoreError,
+    RequiresEmailVerification, SessionStore, SessionStoreError, SupportsApiKeyIssuance,
+    SupportsOAuth2, TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError, WebAuthnVerifier,
 };
 
 // ============================================================================
@@ -84,10 +84,12 @@ pub mod adapters {
 pub use tempered_adapters::{
     auth_validation::local_jwt_validator::JwtAuthConfig,
     authentication::api_key_scheme::{ApiKeyScheme, Issuance},
-    authentication::jwt_scheme::{Elevation, EmailVerify, JwtScheme, PasswordReset, TwoFa},
+    authentication::jwt_scheme::{
+        Elevation, EmailVerify, JwtScheme, OAuth, PasswordReset, TwoFa,
+    },
     authentication::session_scheme::{SessionConfig, SessionScheme},
     email::{MockEmailClient, PostmarkEmailClient},
-    oauth::{AuthorizationRequest, OAuthFlow, OAuthFlowError, ReqwestOAuthHttpClient},
+    oauth::{OAuthFlow, OAuthFlowError, ReqwestOAuthHttpClient},
     passkey::{PasskeyFlow, PasskeyFlowError},
     persistence::{
         HashMapApiKeyStore, HashMapChallengeStore, HashMapEmailVerificationTokenStore,

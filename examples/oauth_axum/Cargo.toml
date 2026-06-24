@@ -6,9 +6,8 @@ publish = false
 
 [dependencies]
 tempered = { path = "../.." }
+tempered_axum.workspace = true
 axum.workspace = true
-axum-extra.workspace = true
-tower-http.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

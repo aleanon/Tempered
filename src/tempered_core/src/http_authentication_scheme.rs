@@ -4,7 +4,9 @@
 //! with HTTP-specific concerns like how tokens are delivered to clients.
 
 use super::http_abstraction::{AuthRequest, ResponseBuilder};
-use crate::{AuthenticationScheme, LoginOutcome, SupportsElevation};
+use crate::{
+    AuthenticationScheme, AuthorizationRequest, LoginOutcome, SupportsElevation, SupportsOAuth2,
+};
 
 /// Framework-agnostic HTTP-level abstraction for authentication schemes.
 ///
@@ -208,4 +210,43 @@ pub trait HttpElevationScheme: HttpAuthenticationScheme + SupportsElevation {
         &self,
         req: &R,
     ) -> Option<Self::ElevatedToken>;
+}
+
+/// Extension trait for authentication schemes that support OAuth2 / OIDC login.
+///
+/// Separate from `HttpAuthenticationScheme` because OAuth has its own two-leg
+/// HTTP shape (a redirect to the provider, then a callback), distinct from the
+/// single-request credential login. Only schemes that implement
+/// [`SupportsOAuth2`] should implement this trait.
+///
+/// The flow:
+/// 1. **Start** — the route calls [`SupportsOAuth2::begin_oauth`] and hands the
+///    result to [`create_oauth_start_response`](HttpOAuth2Scheme::create_oauth_start_response),
+///    which redirects to the provider while binding `state` to the browser via a
+///    cookie named [`oauth_state_cookie_name`](HttpOAuth2Scheme::oauth_state_cookie_name).
+/// 2. **Callback** — the route reads `code` + `state` (query) and the state
+///    cookie, calls [`SupportsOAuth2::complete_oauth`] to obtain the primary
+///    token, then hands it to
+///    [`create_oauth_callback_response`](HttpOAuth2Scheme::create_oauth_callback_response),
+///    which delivers the token (e.g. sets the auth cookie) and redirects into the app.
+pub trait HttpOAuth2Scheme: HttpAuthenticationScheme + SupportsOAuth2 {
+    /// The cookie name used to bind the anti-CSRF `state` to the browser between
+    /// the start redirect and the callback.
+    fn oauth_state_cookie_name(&self) -> &str;
+
+    /// Build the redirect to the provider, setting the state cookie from
+    /// [`AuthorizationRequest::state`].
+    fn create_oauth_start_response<B: ResponseBuilder>(
+        &self,
+        builder: B,
+        authorization: AuthorizationRequest,
+    ) -> Result<B::Response, crate::ResponseBuilderError>;
+
+    /// Build the post-callback response: deliver the issued token (e.g. set the
+    /// auth cookie), clear the state cookie, and redirect the browser into the app.
+    fn create_oauth_callback_response<B: ResponseBuilder>(
+        &self,
+        builder: B,
+        token: Self::Token,
+    ) -> Result<B::Response, crate::ResponseBuilderError>;
 }

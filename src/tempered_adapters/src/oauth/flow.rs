@@ -20,20 +20,13 @@ use tempered_core::{
 };
 use thiserror::Error;
 
-/// The result of [`OAuthFlow::begin`].
-///
-/// `state` must be **bound to the initiating browser** by the delivery layer —
-/// set it as an `HttpOnly; Secure; SameSite=Lax` cookie (e.g. `oauth_state`) on
-/// the redirect response. On the callback, pass that cookie's value to
-/// [`OAuthFlow::complete`] as `cookie_state`; the flow rejects the request
-/// unless it matches the `state` query parameter. Without this binding the
-/// server-side store alone would let any browser complete any pending flow
-/// (login CSRF).
-pub struct AuthorizationRequest {
-    pub authorize_url: String,
-    pub state: String,
-}
+// The flow's [`begin`](OAuthFlow::begin) returns the framework-agnostic
+// [`AuthorizationRequest`] defined in `tempered_core` (so the `SupportsOAuth2`
+// capability and the HTTP layer share one type). Re-exported from this module's
+// original path for backwards compatibility.
+pub use tempered_core::AuthorizationRequest;
 
+#[derive(Clone)]
 pub struct OAuthFlow<ST, ID, HC> {
     state_store: ST,
     identity_store: ID,

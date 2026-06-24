@@ -1,10 +1,13 @@
 use std::marker::PhantomData;
 
-use axum::{Router, routing::post};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    IntoStatusMessage, RequiresEmailVerification, SupportsElevation, SupportsPasswordReset,
-    SupportsRegistration, SupportsTwoFactor,
+    HttpOAuth2Scheme, IntoStatusMessage, RequiresEmailVerification, SupportsElevation,
+    SupportsOAuth2, SupportsPasswordReset, SupportsRegistration, SupportsTwoFactor,
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -385,6 +388,48 @@ where
             password_reset_complete_path: self.password_reset_complete_path,
             email_verification_path: Some(path.to_string()),
         }
+    }
+}
+
+impl<R> AuthService<R>
+where
+    R: RouteConfig,
+    R::Scheme: HttpOAuth2Scheme,
+    <R::Scheme as SupportsOAuth2>::OAuth2Error: IntoStatusMessage,
+{
+    /// Adds OAuth2 / OIDC routes (start + callback) to the service.
+    ///
+    /// Both default paths carry a `{provider}` segment so one route pair serves
+    /// every provider the scheme was configured with:
+    /// `/oauth/{provider}/start` and `/oauth/{provider}/callback`. A successful
+    /// callback issues the scheme's primary token (the same session as password
+    /// login) and redirects into the app.
+    ///
+    /// Unlike the credential routes, OAuth routes are public `GET`s with no
+    /// token middleware, so they are registered eagerly here rather than via the
+    /// deferred route-config chain.
+    pub fn with_oauth(
+        mut self,
+        start_path: Option<&str>,
+        callback_path: Option<&str>,
+    ) -> AuthService<R> {
+        let start_path = start_path.unwrap_or("/oauth/{provider}/start");
+        let callback_path = callback_path.unwrap_or("/oauth/{provider}/callback");
+
+        validate_path(start_path);
+        validate_path(callback_path);
+
+        let mut routers = self.instance.get_routers();
+        routers.main_router = routers
+            .main_router
+            .route(start_path, get(crate::routes::oauth_start::<R::Scheme>))
+            .route(
+                callback_path,
+                get(crate::routes::oauth_callback::<R::Scheme>),
+            );
+        self.instance.set_routers(routers);
+
+        self
     }
 }
 

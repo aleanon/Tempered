@@ -40,7 +40,10 @@
       if (res.ok) {
         const { email } = await res.json();
         const logout = el("button", { className: "secondary" }, "Log out");
-        logout.onclick = () => (location.href = "/logout");
+        logout.onclick = async () => {
+          await fetch("/logout", { method: "POST" });
+          render();
+        };
         card.append(el("p", {}, "Logged in as"), el("p", { className: "email" }, email), logout);
       } else {
         card.append(

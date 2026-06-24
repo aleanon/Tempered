@@ -2,11 +2,12 @@ use async_trait::async_trait;
 use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
 use tempered_core::{
-    AuthRequest, BannedTokenStore, BannedTokenStoreError, Email, EmailClient,
+    AuthRequest, AuthorizationRequest, BannedTokenStore, BannedTokenStoreError, Email, EmailClient,
     EmailVerificationStoreError, EmailVerificationToken, EmailVerificationTokenStore,
-    HttpAuthenticationScheme, HttpResponseBuilderExt, Password, PasswordResetToken,
-    PasswordResetTokenStore, PasswordResetTokenStoreError, RequiresEmailVerification,
-    ResponseBuilder, SupportsAccountDeletion, SupportsElevation, SupportsPasswordChange,
+    HttpAuthenticationScheme, HttpOAuth2Scheme, HttpResponseBuilderExt, OAuthHttpClient,
+    OAuthIdentityStore, OAuthStateStore, Password, PasswordResetToken, PasswordResetTokenStore,
+    PasswordResetTokenStoreError, RequiresEmailVerification, ResponseBuilder,
+    SupportsAccountDeletion, SupportsElevation, SupportsOAuth2, SupportsPasswordChange,
     SupportsPasswordReset, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError,
     TwoFaError, User, UserError, UserStore, UserStoreError, ValidatedUser,
     strategies::authenticator::{
@@ -18,6 +19,7 @@ use thiserror::Error;
 use crate::auth_validation::local_jwt_validator::{
     JwtAuthConfig, LocalJwtValidator, TokenAuthError, create_auth_cookie, generate_auth_token,
 };
+use crate::oauth::{OAuthFlow, OAuthFlowError};
 
 // ============================================================================
 // JWT Authentication Scheme
@@ -41,8 +43,9 @@ use crate::auth_validation::local_jwt_validator::{
 /// - `L` — elevation    ([`Elevation`],     via [`JwtScheme::supports_elevation`])
 /// - `R` — password reset ([`PasswordReset`], via [`JwtScheme::supports_password_reset`])
 /// - `M` — email verify ([`EmailVerify`],   via [`JwtScheme::supports_email_verification`])
+/// - `O` — OAuth2/OIDC  ([`OAuth`],         via [`JwtScheme::supports_oauth`])
 #[derive(Clone)]
-pub struct JwtScheme<U, B, F = (), L = (), R = (), M = ()> {
+pub struct JwtScheme<U, B, F = (), L = (), R = (), M = (), O = ()> {
     user_store: U,
     banned_token_store: B,
     jwt_validator: LocalJwtValidator<B>,
@@ -51,6 +54,7 @@ pub struct JwtScheme<U, B, F = (), L = (), R = (), M = ()> {
     elevation: L,
     password_reset: R,
     email_verify: M,
+    oauth: O,
 }
 
 // ============================================================================
@@ -83,6 +87,16 @@ pub struct PasswordReset<P, E> {
 pub struct EmailVerify<V, E> {
     store: V,
     email: E,
+}
+
+/// Enabled OAuth2/OIDC slot: the authorization-code flow plus the cookie/redirect
+/// settings the HTTP layer needs (the `state` binding cookie and where to send the
+/// browser after a successful callback).
+#[derive(Clone)]
+pub struct OAuth<ST, ID, HC> {
+    flow: OAuthFlow<ST, ID, HC>,
+    state_cookie_name: String,
+    post_login_redirect: String,
 }
 
 // ============================================================================
@@ -154,7 +168,7 @@ impl<B> ElevatedCookieName for Elevation<B> {
 // Builder: new() + supports_*()
 // ============================================================================
 
-impl<U, B> JwtScheme<U, B, (), (), (), ()>
+impl<U, B> JwtScheme<U, B, (), (), (), (), ()>
 where
     U: UserStore,
     B: BannedTokenStore + Clone,
@@ -174,13 +188,14 @@ where
             elevation: (),
             password_reset: (),
             email_verify: (),
+            oauth: (),
         }
     }
 }
 
-impl<U, B, L, R, M> JwtScheme<U, B, (), L, R, M> {
+impl<U, B, L, R, M, O> JwtScheme<U, B, (), L, R, M, O> {
     /// Enable two-factor authentication, lighting up [`SupportsTwoFactor`].
-    pub fn supports_2fa<T, E>(self, store: T, email: E) -> JwtScheme<U, B, TwoFa<T, E>, L, R, M> {
+    pub fn supports_2fa<T, E>(self, store: T, email: E) -> JwtScheme<U, B, TwoFa<T, E>, L, R, M, O> {
         JwtScheme {
             user_store: self.user_store,
             banned_token_store: self.banned_token_store,
@@ -190,11 +205,12 @@ impl<U, B, L, R, M> JwtScheme<U, B, (), L, R, M> {
             elevation: self.elevation,
             password_reset: self.password_reset,
             email_verify: self.email_verify,
+            oauth: self.oauth,
         }
     }
 }
 
-impl<U, B, F, R, M> JwtScheme<U, B, F, (), R, M>
+impl<U, B, F, R, M, O> JwtScheme<U, B, F, (), R, M, O>
 where
     B: Clone,
 {
@@ -204,7 +220,7 @@ where
         self,
         elevated_banned_token_store: B,
         elevated_jwt_config: JwtAuthConfig,
-    ) -> JwtScheme<U, B, F, Elevation<B>, R, M> {
+    ) -> JwtScheme<U, B, F, Elevation<B>, R, M, O> {
         let validator =
             LocalJwtValidator::new(elevated_banned_token_store, elevated_jwt_config.clone());
 
@@ -220,17 +236,18 @@ where
             },
             password_reset: self.password_reset,
             email_verify: self.email_verify,
+            oauth: self.oauth,
         }
     }
 }
 
-impl<U, B, F, L, M> JwtScheme<U, B, F, L, (), M> {
+impl<U, B, F, L, M, O> JwtScheme<U, B, F, L, (), M, O> {
     /// Enable password reset, lighting up [`SupportsPasswordReset`].
     pub fn supports_password_reset<P, E>(
         self,
         store: P,
         email: E,
-    ) -> JwtScheme<U, B, F, L, PasswordReset<P, E>, M> {
+    ) -> JwtScheme<U, B, F, L, PasswordReset<P, E>, M, O> {
         JwtScheme {
             user_store: self.user_store,
             banned_token_store: self.banned_token_store,
@@ -240,17 +257,18 @@ impl<U, B, F, L, M> JwtScheme<U, B, F, L, (), M> {
             elevation: self.elevation,
             password_reset: PasswordReset { store, email },
             email_verify: self.email_verify,
+            oauth: self.oauth,
         }
     }
 }
 
-impl<U, B, F, L, R> JwtScheme<U, B, F, L, R, ()> {
+impl<U, B, F, L, R, O> JwtScheme<U, B, F, L, R, (), O> {
     /// Enable email verification, lighting up [`RequiresEmailVerification`].
     pub fn supports_email_verification<V, E>(
         self,
         store: V,
         email: E,
-    ) -> JwtScheme<U, B, F, L, R, EmailVerify<V, E>> {
+    ) -> JwtScheme<U, B, F, L, R, EmailVerify<V, E>, O> {
         JwtScheme {
             user_store: self.user_store,
             banned_token_store: self.banned_token_store,
@@ -260,11 +278,62 @@ impl<U, B, F, L, R> JwtScheme<U, B, F, L, R, ()> {
             elevation: self.elevation,
             password_reset: self.password_reset,
             email_verify: EmailVerify { store, email },
+            oauth: self.oauth,
         }
     }
 }
 
-impl<U, B, F, L, R, M> JwtScheme<U, B, F, L, R, M> {
+impl<U, B, F, L, R, M> JwtScheme<U, B, F, L, R, M, ()> {
+    /// Enable OAuth2/OIDC login, lighting up [`SupportsOAuth2`] and
+    /// [`tempered_core::HttpOAuth2Scheme`].
+    ///
+    /// A successful provider callback issues this scheme's primary JWT, so an
+    /// OAuth login produces the same session cookie as a password login. The
+    /// `state` binding cookie defaults to `oauth_state` and the browser is sent
+    /// to `/` after callback; override with [`oauth_state_cookie`] /
+    /// [`oauth_post_login_redirect`].
+    ///
+    /// [`oauth_state_cookie`]: JwtScheme::oauth_state_cookie
+    /// [`oauth_post_login_redirect`]: JwtScheme::oauth_post_login_redirect
+    pub fn supports_oauth<ST, ID, HC>(
+        self,
+        flow: OAuthFlow<ST, ID, HC>,
+    ) -> JwtScheme<U, B, F, L, R, M, OAuth<ST, ID, HC>> {
+        JwtScheme {
+            user_store: self.user_store,
+            banned_token_store: self.banned_token_store,
+            jwt_validator: self.jwt_validator,
+            jwt_config: self.jwt_config,
+            two_fa: self.two_fa,
+            elevation: self.elevation,
+            password_reset: self.password_reset,
+            email_verify: self.email_verify,
+            oauth: OAuth {
+                flow,
+                state_cookie_name: "oauth_state".to_string(),
+                post_login_redirect: "/".to_string(),
+            },
+        }
+    }
+}
+
+impl<U, B, F, L, R, M, ST, ID, HC> JwtScheme<U, B, F, L, R, M, OAuth<ST, ID, HC>> {
+    /// Override the cookie name used to bind the OAuth `state` to the browser
+    /// (default `oauth_state`).
+    pub fn oauth_state_cookie(mut self, name: impl Into<String>) -> Self {
+        self.oauth.state_cookie_name = name.into();
+        self
+    }
+
+    /// Override where the browser is redirected after a successful OAuth callback
+    /// (default `/`).
+    pub fn oauth_post_login_redirect(mut self, path: impl Into<String>) -> Self {
+        self.oauth.post_login_redirect = path.into();
+        self
+    }
+}
+
+impl<U, B, F, L, R, M, O> JwtScheme<U, B, F, L, R, M, O> {
     /// Finalizer for readability; the scheme is already usable after the last
     /// `supports_*`. Returns `self` unchanged.
     pub fn build(self) -> Self {
@@ -295,7 +364,7 @@ impl<U, B, F, L, R, M> JwtScheme<U, B, F, L, R, M> {
 // ============================================================================
 
 #[async_trait]
-impl<U, B, F, L, R, M> HttpAuthenticationScheme for JwtScheme<U, B, F, L, R, M>
+impl<U, B, F, L, R, M, O> HttpAuthenticationScheme for JwtScheme<U, B, F, L, R, M, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
@@ -303,6 +372,7 @@ where
     L: ElevatedCookieName + Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     fn create_login_response<RB: ResponseBuilder>(
         &self,
@@ -383,7 +453,7 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, B, F, L, R, M> AuthenticationScheme for JwtScheme<U, B, F, L, R, M>
+impl<U, B, F, L, R, M, O> AuthenticationScheme for JwtScheme<U, B, F, L, R, M, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
@@ -391,6 +461,7 @@ where
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     type Token = JwtToken;
     type Validator = LocalJwtValidator<B>;
@@ -445,7 +516,7 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, B, F, L, R, M> SupportsRegistration for JwtScheme<U, B, F, L, R, M>
+impl<U, B, F, L, R, M, O> SupportsRegistration for JwtScheme<U, B, F, L, R, M, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
@@ -453,6 +524,7 @@ where
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     type RegistrationData = RegistrationData;
     type RegistrationError = JwtAuthError;
@@ -479,7 +551,7 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, B, T, E, L, R, M> SupportsTwoFactor for JwtScheme<U, B, TwoFa<T, E>, L, R, M>
+impl<U, B, T, E, L, R, M, O> SupportsTwoFactor for JwtScheme<U, B, TwoFa<T, E>, L, R, M, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
@@ -488,6 +560,7 @@ where
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     type TwoFactorError = JwtAuthError;
 
@@ -594,6 +667,9 @@ pub enum JwtAuthError {
 
     #[error("Email verification store error: {0}")]
     EmailVerificationStoreError(#[from] EmailVerificationStoreError),
+
+    #[error("OAuth error: {0}")]
+    OAuth(#[from] OAuthFlowError),
 }
 
 impl tempered_core::IntoStatusMessage for JwtAuthError {
@@ -662,6 +738,10 @@ impl tempered_core::IntoStatusMessage for JwtAuthError {
                 http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Email verification store error: {}", e),
             ),
+
+            // Delegate to the OAuth flow's own status mapping (which is careful
+            // not to leak provider/internal detail to clients).
+            JwtAuthError::OAuth(e) => e.into_status_message(),
         }
     }
 }
@@ -685,13 +765,14 @@ impl ElevatedJwtToken {
 }
 
 #[async_trait]
-impl<U, B, F, R, M> SupportsElevation for JwtScheme<U, B, F, Elevation<B>, R, M>
+impl<U, B, F, R, M, O> SupportsElevation for JwtScheme<U, B, F, Elevation<B>, R, M, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     type ElevatedToken = ElevatedJwtToken;
     type ElevatedValidator = LocalJwtValidator<B>;
@@ -738,13 +819,15 @@ where
 // HTTP Elevation Scheme - Framework-agnostic elevated token delivery
 // ============================================================================
 
-impl<U, B, F, R, M> tempered_core::HttpElevationScheme for JwtScheme<U, B, F, Elevation<B>, R, M>
+impl<U, B, F, R, M, O> tempered_core::HttpElevationScheme
+    for JwtScheme<U, B, F, Elevation<B>, R, M, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     fn create_elevation_response<RB: ResponseBuilder>(
         &self,
@@ -781,7 +864,7 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, B, F, L, R, M> SupportsPasswordChange for JwtScheme<U, B, F, L, R, M>
+impl<U, B, F, L, R, M, O> SupportsPasswordChange for JwtScheme<U, B, F, L, R, M, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
@@ -789,6 +872,7 @@ where
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     type PasswordChangeError = JwtAuthError;
 
@@ -812,7 +896,7 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, B, F, L, R, M> SupportsAccountDeletion for JwtScheme<U, B, F, L, R, M>
+impl<U, B, F, L, R, M, O> SupportsAccountDeletion for JwtScheme<U, B, F, L, R, M, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
@@ -820,6 +904,7 @@ where
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     type AccountDeletionError = JwtAuthError;
 
@@ -837,7 +922,8 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, B, F, L, P, E, M> SupportsPasswordReset for JwtScheme<U, B, F, L, PasswordReset<P, E>, M>
+impl<U, B, F, L, P, E, M, O> SupportsPasswordReset
+    for JwtScheme<U, B, F, L, PasswordReset<P, E>, M, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
@@ -846,6 +932,7 @@ where
     P: PasswordResetTokenStore + Clone + Send + Sync + 'static,
     E: EmailClient + Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     type PasswordResetError = JwtAuthError;
 
@@ -904,8 +991,8 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, B, F, L, R, V, E> RequiresEmailVerification
-    for JwtScheme<U, B, F, L, R, EmailVerify<V, E>>
+impl<U, B, F, L, R, V, E, O> RequiresEmailVerification
+    for JwtScheme<U, B, F, L, R, EmailVerify<V, E>, O>
 where
     U: UserStore + Clone + 'static,
     B: BannedTokenStore + Clone + Send + Sync + 'static,
@@ -914,6 +1001,7 @@ where
     R: Clone + Send + Sync + 'static,
     V: EmailVerificationTokenStore + Clone + Send + Sync + 'static,
     E: EmailClient + Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
 {
     type EmailVerificationError = JwtAuthError;
 
@@ -961,5 +1049,246 @@ where
         email: &Email,
     ) -> Result<bool, Self::EmailVerificationError> {
         Ok(self.email_verify.store.is_verified(email).await?)
+    }
+}
+
+// ============================================================================
+// Optional Capability: OAuth2 / OIDC (gated on the `OAuth` slot)
+// ============================================================================
+
+#[async_trait]
+impl<U, B, F, L, R, M, ST, ID, HC> SupportsOAuth2
+    for JwtScheme<U, B, F, L, R, M, OAuth<ST, ID, HC>>
+where
+    U: UserStore + Clone + 'static,
+    B: BannedTokenStore + Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    ST: OAuthStateStore + Clone + Send + Sync + 'static,
+    ID: OAuthIdentityStore + Clone + Send + Sync + 'static,
+    HC: OAuthHttpClient + Clone + Send + Sync + 'static,
+{
+    type OAuth2Error = JwtAuthError;
+
+    #[tracing::instrument(name = "JwtScheme::begin_oauth", skip(self))]
+    async fn begin_oauth(
+        &self,
+        provider: &str,
+    ) -> Result<AuthorizationRequest, Self::OAuth2Error> {
+        Ok(self.oauth.flow.begin(provider).await?)
+    }
+
+    #[tracing::instrument(name = "JwtScheme::complete_oauth", skip(self, code))]
+    async fn complete_oauth(
+        &self,
+        provider: &str,
+        code: &str,
+        query_state: &str,
+        cookie_state: &str,
+    ) -> Result<Self::Token, Self::OAuth2Error> {
+        // The flow verifies the provider identity and yields a local email; we
+        // then mint *this scheme's* primary JWT, so an OAuth login is
+        // indistinguishable from a password login once completed.
+        let email = self
+            .oauth
+            .flow
+            .complete(provider, code, query_state, cookie_state)
+            .await?;
+
+        Ok(self.generate_token(&email)?)
+    }
+}
+
+// ============================================================================
+// HTTP OAuth2 Scheme - Framework-agnostic OAuth redirect/callback delivery
+// ============================================================================
+
+impl<U, B, F, L, R, M, ST, ID, HC> HttpOAuth2Scheme
+    for JwtScheme<U, B, F, L, R, M, OAuth<ST, ID, HC>>
+where
+    U: UserStore + Clone + 'static,
+    B: BannedTokenStore + Clone + Send + Sync + 'static,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: ElevatedCookieName + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    ST: OAuthStateStore + Clone + Send + Sync + 'static,
+    ID: OAuthIdentityStore + Clone + Send + Sync + 'static,
+    HC: OAuthHttpClient + Clone + Send + Sync + 'static,
+{
+    fn oauth_state_cookie_name(&self) -> &str {
+        &self.oauth.state_cookie_name
+    }
+
+    fn create_oauth_start_response<RB: ResponseBuilder>(
+        &self,
+        builder: RB,
+        authorization: AuthorizationRequest,
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
+        // Bind the anti-CSRF `state` to this browser, then 302 to the provider.
+        let state_cookie = format!(
+            "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/",
+            self.oauth.state_cookie_name, authorization.state
+        );
+
+        builder
+            .status(302)
+            .cookie(&state_cookie)
+            .header("location", &authorization.authorize_url)
+            .build()
+    }
+
+    fn create_oauth_callback_response<RB: ResponseBuilder>(
+        &self,
+        builder: RB,
+        token: Self::Token,
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
+        // Deliver the issued JWT exactly as password login does (auth cookie),
+        // clear the now-spent state cookie, and redirect into the app.
+        let auth_cookie = create_auth_cookie(token.into_string(), &self.jwt_config.jwt_cookie_name);
+        let clear_state = format!(
+            "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+            self.oauth.state_cookie_name
+        );
+
+        builder
+            .status(302)
+            .cookie(&auth_cookie.to_string())
+            .cookie(&clear_state)
+            .header("location", &self.oauth.post_login_redirect)
+            .build()
+    }
+}
+
+// ============================================================================
+// Tests: OAuth capability issues a usable primary JWT
+// ============================================================================
+
+#[cfg(test)]
+mod oauth_tests {
+    use super::*;
+    use crate::persistence::{
+        HashMapUserStore, HashSetBannedTokenStore,
+        hashmap_oauth_identity_store::HashMapOAuthIdentityStore,
+        hashmap_oauth_state_store::HashMapOAuthStateStore,
+    };
+    use tempered_core::{
+        AuthValidator, OAuthHttpError, OAuthProviderConfig, OAuthUserInfo, SupportsOAuth2,
+    };
+
+    #[derive(Clone)]
+    struct MockClient {
+        email: String,
+    }
+
+    #[async_trait]
+    impl OAuthHttpClient for MockClient {
+        async fn exchange_code(
+            &self,
+            _config: &OAuthProviderConfig,
+            _code: &str,
+        ) -> Result<String, OAuthHttpError> {
+            Ok("access-token".to_string())
+        }
+
+        async fn fetch_user_info(
+            &self,
+            _config: &OAuthProviderConfig,
+            _access_token: &str,
+        ) -> Result<OAuthUserInfo, OAuthHttpError> {
+            Ok(OAuthUserInfo {
+                subject: "sub-123".to_string(),
+                email: self.email.clone(),
+                email_verified: true,
+            })
+        }
+    }
+
+    fn provider() -> OAuthProviderConfig {
+        OAuthProviderConfig {
+            name: "google".to_string(),
+            client_id: "cid".to_string(),
+            client_secret: Secret::new("secret".to_string()),
+            auth_url: "https://accounts.example.com/authorize".to_string(),
+            token_url: "https://accounts.example.com/token".to_string(),
+            userinfo_url: "https://accounts.example.com/userinfo".to_string(),
+            redirect_uri: "https://app.example.com/oauth/google/callback".to_string(),
+            scopes: vec!["openid".to_string(), "email".to_string()],
+        }
+    }
+
+    fn jwt_config() -> JwtAuthConfig {
+        JwtAuthConfig {
+            jwt_cookie_name: "jwt".to_string(),
+            jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+            token_ttl_in_seconds: 3600,
+        }
+    }
+
+    type TestScheme = JwtScheme<
+        HashMapUserStore,
+        HashSetBannedTokenStore,
+        (),
+        (),
+        (),
+        (),
+        OAuth<HashMapOAuthStateStore, HashMapOAuthIdentityStore, MockClient>,
+    >;
+
+    fn scheme_with_oauth() -> TestScheme {
+        let flow = OAuthFlow::new(
+            HashMapOAuthStateStore::new(),
+            HashMapOAuthIdentityStore::new(),
+            MockClient {
+                email: "user@example.com".to_string(),
+            },
+        )
+        .with_provider(provider());
+
+        JwtScheme::new(
+            HashMapUserStore::new(),
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+        )
+        .supports_oauth(flow)
+    }
+
+    #[tokio::test]
+    async fn completing_oauth_issues_a_jwt_that_validates() {
+        let scheme = scheme_with_oauth();
+
+        // Leg 1: begin → a provider URL plus the browser-bound state.
+        let auth = scheme.begin_oauth("google").await.unwrap();
+        assert!(auth.authorize_url.contains("client_id=cid"));
+
+        // Leg 2: complete with matching cookie/query state → the primary JWT.
+        let token = scheme
+            .complete_oauth("google", "auth-code", &auth.state, &auth.state)
+            .await
+            .unwrap();
+
+        // The issued JWT must validate exactly like a password-login session.
+        let parts = http::Request::builder()
+            .header("cookie", format!("jwt={}", token.as_str()))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        assert!(scheme.validator().validate(&parts).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn mismatched_cookie_state_is_rejected() {
+        let scheme = scheme_with_oauth();
+        let auth = scheme.begin_oauth("google").await.unwrap();
+
+        // An attacker who injects a valid pending `state` but cannot forge the
+        // victim's state cookie is rejected (login CSRF protection).
+        let result = scheme
+            .complete_oauth("google", "code", &auth.state, "attacker-cookie")
+            .await;
+        assert!(result.is_err());
     }
 }

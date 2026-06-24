@@ -3439,12 +3439,11 @@ name = "tempered-example-oauth"
 version = "0.1.0"
 dependencies = [
  "axum",
- "axum-extra",
  "serde",
  "serde_json",
  "tempered",
+ "tempered_axum",
  "tokio",
- "tower-http",
 ]
 
 [[package]]
