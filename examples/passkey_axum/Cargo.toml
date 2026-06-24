@@ -1,0 +1,13 @@
+[package]
+name = "tempered-example-passkey"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tempered = { path = "../.." }
+tempered_axum.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true

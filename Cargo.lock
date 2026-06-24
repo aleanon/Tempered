@@ -3447,6 +3447,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempered-example-passkey"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "tempered",
+ "tempered_axum",
+ "tokio",
+]
+
+[[package]]
 name = "tempered_adapters"
 version = "0.1.0"
 dependencies = [

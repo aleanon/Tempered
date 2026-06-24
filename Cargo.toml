@@ -35,6 +35,7 @@ members = [
     "src/tempered_axum",
     "examples/api_key_axum",
     "examples/oauth_axum",
+    "examples/passkey_axum",
     "examples/jwt_standalone",
 ]
 

@@ -1,0 +1,183 @@
+//! Standalone Axum example crate: passkey (WebAuthn) login folded into
+//! `JwtScheme` as a capability, with a browser frontend (see `assets/index.html`).
+//!
+//! ```bash
+//! cargo run -p tempered-example-passkey
+//! # open http://localhost:3000
+//! ```
+//!
+//! Like the OAuth example, this is **fully self-contained and offline**: it ships
+//! a deliberately trivial [`DemoVerifier`] that stands in for a real
+//! `webauthn-rs`-backed [`WebAuthnVerifier`], and the frontend *simulates* the
+//! authenticator instead of calling `navigator.credentials`. That keeps the demo
+//! deterministic while exercising the real server-side capability:
+//! `JwtScheme::new(...).supports_passkeys(flow)` plus
+//! `auth_service(...).with_passkeys(...)`.
+//!
+//! A successful authentication ceremony issues the scheme's **primary JWT** — the
+//! same session cookie a password or OAuth login would produce, which `/me`
+//! validates below.
+//!
+//! ⚠️  `DemoVerifier` performs no cryptography and trusts the client-supplied
+//! credential id. A production deployment plugs a real `WebAuthnVerifier` (e.g.
+//! `webauthn-rs`) into the exact same `PasskeyFlow` and uses real
+//! `navigator.credentials` in the browser — no server wiring changes.
+
+use axum::{
+    Json, Router,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::get,
+};
+use serde_json::json;
+use tempered::core::{
+    AuthValidator, AuthenticationScheme, CredentialId, PasskeyCredential, VerifiedAssertion,
+    VerifiedRegistration, WebAuthnChallenge, WebAuthnError, WebAuthnVerifier,
+};
+use tempered::{
+    ExposeSecret, HashMapChallengeStore, HashMapPasskeyCredentialStore, HashMapUserStore,
+    HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, Passkeys, PasskeyFlow, Secret,
+};
+use tempered_axum::auth_service::auth_service;
+
+/// The fully-applied scheme type: a JWT core with only the passkey slot enabled.
+type Scheme = JwtScheme<
+    HashMapUserStore,
+    HashSetBannedTokenStore,
+    (),
+    (),
+    (),
+    (),
+    (),
+    Passkeys<HashMapPasskeyCredentialStore, HashMapChallengeStore, DemoVerifier>,
+>;
+
+const BASE: &str = "http://localhost:3000";
+const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
+
+#[tokio::main]
+async fn main() {
+    let flow = PasskeyFlow::new(
+        HashMapPasskeyCredentialStore::new(),
+        HashMapChallengeStore::new(),
+        DemoVerifier,
+    );
+
+    let jwt_config = JwtAuthConfig {
+        jwt_cookie_name: "jwt".to_string(),
+        jwt_secret: Secret::new("input a long random generated string here".to_string()),
+        token_ttl_in_seconds: 3600,
+    };
+
+    // Passkeys are the only capability this scheme opts into.
+    let scheme: Scheme = JwtScheme::new(
+        HashMapUserStore::new(),
+        jwt_config,
+        HashSetBannedTokenStore::new(),
+    )
+    .supports_passkeys(flow);
+
+    // `auth_service` owns the four passkey ceremony routes under `/passkey/*`
+    // (register/login × start/finish) and POST `/logout`, and serves the frontend.
+    let auth_router: Router = auth_service(scheme.clone(), ASSETS.to_string())
+        .logout_route("/logout")
+        .with_passkeys(Some("/passkey"))
+        .into();
+
+    // `/me` reads the JWT the login ceremony issued, so it needs the scheme as
+    // state and lives in a sibling router merged into the auth service.
+    let extra: Router = Router::new()
+        .route("/me", get(me))
+        .with_state(scheme);
+
+    let app = auth_router.merge(extra);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    println!("listening on {BASE}");
+    axum::serve(listener, app).await.unwrap();
+}
+
+/// Report the currently logged-in user by validating the JWT the passkey login
+/// issued — proving a passkey login yields a normal, verifiable session.
+async fn me(State(scheme): State<Scheme>, headers: HeaderMap) -> Response {
+    let (mut parts, _) = axum::http::Request::new(()).into_parts();
+    parts.headers = headers;
+
+    match scheme.validator().validate(&parts).await {
+        Ok(claims) => Json(json!({ "email": claims.sub.expose_secret() })).into_response(),
+        Err(_) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "not logged in" })),
+        )
+            .into_response(),
+    }
+}
+
+// ---- Demo verifier (stand-in for a real `webauthn-rs` adapter) -------------
+//
+// It performs NO cryptography: registration trusts the client-supplied
+// credential id, and authentication trusts the asserted sign count. This is only
+// safe because the example simulates the authenticator; never ship this.
+
+#[derive(Clone)]
+struct DemoVerifier;
+
+impl WebAuthnVerifier for DemoVerifier {
+    fn start_registration(
+        &self,
+        _email: &tempered::Email,
+        challenge: &WebAuthnChallenge,
+    ) -> serde_json::Value {
+        // A real verifier returns full `PublicKeyCredentialCreationOptions`; the
+        // simulated frontend only needs the challenge to echo back.
+        json!({ "challenge": challenge.as_str(), "rp": { "id": "localhost" } })
+    }
+
+    fn verify_registration(
+        &self,
+        _challenge: &WebAuthnChallenge,
+        response: &serde_json::Value,
+    ) -> Result<VerifiedRegistration, WebAuthnError> {
+        let id = credential_id(response)?;
+        Ok(VerifiedRegistration {
+            credential_id: CredentialId(id),
+            public_key: vec![0xde, 0xad, 0xbe, 0xef],
+            sign_count: 0,
+        })
+    }
+
+    fn start_authentication(
+        &self,
+        _allowed: &[CredentialId],
+        challenge: &WebAuthnChallenge,
+    ) -> serde_json::Value {
+        json!({ "challenge": challenge.as_str() })
+    }
+
+    fn verify_authentication(
+        &self,
+        _challenge: &WebAuthnChallenge,
+        response: &serde_json::Value,
+        stored: &PasskeyCredential,
+    ) -> Result<VerifiedAssertion, WebAuthnError> {
+        // Trust the asserted counter; the flow still enforces monotonicity.
+        let new_sign_count = response
+            .get("sign_count")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32)
+            .unwrap_or(stored.sign_count + 1);
+        Ok(VerifiedAssertion {
+            credential_id: stored.credential_id.clone(),
+            new_sign_count,
+        })
+    }
+}
+
+fn credential_id(response: &serde_json::Value) -> Result<String, WebAuthnError> {
+    response
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| WebAuthnError::Malformed("missing credential id".into()))
+}

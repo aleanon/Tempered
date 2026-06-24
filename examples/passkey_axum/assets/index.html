@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>tempered · Passkey example</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; text-align: center; }
+    h1 { font-size: 1.5rem; }
+    .card { border: 1px solid #8884; border-radius: 12px; padding: 2rem; margin: 1.5rem 0; }
+    input { padding: .55rem .7rem; border-radius: 8px; border: 1px solid #8886; font: inherit; width: 16rem; max-width: 100%; }
+    button { display: inline-block; padding: .6rem 1.2rem; margin: .3rem; border-radius: 8px; border: 0; background: #3b82f6; color: #fff; font: inherit; cursor: pointer; }
+    button:hover { background: #2563eb; }
+    button.secondary { background: #6b7280; }
+    .email { font-weight: 700; font-size: 1.2rem; }
+    .muted { color: #8889; font-size: .9rem; }
+    .err { color: #ef4444; }
+  </style>
+</head>
+<body>
+  <h1>tempered · Passkey login</h1>
+  <p class="muted">Self-contained demo. The authenticator is <em>simulated</em> in
+    JavaScript and the server runs a no-crypto demo verifier — a real app plugs a
+    <code>webauthn-rs</code> verifier and <code>navigator.credentials</code> in
+    without changing the server wiring.</p>
+
+  <div class="card" id="card"><p>Loading…</p></div>
+
+  <p class="muted">A successful login issues the same JWT session cookie a
+    password or OAuth login would.</p>
+
+  <script>
+    const el = (tag, props = {}, text) => {
+      const e = Object.assign(document.createElement(tag), props);
+      if (text !== undefined) e.textContent = text; // textContent avoids XSS
+      return e;
+    };
+    const post = (url, body) =>
+      fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    // A real ceremony's credential id comes from the authenticator; here we
+    // mint one per email at registration and remember it for login.
+    const credKey = (email) => `passkey_cred:${email}`;
+
+    async function registerThenLogin(email, status) {
+      // --- Registration: start -> simulate authenticator -> finish ----------
+      const rs = await post("/passkey/register/start", { email });
+      if (!rs.ok) return status.replaceChildren(el("span", { className: "err" }, "register/start failed"));
+      const { challenge: rc } = await rs.json();
+
+      const credId = crypto.randomUUID();
+      const rf = await post("/passkey/register/finish", { challenge: rc, response: { id: credId } });
+      if (!rf.ok) return status.replaceChildren(el("span", { className: "err" }, "register/finish failed"));
+      localStorage.setItem(credKey(email), credId);
+
+      await login(email, status);
+    }
+
+    async function login(email, status) {
+      const credId = localStorage.getItem(credKey(email));
+      if (!credId) return status.replaceChildren(el("span", { className: "err" }, "no passkey registered for this email"));
+
+      // --- Authentication: start -> simulate assertion -> finish ------------
+      const ls = await post("/passkey/login/start", { email });
+      if (!ls.ok) return status.replaceChildren(el("span", { className: "err" }, "login/start failed"));
+      const { challenge: lc } = await ls.json();
+
+      // Bump the sign counter each login (the flow rejects regressions).
+      const next = (Number(localStorage.getItem("passkey_count") || "0") + 1);
+      localStorage.setItem("passkey_count", String(next));
+
+      const lf = await post("/passkey/login/finish", { challenge: lc, response: { id: credId, sign_count: next } });
+      if (!lf.ok) {
+        const { error } = await lf.json().catch(() => ({ error: "login failed" }));
+        return status.replaceChildren(el("span", { className: "err" }, error || "login/finish failed"));
+      }
+      render();
+    }
+
+    async function render() {
+      const card = document.getElementById("card");
+      card.replaceChildren();
+      const res = await fetch("/me");
+      if (res.ok) {
+        const { email } = await res.json();
+        const logout = el("button", { className: "secondary" }, "Log out");
+        logout.onclick = async () => { await post("/logout", {}); render(); };
+        card.append(el("p", {}, "Logged in as"), el("p", { className: "email" }, email), logout);
+        return;
+      }
+
+      const input = el("input", { type: "email", placeholder: "you@example.com", value: "demo@example.com" });
+      const status = el("p", { className: "muted" });
+      const reg = el("button", {}, "Register passkey & sign in");
+      reg.onclick = () => registerThenLogin(input.value, status);
+      const signin = el("button", { className: "secondary" }, "Sign in");
+      signin.onclick = () => login(input.value, status);
+
+      card.append(el("p", {}, "Enrol a passkey, then sign in with it."), input,
+        el("div", {}, ""), reg, signin, status);
+    }
+    render();
+  </script>
+</body>
+</html>
