@@ -12,6 +12,7 @@ pub mod initiate_password_reset;
 pub mod login;
 pub mod logout;
 pub mod oauth;
+pub mod passkey;
 pub mod signup;
 pub mod verify_2fa;
 pub mod verify_elevated_token;
@@ -26,6 +27,10 @@ pub use initiate_password_reset::handle_initiate_password_reset;
 pub use login::handle_login;
 pub use logout::{handle_logout, handle_logout_with_elevation};
 pub use oauth::{handle_oauth_callback, handle_oauth_start};
+pub use passkey::{
+    handle_passkey_login_finish, handle_passkey_login_start, handle_passkey_register_finish,
+    handle_passkey_register_start,
+};
 pub use signup::handle_signup;
 pub use verify_2fa::handle_verify_2fa;
 pub use verify_elevated_token::handle_verify_elevated_token;

@@ -16,6 +16,7 @@ use tempered_core::{
 };
 use thiserror::Error;
 
+#[derive(Clone)]
 pub struct PasskeyFlow<CS, ChS, V> {
     credential_store: CS,
     challenge_store: ChS,

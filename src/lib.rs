@@ -54,7 +54,8 @@ pub use core::{
     EmailVerificationTokenStore, HttpOAuth2Scheme, OAuthHttpClient, OAuthHttpError,
     OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, PasskeyStoreError,
     RequiresEmailVerification, SessionStore, SessionStoreError, SupportsApiKeyIssuance,
-    SupportsOAuth2, TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError, WebAuthnVerifier,
+    SupportsOAuth2, SupportsPasskeys, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
+    UserStoreError, WebAuthnVerifier,
 };
 
 // ============================================================================
@@ -85,7 +86,7 @@ pub use tempered_adapters::{
     auth_validation::local_jwt_validator::JwtAuthConfig,
     authentication::api_key_scheme::{ApiKeyScheme, Issuance},
     authentication::jwt_scheme::{
-        Elevation, EmailVerify, JwtScheme, OAuth, PasswordReset, TwoFa,
+        Elevation, EmailVerify, JwtScheme, OAuth, Passkeys, PasswordReset, TwoFa,
     },
     authentication::session_scheme::{SessionConfig, SessionScheme},
     email::{MockEmailClient, PostmarkEmailClient},

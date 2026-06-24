@@ -7,7 +7,8 @@ use axum::{
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
     HttpOAuth2Scheme, IntoStatusMessage, RequiresEmailVerification, SupportsElevation,
-    SupportsOAuth2, SupportsPasswordReset, SupportsRegistration, SupportsTwoFactor,
+    SupportsOAuth2, SupportsPasskeys, SupportsPasswordReset, SupportsRegistration,
+    SupportsTwoFactor,
 };
 use tokio::net::TcpListener;
 use tracing::info;
@@ -426,6 +427,54 @@ where
             .route(
                 callback_path,
                 get(crate::routes::oauth_callback::<R::Scheme>),
+            );
+        self.instance.set_routers(routers);
+
+        self
+    }
+}
+
+impl<R> AuthService<R>
+where
+    R: RouteConfig,
+    R::Scheme: SupportsPasskeys + HttpAuthenticationScheme,
+    <R::Scheme as SupportsPasskeys>::PasskeyError: IntoStatusMessage,
+{
+    /// Adds passkey (WebAuthn) routes to the service under `prefix` (default
+    /// `/passkey`):
+    /// `{prefix}/register/start`, `{prefix}/register/finish`,
+    /// `{prefix}/login/start`, `{prefix}/login/finish`.
+    ///
+    /// All four are public `POST` routes with no token middleware, so — like the
+    /// OAuth routes — they are registered eagerly here, gated on
+    /// [`SupportsPasskeys`].
+    pub fn with_passkeys(mut self, prefix: Option<&str>) -> AuthService<R> {
+        let prefix = prefix.unwrap_or("/passkey");
+        validate_path(prefix);
+
+        let register_start = format!("{prefix}/register/start");
+        let register_finish = format!("{prefix}/register/finish");
+        let login_start = format!("{prefix}/login/start");
+        let login_finish = format!("{prefix}/login/finish");
+
+        let mut routers = self.instance.get_routers();
+        routers.main_router = routers
+            .main_router
+            .route(
+                &register_start,
+                post(crate::routes::passkey_register_start::<R::Scheme>),
+            )
+            .route(
+                &register_finish,
+                post(crate::routes::passkey_register_finish::<R::Scheme>),
+            )
+            .route(
+                &login_start,
+                post(crate::routes::passkey_login_start::<R::Scheme>),
+            )
+            .route(
+                &login_finish,
+                post(crate::routes::passkey_login_finish::<R::Scheme>),
             );
         self.instance.set_routers(routers);
 

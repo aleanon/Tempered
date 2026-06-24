@@ -42,7 +42,7 @@ pub use strategies::{
     authenticator::{
         AuthenticationScheme, AuthorizationRequest, LoginOutcome, RequiresEmailVerification,
         SupportsAccountDeletion, SupportsApiKeyIssuance, SupportsElevation, SupportsOAuth2,
-        SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
+        SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
         SupportsTokenRevocation, SupportsTwoFactor,
     },
 };

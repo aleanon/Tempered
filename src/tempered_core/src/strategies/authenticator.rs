@@ -3,8 +3,8 @@ use serde::Deserialize;
 
 use crate::{
     domain::{
-        api_key::ApiKeyId, email::Email, password::Password, two_fa_attempt_id::TwoFaAttemptId,
-        two_fa_code::TwoFaCode,
+        api_key::ApiKeyId, email::Email, passkey::WebAuthnChallenge, password::Password,
+        two_fa_attempt_id::TwoFaAttemptId, two_fa_code::TwoFaCode,
     },
     ports::repositories::ApiKeyMetadata,
     strategies::auth_validator::AuthValidator,
@@ -179,6 +179,56 @@ pub trait SupportsOAuth2: AuthenticationScheme {
         query_state: &str,
         cookie_state: &str,
     ) -> Result<Self::Token, Self::OAuth2Error>;
+}
+
+// ============================================================================
+// Optional Capability: Passkeys (WebAuthn)
+// ============================================================================
+
+/// Optional trait for authentication schemes that can authenticate users with
+/// passkeys (WebAuthn).
+///
+/// Each ceremony is two legs of JSON: a `start_*` that returns the options the
+/// browser passes to `navigator.credentials`, and a `finish_*` that verifies the
+/// authenticator's response. Registration *enrolls* a credential for an already
+/// identified user; authentication verifies an assertion and — like
+/// [`SupportsOAuth2::complete_oauth`] — issues this scheme's **primary
+/// [`Token`](AuthenticationScheme::Token)**, so a passkey login yields the same
+/// session as any other.
+///
+/// The `serde_json::Value` options/response payloads are passed through verbatim
+/// to the underlying WebAuthn verifier; this trait does not interpret them.
+#[async_trait]
+pub trait SupportsPasskeys: AuthenticationScheme {
+    /// Errors that can occur during a passkey ceremony.
+    type PasskeyError: std::error::Error + Send + Sync + 'static;
+
+    /// Registration leg 1: issue creation options for an enrolling user.
+    async fn start_passkey_registration(
+        &self,
+        email: Email,
+    ) -> Result<serde_json::Value, Self::PasskeyError>;
+
+    /// Registration leg 2: verify the attestation and enroll the credential.
+    async fn finish_passkey_registration(
+        &self,
+        challenge: WebAuthnChallenge,
+        response: serde_json::Value,
+    ) -> Result<(), Self::PasskeyError>;
+
+    /// Authentication leg 1: issue request options. `email = None` runs a
+    /// usernameless (discoverable-credential) ceremony.
+    async fn start_passkey_authentication(
+        &self,
+        email: Option<Email>,
+    ) -> Result<serde_json::Value, Self::PasskeyError>;
+
+    /// Authentication leg 2: verify the assertion and issue the primary token.
+    async fn finish_passkey_authentication(
+        &self,
+        challenge: WebAuthnChallenge,
+        response: serde_json::Value,
+    ) -> Result<Self::Token, Self::PasskeyError>;
 }
 
 // ============================================================================
