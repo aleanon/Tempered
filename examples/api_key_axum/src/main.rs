@@ -19,18 +19,23 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tempered::{ApiKeyScheme, Email, ExposeSecret, HashMapApiKeyStore, Secret, SupportsApiKeyIssuance};
+use tempered::{
+    ApiKeyScheme, Email, ExposeSecret, HashMapApiKeyStore, Issuance, Secret, SupportsApiKeyIssuance,
+};
 use tempered_adapters::authentication::api_key_scheme::ApiKeyClaims;
 use tempered_axum::middleware::validate_token;
 use tower_http::services::ServeDir;
 
-type Scheme = ApiKeyScheme<HashMapApiKeyStore>;
+// This service both issues and validates keys, so it opts into issuance. A
+// validate-only service would use `ApiKeyScheme<HashMapApiKeyStore>` (the `()`
+// slot) and could not call `issue_api_key` at all.
+type Scheme = ApiKeyScheme<HashMapApiKeyStore, Issuance>;
 
 const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 
 #[tokio::main]
 async fn main() {
-    let scheme: Scheme = ApiKeyScheme::new(HashMapApiKeyStore::new());
+    let scheme: Scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
 
     // Seed a key so the protected route is usable immediately.
     let owner = Email::try_from(Secret::new("demo@service.example".to_string())).unwrap();

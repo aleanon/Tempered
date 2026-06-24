@@ -10,6 +10,13 @@
 //! stored; the `prefix` is a non-secret O(1) lookup handle. SHA-256 (not Argon2)
 //! is appropriate here because keys are high-entropy random values, and
 //! validation happens on every request.
+//!
+//! Like [`JwtScheme`](crate::authentication::jwt_scheme::JwtScheme), the scheme
+//! is built with a **type-state builder**. Validation is the mandatory core;
+//! *issuance* (minting/revoking/listing keys) is opt-in via
+//! [`ApiKeyScheme::supports_issuance`], which fills a generic slot that defaults
+//! to `()` = disabled. A service that only *checks* keys minted by a central
+//! issuer therefore never gains — or exposes — the issuance API.
 
 use async_trait::async_trait;
 use rand::RngCore;
@@ -27,24 +34,41 @@ use thiserror::Error;
 // Scheme
 // ============================================================================
 
+/// API key authentication scheme.
+///
+/// The generic slot `I` defaults to `()` (issuance disabled). Calling
+/// [`supports_issuance`](ApiKeyScheme::supports_issuance) swaps it for the
+/// [`Issuance`] marker, which is the only state in which
+/// [`SupportsApiKeyIssuance`] is implemented.
 #[derive(Clone)]
-pub struct ApiKeyScheme<S> {
+pub struct ApiKeyScheme<S, I = ()> {
     store: S,
     header_name: String,
     validator: ApiKeyValidator<S>,
+    // Pure type-state marker: never read at runtime — its *type* (`()` vs
+    // `Issuance`) is what selects whether `SupportsApiKeyIssuance` is implemented.
+    #[allow(dead_code)]
+    issuance: I,
 }
 
-impl<S> ApiKeyScheme<S>
+/// Enabled issuance slot. Carries no data — issuance only needs the store, which
+/// the scheme already holds — so it is a zero-sized marker.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Issuance;
+
+impl<S> ApiKeyScheme<S, ()>
 where
     S: ApiKeyStore + Clone,
 {
-    /// Create a scheme that reads keys from the `x-api-key` header.
+    /// Create a validate-only scheme that reads keys from the `x-api-key` header.
+    ///
+    /// Opt into key issuance with [`supports_issuance`](ApiKeyScheme::supports_issuance).
     pub fn new(store: S) -> Self {
         Self::with_header(store, "x-api-key")
     }
 
-    /// Create a scheme that reads keys from a custom header (falls back to
-    /// `Authorization: Bearer` regardless).
+    /// Create a validate-only scheme that reads keys from a custom header (falls
+    /// back to `Authorization: Bearer` regardless).
     pub fn with_header(store: S, header_name: impl Into<String>) -> Self {
         let header_name = header_name.into();
         let validator = ApiKeyValidator::new(store.clone(), header_name.clone());
@@ -52,7 +76,27 @@ where
             store,
             header_name,
             validator,
+            issuance: (),
         }
+    }
+}
+
+impl<S, I> ApiKeyScheme<S, I> {
+    /// Enable key issuance, lighting up [`SupportsApiKeyIssuance`] (mint, revoke,
+    /// and list keys). Leave it off for services that only validate keys minted
+    /// elsewhere.
+    pub fn supports_issuance(self) -> ApiKeyScheme<S, Issuance> {
+        ApiKeyScheme {
+            store: self.store,
+            header_name: self.header_name,
+            validator: self.validator,
+            issuance: Issuance,
+        }
+    }
+
+    /// Finalizer for readability; the scheme is already usable. Returns `self`.
+    pub fn build(self) -> Self {
+        self
     }
 }
 
@@ -145,9 +189,10 @@ fn extract_from_headers(headers: &http::HeaderMap, header_name: &str) -> Option<
 // ============================================================================
 
 #[async_trait]
-impl<S> AuthenticationScheme for ApiKeyScheme<S>
+impl<S, I> AuthenticationScheme for ApiKeyScheme<S, I>
 where
     S: ApiKeyStore + Clone + Send + Sync + 'static,
+    I: Clone + Send + Sync + 'static,
 {
     type Token = ApiKeyToken;
     type LogoutOutput = String;
@@ -178,9 +223,10 @@ where
 // HTTP delivery (no cookie — keys live in headers)
 // ============================================================================
 
-impl<S> HttpAuthenticationScheme for ApiKeyScheme<S>
+impl<S, I> HttpAuthenticationScheme for ApiKeyScheme<S, I>
 where
     S: ApiKeyStore + Clone + Send + Sync + 'static,
+    I: Clone + Send + Sync + 'static,
 {
     fn create_login_response<RB: ResponseBuilder>(
         &self,
@@ -228,7 +274,7 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<S> SupportsApiKeyIssuance for ApiKeyScheme<S>
+impl<S> SupportsApiKeyIssuance for ApiKeyScheme<S, Issuance>
 where
     S: ApiKeyStore + Clone + Send + Sync + 'static,
 {
@@ -365,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn issued_key_validates_and_carries_owner() {
-        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new());
+        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
         let (id, plaintext) = scheme
             .issue_api_key(owner(), vec!["read".to_string()])
             .await
@@ -380,7 +426,7 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_header_is_accepted() {
-        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new());
+        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
         let (_, plaintext) = scheme.issue_api_key(owner(), vec![]).await.unwrap();
 
         let parts = parts_with_header("authorization", &format!("Bearer {}", plaintext));
@@ -389,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_secret_is_rejected() {
-        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new());
+        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
         let (_, plaintext) = scheme.issue_api_key(owner(), vec![]).await.unwrap();
         let prefix = plaintext.split_once('.').unwrap().0;
 
@@ -403,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoked_key_stops_validating() {
-        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new());
+        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
         let (id, plaintext) = scheme.issue_api_key(owner(), vec![]).await.unwrap();
 
         scheme.revoke_api_key(&id).await.unwrap();
