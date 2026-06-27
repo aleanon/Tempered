@@ -1,14 +1,58 @@
 use axum::{Router, routing::post};
 use tempered_core::{
-    AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    IntoStatusMessage, RequiresEmailVerification, SupportsElevation, SupportsPasswordReset,
-    SupportsRegistration, SupportsTwoFactor,
+    AuthValidator, HttpAuthenticationScheme, HttpElevationScheme, IntoStatusMessage,
+    RequiresEmailVerification, SupportsElevation, SupportsPasswordReset, SupportsRegistration,
+    SupportsTwoFactor,
 };
 
 pub struct Routers<Scheme> {
     pub main_router: Router<Scheme>,
     pub validated_router: Router<Scheme>,
     pub elevated_router: Option<Router<Scheme>>,
+    /// Applies the elevated-token middleware to [`Self::elevated_router`] at
+    /// build time. Stored as a plain `fn` so the base build (which lacks the
+    /// `HttpElevationScheme` bound) can call it; the bound is only required to
+    /// *take* the pointer, which the elevation builder methods do. See
+    /// [`apply_elevated_validation`].
+    pub elevated_layer: Option<fn(Router<Scheme>, Scheme) -> Router<Scheme>>,
+    /// Registers the logout route. When elevation is configured this is swapped
+    /// for the elevation-aware variant (which also revokes the elevated token),
+    /// again via a `fn` pointer so the base `logout_route` can install it without
+    /// the `HttpElevationScheme` bound. `None` → plain logout. See
+    /// [`register_logout_with_elevation`].
+    pub logout_register: Option<fn(Router<Scheme>, &str) -> Router<Scheme>>,
+}
+
+/// Layer the elevated-token validation middleware over `router`.
+///
+/// Used as a `fn` pointer stored in [`Routers::elevated_layer`]: the elevation
+/// builder methods (which carry the `HttpElevationScheme` bound) hand this to the
+/// base build, which can then protect the elevated bucket without naming the
+/// bound itself.
+pub fn apply_elevated_validation<S>(router: Router<S>, scheme: S) -> Router<S>
+where
+    S: HttpElevationScheme + SupportsElevation + Clone + Send + Sync + 'static,
+    S::ElevatedValidator: AuthValidator<RequestParts = http::request::Parts>,
+    <S::ElevatedValidator as AuthValidator>::Error: IntoStatusMessage,
+{
+    router.layer(axum::middleware::from_fn_with_state(
+        scheme,
+        crate::middleware::validate_elevated_token::<S>,
+    ))
+}
+
+/// Register the elevation-aware logout route (revokes the elevated token too).
+///
+/// Stored as a `fn` pointer in [`Routers::logout_register`] by the elevation
+/// builder methods so the base `logout_route` installs the right handler.
+pub fn register_logout_with_elevation<S>(validated: Router<S>, logout_path: &str) -> Router<S>
+where
+    S: HttpElevationScheme + SupportsElevation + Clone + Send + Sync + 'static,
+{
+    validated.route(
+        logout_path,
+        post(crate::routes::logout_with_elevation::<S>),
+    )
 }
 
 pub trait RouteConfig: Sized {
@@ -29,9 +73,6 @@ pub trait RouteConfig: Sized {
         self // Default: no-op
     }
     fn with_2fa_route(self, _verify_2fa_path: Option<&str>) -> Self {
-        self // Default: no-op
-    }
-    fn with_elevate_route(self, _elevate_path: Option<&str>) -> Self {
         self // Default: no-op
     }
     fn with_password_reset_route(
@@ -104,11 +145,6 @@ where
 
         fn with_2fa_route(mut self, verify_2fa_path: Option<&str>) -> Self {
             self.instance = self.instance.with_2fa_route(verify_2fa_path);
-            self
-        }
-
-        fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
-            self.instance = self.instance.with_elevate_route(elevate_path);
             self
         }
 
@@ -192,11 +228,6 @@ where
             self
         }
 
-        fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
-            self.instance = self.instance.with_elevate_route(elevate_path);
-            self
-        }
-
         fn with_password_reset_route(
             mut self,
             initiate_path: Option<&str>,
@@ -215,167 +246,6 @@ where
     }
 
     With2FaRoute { instance }
-}
-
-// ============================================================================
-// WithElevateRoute
-// ============================================================================
-
-pub fn with_elevate_route<R, F>(
-    instance: R,
-    verify_elevated_token_path: &str,
-    configure: F,
-) -> impl RouteConfig<Scheme = R::Scheme>
-where
-    R: RouteConfig,
-    R::Scheme: HttpElevationScheme,
-    <R::Scheme as AuthenticationScheme>::Validator:
-        AuthValidator<RequestParts = http::request::Parts>,
-    <<R::Scheme as AuthenticationScheme>::Validator as AuthValidator>::Error: IntoStatusMessage,
-    <R::Scheme as SupportsElevation>::ElevatedValidator:
-        AuthValidator<RequestParts = http::request::Parts>,
-    <<R::Scheme as SupportsElevation>::ElevatedValidator as AuthValidator>::Error:
-        IntoStatusMessage,
-    F: FnOnce(crate::ElevatedRouter<R::Scheme>) -> crate::ElevatedRouter<R::Scheme>,
-{
-    struct WithElevateRoute<R: RouteConfig> {
-        instance: R,
-        elevated_router: Option<Router<R::Scheme>>,
-    }
-
-    impl<R> RouteConfig for WithElevateRoute<R>
-    where
-        R: RouteConfig,
-        R::Scheme: HttpElevationScheme,
-        <R::Scheme as AuthenticationScheme>::Validator:
-            AuthValidator<RequestParts = http::request::Parts>,
-        <<R::Scheme as AuthenticationScheme>::Validator as AuthValidator>::Error: IntoStatusMessage,
-        <R::Scheme as SupportsElevation>::ElevatedValidator:
-            AuthValidator<RequestParts = http::request::Parts>,
-        <<R::Scheme as SupportsElevation>::ElevatedValidator as AuthValidator>::Error:
-            IntoStatusMessage,
-    {
-        type Scheme = R::Scheme;
-
-        fn get_routers(&mut self) -> Routers<Self::Scheme> {
-            self.instance.get_routers()
-        }
-
-        fn set_routers(&mut self, routers: Routers<Self::Scheme>) {
-            self.instance.set_routers(routers)
-        }
-
-        fn build(mut self, assets_dir: String, scheme: Self::Scheme) -> Router {
-            use axum::middleware;
-            use tower_http::services::{ServeDir, ServeFile};
-
-            // Get the routers that have been configured with all routes
-            let routers = self.get_routers();
-
-            // Apply middleware to validated routes
-            let validated_router = routers
-                .validated_router
-                .layer(middleware::from_fn_with_state(
-                    scheme.clone(),
-                    crate::middleware::validate_token::<Self::Scheme>,
-                ));
-
-            // Apply middleware to elevated routes if present
-            let router = if let Some(elevated_router) = routers.elevated_router {
-                let elevated_router = elevated_router.layer(middleware::from_fn_with_state(
-                    scheme.clone(),
-                    crate::middleware::validate_elevated_token::<Self::Scheme>,
-                ));
-
-                routers
-                    .main_router
-                    .merge(validated_router)
-                    .merge(elevated_router)
-            } else {
-                routers.main_router.merge(validated_router)
-            };
-
-            // Static assets
-            let assets_service = ServeDir::new(&assets_dir)
-                .not_found_service(ServeFile::new(format!("{}/index.html", assets_dir)));
-
-            // Final router with state and assets
-            router.with_state(scheme).fallback_service(assets_service)
-        }
-
-        fn login_route(mut self, login_path: &str, verify_token_path: &str) -> Self {
-            self.instance = self.instance.login_route(login_path, verify_token_path);
-            self
-        }
-
-        fn logout_route(mut self, logout_path: &str) -> Self {
-            // Override to use logout_with_elevation since this wrapper supports elevation
-            let mut routers = self.get_routers();
-
-            // Register logout route with elevation support
-            routers.validated_router = routers.validated_router.route(
-                logout_path,
-                post(crate::routes::logout_with_elevation::<Self::Scheme>),
-            );
-
-            self.set_routers(routers);
-            self
-        }
-
-        fn with_signup_route(mut self, signup_path: Option<&str>) -> Self {
-            self.instance = self.instance.with_signup_route(signup_path);
-            self
-        }
-
-        fn with_2fa_route(mut self, verify_2fa_path: Option<&str>) -> Self {
-            self.instance = self.instance.with_2fa_route(verify_2fa_path);
-            self
-        }
-
-        fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
-            if let Some(path) = elevate_path {
-                let mut routers = self.get_routers();
-
-                // Use the pre-configured elevated router from the closure
-                if routers.elevated_router.is_none() && self.elevated_router.is_some() {
-                    routers.elevated_router = self.elevated_router.take();
-
-                    // Add elevate route to validated router
-                    routers.validated_router = routers
-                        .validated_router
-                        .route(path, post(crate::routes::elevate::<Self::Scheme>));
-                }
-
-                self.set_routers(routers);
-            }
-            self
-        }
-
-        fn with_password_reset_route(
-            mut self,
-            initiate_path: Option<&str>,
-            complete_path: Option<&str>,
-        ) -> Self {
-            self.instance = self
-                .instance
-                .with_password_reset_route(initiate_path, complete_path);
-            self
-        }
-
-        fn with_email_verification_route(mut self, verify_path: Option<&str>) -> Self {
-            self.instance = self.instance.with_email_verification_route(verify_path);
-            self
-        }
-    }
-
-    // Create ElevatedRouter and pass to closure for configuration
-    let elevated_router = crate::ElevatedRouter::new(verify_elevated_token_path.to_string());
-    let configured_elevated = configure(elevated_router);
-
-    WithElevateRoute {
-        instance,
-        elevated_router: Some(configured_elevated.0),
-    }
 }
 
 // ============================================================================
@@ -427,11 +297,6 @@ where
 
         fn with_2fa_route(mut self, verify_2fa_path: Option<&str>) -> Self {
             self.instance = self.instance.with_2fa_route(verify_2fa_path);
-            self
-        }
-
-        fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
-            self.instance = self.instance.with_elevate_route(elevate_path);
             self
         }
 
@@ -517,11 +382,6 @@ where
 
         fn with_2fa_route(mut self, verify_2fa_path: Option<&str>) -> Self {
             self.instance = self.instance.with_2fa_route(verify_2fa_path);
-            self
-        }
-
-        fn with_elevate_route(mut self, elevate_path: Option<&str>) -> Self {
-            self.instance = self.instance.with_elevate_route(elevate_path);
             self
         }
 

@@ -3427,6 +3427,7 @@ dependencies = [
 name = "tempered-example-jwt"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "tempered",
  "tempered_axum",
  "tokio",

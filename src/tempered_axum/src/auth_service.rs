@@ -29,6 +29,8 @@ where
         main_router: Router<S>,
         validated_router: Router<S>,
         elevated_router: Option<Router<S>>,
+        elevated_layer: Option<fn(Router<S>, S) -> Router<S>>,
+        logout_register: Option<fn(Router<S>, &str) -> Router<S>>,
     }
 
     impl<S> RouteConfig for Instance<S>
@@ -45,6 +47,8 @@ where
                 main_router: std::mem::take(&mut self.main_router),
                 validated_router: std::mem::take(&mut self.validated_router),
                 elevated_router: std::mem::take(&mut self.elevated_router),
+                elevated_layer: self.elevated_layer.take(),
+                logout_register: self.logout_register.take(),
             }
         }
 
@@ -52,6 +56,8 @@ where
             self.main_router = routers.main_router;
             self.validated_router = routers.validated_router;
             self.elevated_router = routers.elevated_router;
+            self.elevated_layer = routers.elevated_layer;
+            self.logout_register = routers.logout_register;
         }
 
         fn build(self, assets_dir: String, scheme: S) -> Router {
@@ -66,8 +72,16 @@ where
                 crate::middleware::validate_token::<S>,
             ));
 
-            // Merge all routers
+            // Merge main + validated routers
             let router = self.main_router.merge(validated_router);
+
+            // Protect + merge the elevated bucket, if any. The applier carries
+            // the `HttpElevationScheme` bound (installed by the elevation builder
+            // methods); the base build just calls it.
+            let router = match (self.elevated_router, self.elevated_layer) {
+                (Some(elevated), Some(apply)) => router.merge(apply(elevated, scheme.clone())),
+                _ => router,
+            };
 
             // Static assets
             let assets_service = ServeDir::new(&assets_dir)
@@ -89,9 +103,13 @@ where
         }
 
         fn logout_route(mut self, logout_path: &str) -> Self {
-            self.validated_router = self
-                .validated_router
-                .route(logout_path, post(crate::routes::logout::<S>));
+            let validated = std::mem::take(&mut self.validated_router);
+            // When elevation is configured, `logout_register` installs the
+            // elevation-aware handler (which also revokes the elevated token).
+            self.validated_router = match self.logout_register {
+                Some(register) => register(validated, logout_path),
+                None => validated.route(logout_path, post(crate::routes::logout::<S>)),
+            };
             self
         }
     }
@@ -101,6 +119,8 @@ where
         main_router: Router::new(),
         validated_router: Router::new(),
         elevated_router: None,
+        elevated_layer: None,
+        logout_register: None,
     };
 
     AuthService {
@@ -112,7 +132,6 @@ where
         verify_token_path: "/verify-token".to_string(),
         signup_path: None,
         verify_2fa_path: None,
-        elevate_path: None,
         password_reset_initiate_path: None,
         password_reset_complete_path: None,
         email_verification_path: None,
@@ -128,7 +147,6 @@ pub struct AuthService<R: RouteConfig> {
     verify_token_path: String,
     signup_path: Option<String>,
     verify_2fa_path: Option<String>,
-    elevate_path: Option<String>,
     password_reset_initiate_path: Option<String>,
     password_reset_complete_path: Option<String>,
     email_verification_path: Option<String>,
@@ -159,6 +177,22 @@ where
         self
     }
 
+    /// Protects a user-supplied router with the regular token middleware: its
+    /// routes require a valid login session.
+    ///
+    /// The router shares the scheme as Axum state (`Router<Scheme>`); its handlers
+    /// read the authenticated user from the `Extension<Claims>` the middleware
+    /// inserts. Works with any scheme, with or without elevation configured.
+    pub fn validated_router(mut self, router: impl Into<Router<R::Scheme>>) -> AuthService<R>
+    where
+        R::Scheme: Clone + Send + Sync + 'static,
+    {
+        let mut routers = self.instance.get_routers();
+        routers.validated_router = routers.validated_router.merge(router.into());
+        self.instance.set_routers(routers);
+        self
+    }
+
     /// Runs the Authentication Service as a standalone axum server
     pub async fn run(self, listener: TcpListener) -> Result<(), std::io::Error> {
         // Register routes by calling trait methods with stored paths
@@ -168,7 +202,6 @@ where
             .logout_route(&self.logout_path)
             .with_signup_route(self.signup_path.as_deref())
             .with_2fa_route(self.verify_2fa_path.as_deref())
-            .with_elevate_route(self.elevate_path.as_deref())
             .with_password_reset_route(
                 self.password_reset_initiate_path.as_deref(),
                 self.password_reset_complete_path.as_deref(),
@@ -213,7 +246,6 @@ where
             verify_token_path: self.verify_token_path,
             signup_path: Some(path.to_string()),
             verify_2fa_path: self.verify_2fa_path,
-            elevate_path: self.elevate_path,
             password_reset_initiate_path: self.password_reset_initiate_path,
             password_reset_complete_path: self.password_reset_complete_path,
             email_verification_path: self.email_verification_path,
@@ -242,7 +274,6 @@ where
             verify_token_path: self.verify_token_path,
             signup_path: self.signup_path,
             verify_2fa_path: Some(path.to_string()),
-            elevate_path: self.elevate_path,
             password_reset_initiate_path: self.password_reset_initiate_path,
             password_reset_complete_path: self.password_reset_complete_path,
             email_verification_path: self.email_verification_path,
@@ -276,7 +307,6 @@ where
             verify_token_path: self.verify_token_path,
             signup_path: self.signup_path,
             verify_2fa_path: self.verify_2fa_path,
-            elevate_path: self.elevate_path,
             password_reset_initiate_path: Some(initiate_path.to_string()),
             password_reset_complete_path: Some(complete_path.to_string()),
             email_verification_path: self.email_verification_path,
@@ -296,12 +326,21 @@ where
     <<R::Scheme as SupportsElevation>::ElevatedValidator as AuthValidator>::Error:
         IntoStatusMessage,
 {
+    /// Enables the elevation ("sudo") flow: registers the `/elevate` route (which
+    /// re-authenticates a logged-in user to mint a short-lived elevated token)
+    /// and a `verify-elevated-token` route, plus any library sudo routes added in
+    /// the `configure` closure (e.g. `with_change_password` / `with_delete_account`).
+    ///
+    /// Routes carrying an elevated token are protected by the elevated-token
+    /// middleware at build time. Once elevation is enabled the logout route also
+    /// revokes the elevated token. Add your own elevation-protected routes with
+    /// [`validated_elevated_router`](Self::validated_elevated_router).
     pub fn with_elevation<F>(
-        self,
+        mut self,
         elevate_path: Option<&str>,
         verify_elevated_token_path: Option<&str>,
         configure: F,
-    ) -> AuthService<impl RouteConfig<Scheme = R::Scheme>>
+    ) -> AuthService<R>
     where
         F: FnOnce(crate::ElevatedRouter<R::Scheme>) -> crate::ElevatedRouter<R::Scheme>,
     {
@@ -309,27 +348,60 @@ where
         let verify_elevated_token_path =
             verify_elevated_token_path.unwrap_or("/verify-elevated-token");
 
-        validate_path(&elevate_path);
-        validate_path(&verify_elevated_token_path);
+        validate_path(elevate_path);
+        validate_path(verify_elevated_token_path);
 
-        AuthService {
-            instance: route_config::with_elevate_route(
-                self.instance,
-                verify_elevated_token_path,
-                configure,
-            ),
-            assets_dir: self.assets_dir,
-            schema: self.schema,
-            login_path: self.login_path,
-            logout_path: self.logout_path,
-            verify_token_path: self.verify_token_path,
-            signup_path: self.signup_path,
-            verify_2fa_path: self.verify_2fa_path,
-            elevate_path: Some(elevate_path.to_string()),
-            password_reset_initiate_path: self.password_reset_initiate_path,
-            password_reset_complete_path: self.password_reset_complete_path,
-            email_verification_path: self.email_verification_path,
-        }
+        // The closure configures the elevated bucket (verify-elevated + sudo routes).
+        let elevated =
+            configure(crate::ElevatedRouter::new(verify_elevated_token_path.to_string())).0;
+
+        let mut routers = self.instance.get_routers();
+        // Obtaining an elevated token requires a regular session, so `/elevate`
+        // lives in the validated (login-protected) bucket.
+        routers.validated_router = routers
+            .validated_router
+            .route(elevate_path, post(crate::routes::elevate::<R::Scheme>));
+        routers.elevated_router = Some(match routers.elevated_router.take() {
+            Some(existing) => existing.merge(elevated),
+            None => elevated,
+        });
+        routers
+            .elevated_layer
+            .get_or_insert(route_config::apply_elevated_validation::<R::Scheme>);
+        routers
+            .logout_register
+            .get_or_insert(route_config::register_logout_with_elevation::<R::Scheme>);
+        self.instance.set_routers(routers);
+
+        self
+    }
+
+    /// Protects a user-supplied router with the **elevated** ("sudo") token
+    /// middleware: its routes require a valid elevated token (obtained via the
+    /// `/elevate` route configured by [`with_elevation`](Self::with_elevation)).
+    ///
+    /// The router shares the scheme as Axum state (`Router<Scheme>`); its handlers
+    /// read the authenticated user from the `Extension<Claims>` the middleware
+    /// inserts. Call this together with [`with_elevation`](Self::with_elevation)
+    /// so users have a way to obtain the elevated token.
+    pub fn validated_elevated_router(
+        mut self,
+        router: impl Into<Router<R::Scheme>>,
+    ) -> AuthService<R> {
+        let mut routers = self.instance.get_routers();
+        routers.elevated_router = Some(match routers.elevated_router.take() {
+            Some(existing) => existing.merge(router.into()),
+            None => router.into(),
+        });
+        routers
+            .elevated_layer
+            .get_or_insert(route_config::apply_elevated_validation::<R::Scheme>);
+        routers
+            .logout_register
+            .get_or_insert(route_config::register_logout_with_elevation::<R::Scheme>);
+        self.instance.set_routers(routers);
+
+        self
     }
 }
 
@@ -345,7 +417,6 @@ where
             .logout_route(&self.logout_path)
             .with_signup_route(self.signup_path.as_deref())
             .with_2fa_route(self.verify_2fa_path.as_deref())
-            .with_elevate_route(self.elevate_path.as_deref())
             .with_password_reset_route(
                 self.password_reset_initiate_path.as_deref(),
                 self.password_reset_complete_path.as_deref(),
@@ -384,7 +455,6 @@ where
             verify_token_path: self.verify_token_path,
             signup_path: self.signup_path,
             verify_2fa_path: self.verify_2fa_path,
-            elevate_path: self.elevate_path,
             password_reset_initiate_path: self.password_reset_initiate_path,
             password_reset_complete_path: self.password_reset_complete_path,
             email_verification_path: Some(path.to_string()),

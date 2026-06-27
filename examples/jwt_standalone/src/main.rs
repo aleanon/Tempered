@@ -7,6 +7,8 @@
 //! # open http://localhost:3000
 //! ```
 
+use axum::{Extension, Router, routing::get};
+use tempered::adapters::auth::local_jwt_validator::Claims;
 use tempered::{
     Email, EmailClient, ExposeSecret, HashMapPasswordResetTokenStore, HashMapTwoFaCodeStore,
     HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, Secret, async_trait,
@@ -58,17 +60,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .verify_token_route("/verify-token")
         .signup_route(Some("/signup"))
         .with_2fa(Some("/verify-2fa"))
-        .with_elevation(Some("/elevate"), Some("/verify-elevated-token"), |elevated| {
-            elevated
-                .with_change_password(Some("/change-password"))
-                .with_delete_account(Some("/delete-account"))
-        })
-        .with_password_reset(None, None);
+        .with_elevation(
+            Some("/elevate"),
+            Some("/verify-elevated-token"),
+            |elevated| {
+                elevated
+                    .with_change_password(Some("/change-password"))
+                    .with_delete_account(Some("/delete-account"))
+            },
+        )
+        .with_password_reset(None, None)
+        // Attach your own routers, protected by the auth service. `/whoami`
+        // needs a valid login session; `/secret` needs an elevated ("sudo")
+        // token (obtained via `/elevate`). Their handlers read the logged-in
+        // user from the `Claims` the middleware inserts into request extensions.
+        .validated_router(Router::new().route("/whoami", get(whoami)))
+        .validated_elevated_router(Router::new().route("/secret", get(secret)));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     auth_service.run(listener).await?;
 
     Ok(())
+}
+
+/// Login-protected: reachable with a valid `jwt` session cookie.
+async fn whoami(Extension(claims): Extension<Claims>) -> String {
+    format!("logged in as {}", claims.sub.expose_secret())
+}
+
+/// Elevation-protected: reachable only with a valid elevated token.
+async fn secret(Extension(claims): Extension<Claims>) -> String {
+    format!("elevated access granted to {}", claims.sub.expose_secret())
 }
 
 fn init_tracing() -> Result<(), ParseError> {
