@@ -1,0 +1,1141 @@
+//! Password-credential authentication scheme, generic over the token mechanism.
+//!
+//! This is the bulk of what was `JwtScheme`: credential login + the optional
+//! capability suite (2FA, elevation, registration, password reset, email
+//! verification, OAuth folding, passkey folding), written **once** and
+//! parameterized over a [`TokenStrategy`] `T`. The only token-specific steps —
+//! issuing, revoking, validating, and cookie delivery — are delegated to `T`, so
+//! `JwtScheme` (`T = JwtTokens`) and `SessionScheme` (`T = SessionTokens`) are
+//! both just type aliases over this one scheme.
+//!
+//! The type-state capability slots are unchanged from the JWT scheme: each
+//! optional capability fills a generic slot (defaulting to `()` = disabled), and
+//! its trait `impl` is gated on the real slot type, so disabled capabilities do
+//! not exist at the type level.
+
+use async_trait::async_trait;
+use secrecy::Secret;
+use serde::Deserialize;
+use tempered_core::{
+    AuthRequest, AuthorizationRequest, ChallengeStore, Email, EmailClient,
+    EmailVerificationStoreError, EmailVerificationToken, EmailVerificationTokenStore,
+    HttpAuthenticationScheme, HttpOAuth2Scheme, HttpResponseBuilderExt, IntoStatusMessage,
+    OAuthHttpClient, OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, Password,
+    PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
+    RequiresEmailVerification, ResponseBuilder, SupportsAccountDeletion, SupportsElevation,
+    SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset, TwoFaAttemptId,
+    TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError, TwoFaError, User, UserError, UserStore,
+    UserStoreError, ValidatedUser, WebAuthnChallenge, WebAuthnVerifier,
+    strategies::authenticator::{
+        AuthenticationScheme, LoginOutcome, SupportsRegistration, SupportsTwoFactor,
+    },
+};
+use thiserror::Error;
+
+use crate::authentication::token_strategy::TokenStrategy;
+use crate::oauth::{OAuthFlow, OAuthFlowError};
+use crate::passkey::{PasskeyFlow, PasskeyFlowError};
+
+/// Credential scheme generic over the token mechanism `T`.
+///
+/// Generic slots (each defaults to `()` = disabled):
+/// - `F` — two-factor      ([`TwoFa`])
+/// - `L` — elevation       ([`Elevation`])
+/// - `R` — password reset  ([`PasswordReset`])
+/// - `M` — email verify    ([`EmailVerify`])
+/// - `O` — OAuth2/OIDC      ([`OAuth`])
+/// - `K` — passkeys        ([`Passkeys`])
+#[derive(Clone)]
+pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()> {
+    user_store: U,
+    tokens: T,
+    two_fa: F,
+    elevation: L,
+    password_reset: R,
+    email_verify: M,
+    oauth: O,
+    passkeys: K,
+}
+
+// ============================================================================
+// Capability slots (the "enabled" states for each optional capability)
+// ============================================================================
+
+/// Enabled two-factor slot: a code store plus the email client used to deliver codes.
+#[derive(Clone)]
+pub struct TwoFa<T, E> {
+    store: T,
+    email: E,
+}
+
+/// Enabled elevation ("sudo") slot: a *second* token strategy for short-lived
+/// elevated tokens (a separate JWT config/secret, or a separate session store).
+#[derive(Clone)]
+pub struct Elevation<TE> {
+    tokens: TE,
+}
+
+impl<TE> Elevation<TE> {
+    /// Construct the elevation slot from its token strategy.
+    pub fn new(tokens: TE) -> Self {
+        Self { tokens }
+    }
+}
+
+/// Enabled password-reset slot: a reset-token store plus the email client used to deliver links.
+#[derive(Clone)]
+pub struct PasswordReset<P, E> {
+    store: P,
+    email: E,
+}
+
+/// Enabled email-verification slot: a verification store plus the email client used to deliver links.
+#[derive(Clone)]
+pub struct EmailVerify<V, E> {
+    store: V,
+    email: E,
+}
+
+/// Enabled OAuth2/OIDC slot: the authorization-code flow plus the cookie/redirect
+/// settings the HTTP layer needs.
+#[derive(Clone)]
+pub struct OAuth<ST, ID, HC> {
+    flow: OAuthFlow<ST, ID, HC>,
+    state_cookie_name: String,
+    post_login_redirect: String,
+}
+
+/// Enabled passkey (WebAuthn) slot: the credential ceremony flow.
+#[derive(Clone)]
+pub struct Passkeys<CS, ChS, V> {
+    flow: PasskeyFlow<CS, ChS, V>,
+}
+
+// ============================================================================
+// Internal slot traits (keep the core paths generic over the slots)
+// ============================================================================
+
+/// Issues the 2FA challenge during `login`. `()` rejects (2FA not configured).
+#[async_trait]
+trait TwoFaChallenge {
+    async fn issue_challenge(&self, email: &Email) -> Result<TwoFaAttemptId, TwoFaChallengeError>;
+}
+
+#[async_trait]
+impl TwoFaChallenge for () {
+    async fn issue_challenge(&self, _email: &Email) -> Result<TwoFaAttemptId, TwoFaChallengeError> {
+        Err(TwoFaChallengeError::NotConfigured)
+    }
+}
+
+#[async_trait]
+impl<S, E> TwoFaChallenge for TwoFa<S, E>
+where
+    S: TwoFaCodeStore + Send + Sync,
+    E: EmailClient + Send + Sync,
+{
+    async fn issue_challenge(&self, email: &Email) -> Result<TwoFaAttemptId, TwoFaChallengeError> {
+        let attempt_id = TwoFaAttemptId::new();
+        let code = TwoFaCode::new();
+
+        self.store
+            .store_code(email.clone(), attempt_id.clone(), code.clone())
+            .await?;
+
+        self.email
+            .send_email(email, "2FA Code", code.as_str())
+            .await
+            .map_err(TwoFaChallengeError::Email)?;
+
+        Ok(attempt_id)
+    }
+}
+
+/// Token-agnostic error from the 2FA challenge step; converted into the scheme's
+/// `CredentialError` (independent of the token strategy).
+#[derive(Debug, Error)]
+enum TwoFaChallengeError {
+    #[error("Two-factor authentication is required but not configured for this scheme")]
+    NotConfigured,
+    #[error("2FA code store error: {0}")]
+    Store(#[from] TwoFaCodeStoreError),
+    #[error("Failed to send email: {0}")]
+    Email(String),
+}
+
+impl<TE> From<TwoFaChallengeError> for CredentialError<TE>
+where
+    TE: std::error::Error + Send + Sync + 'static,
+{
+    fn from(e: TwoFaChallengeError) -> Self {
+        match e {
+            TwoFaChallengeError::NotConfigured => CredentialError::TwoFaNotConfigured,
+            TwoFaChallengeError::Store(s) => CredentialError::TwoFaCodeStoreError(s),
+            TwoFaChallengeError::Email(m) => CredentialError::EmailError(m),
+        }
+    }
+}
+
+/// Exposes the elevated cookie name (if elevation is enabled) so `logout` can clear it.
+trait ElevatedCookieName {
+    fn elevated_cookie_name(&self) -> Option<&str>;
+}
+
+impl ElevatedCookieName for () {
+    fn elevated_cookie_name(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl<TE: TokenStrategy> ElevatedCookieName for Elevation<TE> {
+    fn elevated_cookie_name(&self) -> Option<&str> {
+        Some(self.tokens.cookie_name())
+    }
+}
+
+// ============================================================================
+// Builders (token-agnostic): from_tokens() + supports_*()
+// ============================================================================
+
+impl<U, T> CredentialScheme<U, T, (), (), (), (), (), ()>
+where
+    U: UserStore,
+    T: TokenStrategy,
+{
+    /// Create the core scheme from a user store and a token strategy.
+    ///
+    /// Per-strategy constructors (e.g. `JwtScheme::new`) wrap this.
+    pub fn from_tokens(user_store: U, tokens: T) -> Self {
+        Self {
+            user_store,
+            tokens,
+            two_fa: (),
+            elevation: (),
+            password_reset: (),
+            email_verify: (),
+            oauth: (),
+            passkeys: (),
+        }
+    }
+}
+
+impl<U, T, L, R, M, O, K> CredentialScheme<U, T, (), L, R, M, O, K> {
+    /// Enable two-factor authentication, lighting up [`SupportsTwoFactor`].
+    pub fn supports_2fa<S, E>(
+        self,
+        store: S,
+        email: E,
+    ) -> CredentialScheme<U, T, TwoFa<S, E>, L, R, M, O, K> {
+        CredentialScheme {
+            user_store: self.user_store,
+            tokens: self.tokens,
+            two_fa: TwoFa { store, email },
+            elevation: self.elevation,
+            password_reset: self.password_reset,
+            email_verify: self.email_verify,
+            oauth: self.oauth,
+            passkeys: self.passkeys,
+        }
+    }
+}
+
+impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
+    /// Enable elevated ("sudo") tokens from a second token strategy, lighting up
+    /// [`SupportsElevation`] and [`tempered_core::HttpElevationScheme`].
+    ///
+    /// Per-strategy sugar (e.g. `JwtScheme::supports_elevation(banned, config)`)
+    /// wraps this with the matching strategy.
+    pub fn supports_elevation_with<TE>(
+        self,
+        elevated_tokens: TE,
+    ) -> CredentialScheme<U, T, F, Elevation<TE>, R, M, O, K> {
+        CredentialScheme {
+            user_store: self.user_store,
+            tokens: self.tokens,
+            two_fa: self.two_fa,
+            elevation: Elevation {
+                tokens: elevated_tokens,
+            },
+            password_reset: self.password_reset,
+            email_verify: self.email_verify,
+            oauth: self.oauth,
+            passkeys: self.passkeys,
+        }
+    }
+}
+
+impl<U, T, F, L, M, O, K> CredentialScheme<U, T, F, L, (), M, O, K> {
+    /// Enable password reset, lighting up [`SupportsPasswordReset`].
+    pub fn supports_password_reset<P, E>(
+        self,
+        store: P,
+        email: E,
+    ) -> CredentialScheme<U, T, F, L, PasswordReset<P, E>, M, O, K> {
+        CredentialScheme {
+            user_store: self.user_store,
+            tokens: self.tokens,
+            two_fa: self.two_fa,
+            elevation: self.elevation,
+            password_reset: PasswordReset { store, email },
+            email_verify: self.email_verify,
+            oauth: self.oauth,
+            passkeys: self.passkeys,
+        }
+    }
+}
+
+impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
+    /// Enable email verification, lighting up [`RequiresEmailVerification`].
+    pub fn supports_email_verification<V, E>(
+        self,
+        store: V,
+        email: E,
+    ) -> CredentialScheme<U, T, F, L, R, EmailVerify<V, E>, O, K> {
+        CredentialScheme {
+            user_store: self.user_store,
+            tokens: self.tokens,
+            two_fa: self.two_fa,
+            elevation: self.elevation,
+            password_reset: self.password_reset,
+            email_verify: EmailVerify { store, email },
+            oauth: self.oauth,
+            passkeys: self.passkeys,
+        }
+    }
+}
+
+impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
+    /// Enable OAuth2/OIDC login, lighting up [`SupportsOAuth2`] and
+    /// [`tempered_core::HttpOAuth2Scheme`].
+    pub fn supports_oauth<ST, ID, HC>(
+        self,
+        flow: OAuthFlow<ST, ID, HC>,
+    ) -> CredentialScheme<U, T, F, L, R, M, OAuth<ST, ID, HC>, K> {
+        CredentialScheme {
+            user_store: self.user_store,
+            tokens: self.tokens,
+            two_fa: self.two_fa,
+            elevation: self.elevation,
+            password_reset: self.password_reset,
+            email_verify: self.email_verify,
+            oauth: OAuth {
+                flow,
+                state_cookie_name: "oauth_state".to_string(),
+                post_login_redirect: "/".to_string(),
+            },
+            passkeys: self.passkeys,
+        }
+    }
+}
+
+impl<U, T, F, L, R, M, O> CredentialScheme<U, T, F, L, R, M, O, ()> {
+    /// Enable passkey (WebAuthn) authentication, lighting up [`SupportsPasskeys`].
+    pub fn supports_passkeys<CS, ChS, V>(
+        self,
+        flow: PasskeyFlow<CS, ChS, V>,
+    ) -> CredentialScheme<U, T, F, L, R, M, O, Passkeys<CS, ChS, V>> {
+        CredentialScheme {
+            user_store: self.user_store,
+            tokens: self.tokens,
+            two_fa: self.two_fa,
+            elevation: self.elevation,
+            password_reset: self.password_reset,
+            email_verify: self.email_verify,
+            oauth: self.oauth,
+            passkeys: Passkeys { flow },
+        }
+    }
+}
+
+impl<U, T, F, L, R, M, ST, ID, HC, K> CredentialScheme<U, T, F, L, R, M, OAuth<ST, ID, HC>, K> {
+    /// Override the cookie name used to bind the OAuth `state` to the browser
+    /// (default `oauth_state`).
+    pub fn oauth_state_cookie(mut self, name: impl Into<String>) -> Self {
+        self.oauth.state_cookie_name = name.into();
+        self
+    }
+
+    /// Override where the browser is redirected after a successful OAuth callback
+    /// (default `/`).
+    pub fn oauth_post_login_redirect(mut self, path: impl Into<String>) -> Self {
+        self.oauth.post_login_redirect = path.into();
+        self
+    }
+}
+
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
+    /// Finalizer for readability; the scheme is already usable. Returns `self`.
+    pub fn build(self) -> Self {
+        self
+    }
+
+    pub fn user_store(&self) -> &U {
+        &self.user_store
+    }
+}
+
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    T: TokenStrategy,
+{
+    pub fn cookie_name(&self) -> &str {
+        self.tokens.cookie_name()
+    }
+}
+
+// ============================================================================
+// HTTP Authentication Scheme - framework-agnostic token delivery
+// ============================================================================
+
+#[async_trait]
+impl<U, T, F, L, R, M, O, K> HttpAuthenticationScheme for CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: ElevatedCookieName + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    fn create_login_response<RB: ResponseBuilder>(
+        &self,
+        builder: RB,
+        outcome: LoginOutcome<Self::Token>,
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
+        match outcome {
+            LoginOutcome::Success(token) => builder
+                .status(200)
+                .cookie(&self.tokens.auth_cookie(&token))
+                .json_body(serde_json::json!({
+                    "status": "success",
+                    "message": "Login successful"
+                }))
+                .build(),
+            LoginOutcome::Requires2Fa {
+                email: _,
+                attempt_id,
+            } => builder
+                .status(206)
+                .json_body(serde_json::json!({
+                    "status": "requires_2fa",
+                    "message": "2FA required",
+                    "loginAttemptId": attempt_id.to_string()
+                }))
+                .build(),
+        }
+    }
+
+    fn create_logout_response<RB: ResponseBuilder>(
+        &self,
+        builder: RB,
+        cookie_name: Option<String>,
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
+        let cookie_name = cookie_name.unwrap_or_else(|| self.tokens.cookie_name().to_string());
+
+        let clear_cookie = format!(
+            "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+            cookie_name
+        );
+        let builder = builder.status(200).cookie(&clear_cookie);
+
+        // Also clear the elevated cookie, but only if elevation is enabled.
+        let builder = match self.elevation.elevated_cookie_name() {
+            Some(name) => builder.cookie(&format!(
+                "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+                name
+            )),
+            None => builder,
+        };
+
+        builder
+            .json_body(serde_json::json!({ "message": "Logged out successfully" }))
+            .build()
+    }
+
+    fn extract_token_from_request<Req: AuthRequest>(&self, req: &Req) -> Option<Self::Token> {
+        self.tokens.extract(req)
+    }
+}
+
+// ============================================================================
+// Core Trait: AuthenticationScheme
+// ============================================================================
+
+#[async_trait]
+impl<U, T, F, L, R, M, O, K> AuthenticationScheme for CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type Token = T::Token;
+    type Validator = T::Validator;
+    type LogoutOutput = String;
+    type Credentials = PasswordCredentials;
+    type AuthError = CredentialError<T::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::login", skip(self, credentials))]
+    async fn login(
+        &self,
+        credentials: Self::Credentials,
+    ) -> Result<LoginOutcome<Self::Token>, Self::AuthError> {
+        let email = Email::try_from(credentials.email)?;
+        let password = Password::try_from(credentials.password)?;
+
+        let validated_user = self.user_store.authenticate_user(&email, &password).await?;
+
+        match validated_user {
+            ValidatedUser::Requires2Fa(email) => {
+                // Delegate to the 2FA slot: issues + delivers the challenge, or
+                // errors if the scheme was built without `supports_2fa`.
+                let attempt_id = self.two_fa.issue_challenge(&email).await?;
+                Ok(LoginOutcome::Requires2Fa { email, attempt_id })
+            }
+            ValidatedUser::No2Fa(email) => {
+                let token = self.tokens.issue(&email).await.map_err(CredentialError::Token)?;
+                Ok(LoginOutcome::Success(token))
+            }
+        }
+    }
+
+    async fn logout(&self, token: &Self::Token) -> Result<Self::LogoutOutput, Self::AuthError> {
+        self.tokens
+            .revoke(token)
+            .await
+            .map_err(CredentialError::Token)?;
+        Ok(self.tokens.cookie_name().to_string())
+    }
+
+    fn validator(&self) -> &Self::Validator {
+        self.tokens.validator()
+    }
+}
+
+// ============================================================================
+// Always-on capabilities (need only the user store)
+// ============================================================================
+
+#[async_trait]
+impl<U, T, F, L, R, M, O, K> SupportsRegistration for CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type RegistrationData = RegistrationData;
+    type RegistrationError = CredentialError<T::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::register", skip(self, password))]
+    async fn register(
+        &self,
+        email: Email,
+        password: Password,
+        data: Self::RegistrationData,
+    ) -> Result<(), Self::RegistrationError> {
+        let user = User::new(email, password, data.requires_2fa);
+        self.user_store.add_user(user).await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<U, T, F, L, R, M, O, K> SupportsPasswordChange for CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type PasswordChangeError = CredentialError<T::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::change_password", skip(self, new_password))]
+    async fn change_password(
+        &self,
+        email: Email,
+        new_password: Password,
+    ) -> Result<(), Self::PasswordChangeError> {
+        self.user_store.set_new_password(&email, new_password).await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<U, T, F, L, R, M, O, K> SupportsAccountDeletion for CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type AccountDeletionError = CredentialError<T::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::delete_account", skip(self))]
+    async fn delete_account(&self, email: Email) -> Result<(), Self::AccountDeletionError> {
+        self.user_store.delete_user(&email).await?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Two-Factor Authentication (gated on the `TwoFa` slot)
+// ============================================================================
+
+#[async_trait]
+impl<U, T, S, E, L, R, M, O, K> SupportsTwoFactor
+    for CredentialScheme<U, T, TwoFa<S, E>, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    S: TwoFaCodeStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type TwoFactorError = CredentialError<T::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::verify_2fa", skip(self, code))]
+    async fn verify_2fa(
+        &self,
+        email: Email,
+        attempt_id: TwoFaAttemptId,
+        code: TwoFaCode,
+    ) -> Result<Self::Token, Self::TwoFactorError> {
+        self.two_fa.store.validate(&email, &attempt_id, &code).await?;
+        self.two_fa.store.delete(&email).await?;
+        Ok(self.tokens.issue(&email).await.map_err(CredentialError::Token)?)
+    }
+}
+
+// ============================================================================
+// Elevated Tokens / "Sudo" (gated on the `Elevation` slot)
+// ============================================================================
+
+#[async_trait]
+impl<U, T, F, TE, R, M, O, K> SupportsElevation
+    for CredentialScheme<U, T, F, Elevation<TE>, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    TE: TokenStrategy,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type ElevatedToken = TE::Token;
+    type ElevatedValidator = TE::Validator;
+    type ElevationError = CredentialError<TE::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::elevate", skip(self, password))]
+    async fn elevate(
+        &self,
+        email: Email,
+        password: Password,
+    ) -> Result<Self::ElevatedToken, Self::ElevationError> {
+        // Re-authenticate, then mint a token via the *elevated* strategy.
+        self.user_store.authenticate_user(&email, &password).await?;
+        Ok(self
+            .elevation
+            .tokens
+            .issue(&email)
+            .await
+            .map_err(CredentialError::Token)?)
+    }
+
+    fn elevated_validator(&self) -> &Self::ElevatedValidator {
+        self.elevation.tokens.validator()
+    }
+
+    async fn revoke_elevated_token(
+        &self,
+        token: &Self::ElevatedToken,
+    ) -> Result<(), Self::ElevationError> {
+        self.elevation
+            .tokens
+            .revoke(token)
+            .await
+            .map_err(CredentialError::Token)?;
+        Ok(())
+    }
+}
+
+impl<U, T, F, TE, R, M, O, K> tempered_core::HttpElevationScheme
+    for CredentialScheme<U, T, F, Elevation<TE>, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    TE: TokenStrategy,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    fn create_elevation_response<RB: ResponseBuilder>(
+        &self,
+        builder: RB,
+        elevated_token: Self::ElevatedToken,
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
+        builder
+            .status(200)
+            .cookie(&self.elevation.tokens.auth_cookie(&elevated_token))
+            .json_body(serde_json::json!({
+                "status": "elevated",
+                "message": "Elevation successful"
+            }))
+            .build()
+    }
+
+    fn extract_elevated_token_from_request<Req: AuthRequest>(
+        &self,
+        req: &Req,
+    ) -> Option<Self::ElevatedToken> {
+        self.elevation.tokens.extract(req)
+    }
+}
+
+// ============================================================================
+// Password Reset (gated on the `PasswordReset` slot)
+// ============================================================================
+
+#[async_trait]
+impl<U, T, F, L, P, E, M, O, K> SupportsPasswordReset
+    for CredentialScheme<U, T, F, L, PasswordReset<P, E>, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    P: PasswordResetTokenStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type PasswordResetError = CredentialError<T::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::initiate_password_reset", skip(self))]
+    async fn initiate_password_reset(&self, email: Email) -> Result<(), Self::PasswordResetError> {
+        // Silent Ok if the user doesn't exist (prevents email enumeration).
+        if self.user_store.get_user(&email).await.is_err() {
+            return Ok(());
+        }
+
+        let token = PasswordResetToken::new();
+        self.password_reset
+            .store
+            .store_token(token.clone(), email.clone())
+            .await?;
+        self.password_reset
+            .email
+            .send_email(&email, "Password Reset", &token.to_string())
+            .await
+            .map_err(CredentialError::EmailError)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(name = "CredentialScheme::complete_password_reset", skip(self, new_password))]
+    async fn complete_password_reset(
+        &self,
+        reset_token: String,
+        new_password: Password,
+    ) -> Result<(), Self::PasswordResetError> {
+        let token =
+            PasswordResetToken::parse(&reset_token).ok_or(CredentialError::InvalidResetToken)?;
+
+        let email = self
+            .password_reset
+            .store
+            .get_email_for_token(&token)
+            .await
+            .map_err(|_| CredentialError::InvalidResetToken)?;
+
+        self.user_store.set_new_password(&email, new_password).await?;
+
+        let _ = self.password_reset.store.delete_token(&token).await;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Email Verification (gated on the `EmailVerify` slot)
+// ============================================================================
+
+#[async_trait]
+impl<U, T, F, L, R, V, E, O, K> RequiresEmailVerification
+    for CredentialScheme<U, T, F, L, R, EmailVerify<V, E>, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    V: EmailVerificationTokenStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type EmailVerificationError = CredentialError<T::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::initiate_email_verification", skip(self))]
+    async fn initiate_email_verification(
+        &self,
+        email: Email,
+    ) -> Result<(), Self::EmailVerificationError> {
+        let token = EmailVerificationToken::new();
+        self.email_verify
+            .store
+            .store_pending_verification(token.clone(), email.clone())
+            .await?;
+        self.email_verify
+            .email
+            .send_email(&email, "Verify your email", &token.to_string())
+            .await
+            .map_err(CredentialError::EmailError)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(name = "CredentialScheme::verify_email", skip(self))]
+    async fn verify_email(&self, token: String) -> Result<(), Self::EmailVerificationError> {
+        let token = EmailVerificationToken::parse(&token)
+            .ok_or(CredentialError::InvalidVerificationToken)?;
+
+        let email = self
+            .email_verify
+            .store
+            .consume_token(&token)
+            .await
+            .map_err(|_| CredentialError::InvalidVerificationToken)?;
+
+        self.email_verify.store.mark_verified(&email).await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(name = "CredentialScheme::is_email_verified", skip(self))]
+    async fn is_email_verified(
+        &self,
+        email: &Email,
+    ) -> Result<bool, Self::EmailVerificationError> {
+        Ok(self.email_verify.store.is_verified(email).await?)
+    }
+}
+
+// ============================================================================
+// OAuth2 / OIDC (gated on the `OAuth` slot)
+// ============================================================================
+
+#[async_trait]
+impl<U, T, F, L, R, M, ST, ID, HC, K> SupportsOAuth2
+    for CredentialScheme<U, T, F, L, R, M, OAuth<ST, ID, HC>, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    ST: OAuthStateStore + Clone + Send + Sync + 'static,
+    ID: OAuthIdentityStore + Clone + Send + Sync + 'static,
+    HC: OAuthHttpClient + Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type OAuth2Error = CredentialError<T::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::begin_oauth", skip(self))]
+    async fn begin_oauth(
+        &self,
+        provider: &str,
+    ) -> Result<AuthorizationRequest, Self::OAuth2Error> {
+        Ok(self.oauth.flow.begin(provider).await?)
+    }
+
+    #[tracing::instrument(name = "CredentialScheme::complete_oauth", skip(self, code))]
+    async fn complete_oauth(
+        &self,
+        provider: &str,
+        code: &str,
+        query_state: &str,
+        cookie_state: &str,
+    ) -> Result<Self::Token, Self::OAuth2Error> {
+        // The flow verifies the provider identity and yields a local email; we
+        // then mint *this scheme's* primary token.
+        let email = self
+            .oauth
+            .flow
+            .complete(provider, code, query_state, cookie_state)
+            .await?;
+        Ok(self.tokens.issue(&email).await.map_err(CredentialError::Token)?)
+    }
+}
+
+impl<U, T, F, L, R, M, ST, ID, HC, K> HttpOAuth2Scheme
+    for CredentialScheme<U, T, F, L, R, M, OAuth<ST, ID, HC>, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: ElevatedCookieName + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    ST: OAuthStateStore + Clone + Send + Sync + 'static,
+    ID: OAuthIdentityStore + Clone + Send + Sync + 'static,
+    HC: OAuthHttpClient + Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    fn oauth_state_cookie_name(&self) -> &str {
+        &self.oauth.state_cookie_name
+    }
+
+    fn create_oauth_start_response<RB: ResponseBuilder>(
+        &self,
+        builder: RB,
+        authorization: AuthorizationRequest,
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
+        let state_cookie = format!(
+            "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/",
+            self.oauth.state_cookie_name, authorization.state
+        );
+
+        builder
+            .status(302)
+            .cookie(&state_cookie)
+            .header("location", &authorization.authorize_url)
+            .build()
+    }
+
+    fn create_oauth_callback_response<RB: ResponseBuilder>(
+        &self,
+        builder: RB,
+        token: Self::Token,
+    ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
+        // Deliver the issued token exactly as login does, clear the spent state
+        // cookie, and redirect into the app.
+        let clear_state = format!(
+            "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+            self.oauth.state_cookie_name
+        );
+
+        builder
+            .status(302)
+            .cookie(&self.tokens.auth_cookie(&token))
+            .cookie(&clear_state)
+            .header("location", &self.oauth.post_login_redirect)
+            .build()
+    }
+}
+
+// ============================================================================
+// Passkeys / WebAuthn (gated on the `Passkeys` slot)
+// ============================================================================
+
+#[async_trait]
+impl<U, T, F, L, R, M, O, CS, ChS, V> SupportsPasskeys
+    for CredentialScheme<U, T, F, L, R, M, O, Passkeys<CS, ChS, V>>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    CS: PasskeyCredentialStore + Clone + Send + Sync + 'static,
+    ChS: ChallengeStore + Clone + Send + Sync + 'static,
+    V: WebAuthnVerifier + Clone + Send + Sync + 'static,
+{
+    type PasskeyError = CredentialError<T::Error>;
+
+    #[tracing::instrument(name = "CredentialScheme::start_passkey_registration", skip(self))]
+    async fn start_passkey_registration(
+        &self,
+        email: Email,
+    ) -> Result<serde_json::Value, Self::PasskeyError> {
+        Ok(self.passkeys.flow.start_registration(email).await?)
+    }
+
+    #[tracing::instrument(name = "CredentialScheme::finish_passkey_registration", skip(self, response))]
+    async fn finish_passkey_registration(
+        &self,
+        challenge: WebAuthnChallenge,
+        response: serde_json::Value,
+    ) -> Result<(), Self::PasskeyError> {
+        self.passkeys
+            .flow
+            .finish_registration(challenge, response)
+            .await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(name = "CredentialScheme::start_passkey_authentication", skip(self))]
+    async fn start_passkey_authentication(
+        &self,
+        email: Option<Email>,
+    ) -> Result<serde_json::Value, Self::PasskeyError> {
+        Ok(self.passkeys.flow.start_authentication(email).await?)
+    }
+
+    #[tracing::instrument(name = "CredentialScheme::finish_passkey_authentication", skip(self, response))]
+    async fn finish_passkey_authentication(
+        &self,
+        challenge: WebAuthnChallenge,
+        response: serde_json::Value,
+    ) -> Result<Self::Token, Self::PasskeyError> {
+        let email = self
+            .passkeys
+            .flow
+            .finish_authentication(challenge, response)
+            .await?;
+        Ok(self.tokens.issue(&email).await.map_err(CredentialError::Token)?)
+    }
+}
+
+// ============================================================================
+// Wire types
+// ============================================================================
+
+/// Credentials for password-based login.
+#[derive(Debug, Deserialize)]
+pub struct PasswordCredentials {
+    pub email: Secret<String>,
+    pub password: Secret<String>,
+}
+
+/// Additional data needed for user registration.
+#[derive(Debug, Deserialize)]
+pub struct RegistrationData {
+    #[serde(rename = "requires2FA")]
+    pub requires_2fa: bool,
+}
+
+// ============================================================================
+// Error type (generic over the token strategy's error)
+// ============================================================================
+
+#[derive(Debug, Error)]
+pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
+    #[error("User error: {0}")]
+    UserError(#[from] UserError),
+
+    #[error("User store error: {0}")]
+    UserStoreError(#[from] UserStoreError),
+
+    #[error("Token error: {0}")]
+    Token(TE),
+
+    #[error("Two-factor authentication error: {0}")]
+    TwoFaError(#[from] TwoFaError),
+
+    #[error("Two-factor authentication is required but not configured for this scheme")]
+    TwoFaNotConfigured,
+
+    #[error("2FA code store error: {0}")]
+    TwoFaCodeStoreError(#[from] TwoFaCodeStoreError),
+
+    #[error("Failed to send email: {0}")]
+    EmailError(String),
+
+    #[error("Invalid or expired password reset token")]
+    InvalidResetToken,
+
+    #[error("Password reset token store error: {0}")]
+    PasswordResetTokenStoreError(#[from] PasswordResetTokenStoreError),
+
+    #[error("Invalid or expired email verification token")]
+    InvalidVerificationToken,
+
+    #[error("Email verification store error: {0}")]
+    EmailVerificationStoreError(#[from] EmailVerificationStoreError),
+
+    #[error("OAuth error: {0}")]
+    OAuth(#[from] OAuthFlowError),
+
+    #[error("Passkey error: {0}")]
+    Passkey(#[from] PasskeyFlowError),
+}
+
+impl<TE> IntoStatusMessage for CredentialError<TE>
+where
+    TE: std::error::Error + Send + Sync + 'static + IntoStatusMessage,
+{
+    fn into_status_message(self) -> (http::StatusCode, String) {
+        match self {
+            CredentialError::UserError(e) => (http::StatusCode::BAD_REQUEST, e.to_string()),
+
+            CredentialError::UserStoreError(UserStoreError::UserNotFound) => {
+                (http::StatusCode::UNAUTHORIZED, "User not found".to_string())
+            }
+            CredentialError::UserStoreError(UserStoreError::IncorrectPassword) => (
+                http::StatusCode::UNAUTHORIZED,
+                "Incorrect password".to_string(),
+            ),
+            CredentialError::UserStoreError(UserStoreError::UserAlreadyExists) => (
+                http::StatusCode::CONFLICT,
+                "User already exists".to_string(),
+            ),
+
+            CredentialError::TwoFaError(e) => (http::StatusCode::UNAUTHORIZED, e.to_string()),
+            CredentialError::TwoFaCodeStoreError(e) => (
+                http::StatusCode::UNAUTHORIZED,
+                format!("2FA code store error: {}", e),
+            ),
+            CredentialError::TwoFaNotConfigured => (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Two-factor authentication is required but not configured".to_string(),
+            ),
+
+            // Token errors use their own mapping (JWT signing / ban-store, …).
+            CredentialError::Token(e) => e.into_status_message(),
+
+            CredentialError::InvalidResetToken => (
+                http::StatusCode::BAD_REQUEST,
+                "Invalid or expired password reset token".to_string(),
+            ),
+
+            CredentialError::UserStoreError(e) => (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("User store error: {}", e),
+            ),
+            CredentialError::EmailError(e) => (http::StatusCode::INTERNAL_SERVER_ERROR, e),
+            CredentialError::PasswordResetTokenStoreError(e) => (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Reset token store error: {}", e),
+            ),
+
+            CredentialError::InvalidVerificationToken => (
+                http::StatusCode::BAD_REQUEST,
+                "Invalid or expired email verification token".to_string(),
+            ),
+            CredentialError::EmailVerificationStoreError(e) => (
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Email verification store error: {}", e),
+            ),
+
+            CredentialError::OAuth(e) => e.into_status_message(),
+            CredentialError::Passkey(e) => e.into_status_message(),
+        }
+    }
+}
