@@ -1,25 +1,29 @@
-//! Opaque server-side session authentication scheme.
+//! Opaque server-side session scheme — the session specialization of
+//! [`CredentialScheme`](crate::authentication::credential_scheme::CredentialScheme).
 //!
-//! The stateful counterpart to [`JwtScheme`](crate::authentication::jwt_scheme::JwtScheme):
-//! login verifies the password via the [`UserStore`], creates a server-side
-//! session in a [`SessionStore`], and returns the random [`SessionId`] in an
-//! HttpOnly cookie. Because the session lives server-side, logout (or any
-//! `delete_session`) revokes it instantly — no ban-list needed.
+//! `SessionScheme` is a type alias over `CredentialScheme<U, SessionTokens<S>, …>`:
+//! it is the same credential scheme as [`JwtScheme`](crate::authentication::jwt_scheme::JwtScheme),
+//! just with the stateful [`SessionTokens`] strategy plugged in — so it inherits
+//! the whole capability suite (2FA, elevation, registration, password reset,
+//! email verification, OAuth, passkeys). Login verifies the password, creates a
+//! server-side session in a [`SessionStore`], and returns the random
+//! [`SessionId`] in an HttpOnly cookie; because the session lives server-side,
+//! logout (or any revocation) invalidates it instantly.
 //!
-//! It satisfies [`HttpAuthenticationScheme`] with cookie delivery, so the
-//! existing `auth_service` login / logout / verify-token routes work unchanged.
+//! Note: unlike the previous standalone scheme, a 2FA-flagged user logging into a
+//! session scheme *without* `supports_2fa` now errors (consistent with JWT)
+//! rather than being granted a session immediately.
 
 use async_trait::async_trait;
 use axum_extra::extract::CookieJar;
-use secrecy::Secret;
-use serde::Deserialize;
 use tempered_core::{
-    AuthRequest, AuthValidator, AuthenticationScheme, Email, HttpAuthenticationScheme,
-    HttpResponseBuilderExt, IntoStatusMessage, LoginOutcome, Password, ResponseBuilder,
-    ResponseBuilderError, SessionId, SessionStore, SessionStoreError, SupportsTokenRevocation,
-    UserError, UserStore, UserStoreError,
+    AuthRequest, AuthValidator, Email, IntoStatusMessage, SessionId, SessionStore,
+    SessionStoreError, UserStore,
 };
 use thiserror::Error;
+
+use crate::authentication::credential_scheme::{CredentialScheme, Elevation};
+use crate::authentication::token_strategy::TokenStrategy;
 
 // ============================================================================
 // Configuration
@@ -32,97 +36,15 @@ pub struct SessionConfig {
 }
 
 // ============================================================================
-// Session Scheme
-// ============================================================================
-
-#[derive(Clone)]
-pub struct SessionScheme<U, S> {
-    user_store: U,
-    session_store: S,
-    config: SessionConfig,
-    validator: SessionValidator<S>,
-}
-
-impl<U, S> SessionScheme<U, S>
-where
-    U: UserStore + Clone,
-    S: SessionStore + Clone,
-{
-    pub fn new(user_store: U, session_store: S, config: SessionConfig) -> Self {
-        let validator = SessionValidator::new(session_store.clone(), config.clone());
-        Self {
-            user_store,
-            session_store,
-            config,
-            validator,
-        }
-    }
-}
-
-// ============================================================================
-// Domain / wire types
+// Token type
 // ============================================================================
 
 /// Opaque session token delivered to the client (wraps a `SessionId`).
 #[derive(Clone, Debug)]
 pub struct SessionToken(pub SessionId);
 
-/// Credentials accepted by the session login endpoint.
-#[derive(Debug, Deserialize)]
-pub struct SessionCredentials {
-    pub email: Secret<String>,
-    pub password: Secret<String>,
-}
-
 // ============================================================================
-// Core trait: AuthenticationScheme
-// ============================================================================
-
-#[async_trait]
-impl<U, S> AuthenticationScheme for SessionScheme<U, S>
-where
-    U: UserStore + Clone + 'static,
-    S: SessionStore + Clone + Send + Sync + 'static,
-{
-    type Token = SessionToken;
-    type LogoutOutput = String;
-    type Validator = SessionValidator<S>;
-    type Credentials = SessionCredentials;
-    type AuthError = SessionAuthError;
-
-    #[tracing::instrument(name = "SessionScheme::login", skip(self, credentials))]
-    async fn login(
-        &self,
-        credentials: Self::Credentials,
-    ) -> Result<LoginOutcome<Self::Token>, Self::AuthError> {
-        let email = Email::try_from(credentials.email)?;
-        let password = Password::try_from(credentials.password)?;
-
-        // This scheme does not implement 2FA; a validated user (with or without
-        // the 2FA flag) is treated as an immediate session grant.
-        let validated_user = self.user_store.authenticate_user(&email, &password).await?;
-        let session_email = validated_user.email().clone();
-
-        let id = SessionId::new();
-        self.session_store
-            .create_session(id.clone(), session_email)
-            .await?;
-
-        Ok(LoginOutcome::Success(SessionToken(id)))
-    }
-
-    async fn logout(&self, token: &Self::Token) -> Result<Self::LogoutOutput, Self::AuthError> {
-        self.session_store.delete_session(&token.0).await?;
-        Ok(self.config.cookie_name.clone())
-    }
-
-    fn validator(&self) -> &Self::Validator {
-        &self.validator
-    }
-}
-
-// ============================================================================
-// HTTP delivery (cookie-based)
+// Session token strategy
 // ============================================================================
 
 fn build_session_cookie(value: &str, name: &str, ttl_seconds: u64) -> String {
@@ -132,63 +54,66 @@ fn build_session_cookie(value: &str, name: &str, ttl_seconds: u64) -> String {
     )
 }
 
-impl<U, S> HttpAuthenticationScheme for SessionScheme<U, S>
+/// Stateful session tokens: `issue` creates a server-side session, `revoke`
+/// deletes it, validation is a store lookup (with sliding expiry).
+#[derive(Clone)]
+pub struct SessionTokens<S> {
+    store: S,
+    config: SessionConfig,
+    validator: SessionValidator<S>,
+}
+
+impl<S> SessionTokens<S>
 where
-    U: UserStore + Clone + 'static,
-    S: SessionStore + Clone + Send + Sync + 'static,
+    S: SessionStore + Clone,
 {
-    fn create_login_response<RB: ResponseBuilder>(
-        &self,
-        builder: RB,
-        outcome: LoginOutcome<Self::Token>,
-    ) -> Result<RB::Response, ResponseBuilderError> {
-        match outcome {
-            LoginOutcome::Success(token) => {
-                let cookie = build_session_cookie(
-                    &token.0.to_string(),
-                    &self.config.cookie_name,
-                    self.config.ttl_in_seconds,
-                );
-                builder
-                    .status(200)
-                    .cookie(&cookie)
-                    .json_body(serde_json::json!({
-                        "status": "success",
-                        "message": "Login successful"
-                    }))
-                    .build()
-            }
-            LoginOutcome::Requires2Fa {
-                email: _,
-                attempt_id,
-            } => builder
-                .status(206)
-                .json_body(serde_json::json!({
-                    "status": "requires_2fa",
-                    "loginAttemptId": attempt_id.to_string()
-                }))
-                .build(),
+    pub fn new(store: S, config: SessionConfig) -> Self {
+        let validator = SessionValidator::new(store.clone(), config.clone());
+        Self {
+            store,
+            config,
+            validator,
         }
     }
+}
 
-    fn create_logout_response<RB: ResponseBuilder>(
-        &self,
-        builder: RB,
-        cookie_name: Option<String>,
-    ) -> Result<RB::Response, ResponseBuilderError> {
-        let cookie_name = cookie_name.unwrap_or_else(|| self.config.cookie_name.clone());
-        let clear_cookie = format!(
-            "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
-            cookie_name
-        );
-        builder
-            .status(200)
-            .cookie(&clear_cookie)
-            .json_body(serde_json::json!({ "message": "Logged out successfully" }))
-            .build()
+#[async_trait]
+impl<S> TokenStrategy for SessionTokens<S>
+where
+    S: SessionStore + Clone + Send + Sync + 'static,
+{
+    type Token = SessionToken;
+    type Validator = SessionValidator<S>;
+    type Error = SessionError;
+
+    async fn issue(&self, email: &Email) -> Result<SessionToken, SessionError> {
+        let id = SessionId::new();
+        self.store.create_session(id.clone(), email.clone()).await?;
+        Ok(SessionToken(id))
     }
 
-    fn extract_token_from_request<Req: AuthRequest>(&self, req: &Req) -> Option<Self::Token> {
+    async fn revoke(&self, token: &SessionToken) -> Result<(), SessionError> {
+        self.store.delete_session(&token.0).await?;
+        Ok(())
+    }
+
+    fn validator(&self) -> &SessionValidator<S> {
+        &self.validator
+    }
+
+    fn cookie_name(&self) -> &str {
+        &self.config.cookie_name
+    }
+
+    fn auth_cookie(&self, token: &SessionToken) -> String {
+        build_session_cookie(
+            &token.0.to_string(),
+            &self.config.cookie_name,
+            self.config.ttl_in_seconds,
+        )
+    }
+
+    fn extract<R: AuthRequest>(&self, req: &R) -> Option<SessionToken> {
         req.cookie(&self.config.cookie_name)
             .and_then(SessionId::parse)
             .map(SessionToken)
@@ -196,20 +121,39 @@ where
 }
 
 // ============================================================================
-// Token revocation (logout = delete the server-side session)
+// Scheme alias + session-specific constructors
 // ============================================================================
 
-#[async_trait]
-impl<U, S> SupportsTokenRevocation for SessionScheme<U, S>
+/// Server-side session credential scheme: [`CredentialScheme`] with the session
+/// token strategy. Slots match [`CredentialScheme`].
+pub type SessionScheme<U, S, F = (), L = (), R = (), M = (), O = (), K = ()> =
+    CredentialScheme<U, SessionTokens<S>, F, L, R, M, O, K>;
+
+impl<U, S> CredentialScheme<U, SessionTokens<S>, (), (), (), (), (), ()>
 where
-    U: UserStore + Clone + 'static,
+    U: UserStore,
     S: SessionStore + Clone + Send + Sync + 'static,
 {
-    type RevocationError = SessionAuthError;
+    /// Create the session scheme: password login, logout, and session validation.
+    ///
+    /// Opt into optional capabilities with the `supports_*` methods.
+    pub fn new(user_store: U, session_store: S, config: SessionConfig) -> Self {
+        Self::from_tokens(user_store, SessionTokens::new(session_store, config))
+    }
+}
 
-    async fn revoke_token(&self, token: &Self::Token) -> Result<(), Self::RevocationError> {
-        self.session_store.delete_session(&token.0).await?;
-        Ok(())
+impl<U, S, F, R, M, O, K> CredentialScheme<U, SessionTokens<S>, F, (), R, M, O, K>
+where
+    S: SessionStore + Clone + Send + Sync + 'static,
+{
+    /// Enable elevated ("sudo") sessions from a separate store + config, lighting
+    /// up [`SupportsElevation`](tempered_core::SupportsElevation).
+    pub fn supports_elevation(
+        self,
+        elevated_session_store: S,
+        elevated_config: SessionConfig,
+    ) -> CredentialScheme<U, SessionTokens<S>, F, Elevation<SessionTokens<S>>, R, M, O, K> {
+        self.supports_elevation_with(SessionTokens::new(elevated_session_store, elevated_config))
     }
 }
 
@@ -245,7 +189,7 @@ where
 {
     type Claims = SessionClaims;
     type RequestParts = http::request::Parts;
-    type Error = SessionAuthError;
+    type Error = SessionError;
 
     async fn validate(&self, parts: &Self::RequestParts) -> Result<Self::Claims, Self::Error> {
         let jar = CookieJar::from_headers(&parts.headers);
@@ -254,14 +198,14 @@ where
             .get(&self.cookie_name)
             .map(|c| c.value().to_string())
             .filter(|v| !v.is_empty())
-            .ok_or(SessionAuthError::MissingSession)?;
+            .ok_or(SessionError::MissingSession)?;
 
-        let id = SessionId::parse(&raw).ok_or(SessionAuthError::InvalidSession)?;
+        let id = SessionId::parse(&raw).ok_or(SessionError::InvalidSession)?;
 
         let email = self.session_store.get_session(&id).await?;
 
-        // Best-effort sliding expiry; failure to touch should not reject a
-        // request that just validated successfully.
+        // Best-effort sliding expiry; failure to touch shouldn't reject a request
+        // that just validated successfully.
         let _ = self.session_store.touch_session(&id).await;
 
         Ok(SessionClaims { email })
@@ -269,55 +213,33 @@ where
 }
 
 // ============================================================================
-// Errors
+// Errors (shared by the strategy's issue/revoke and the validator)
 // ============================================================================
 
 #[derive(Debug, Error)]
-pub enum SessionAuthError {
-    #[error("User error: {0}")]
-    UserError(#[from] UserError),
-
-    #[error("User store error: {0}")]
-    UserStoreError(#[from] UserStoreError),
-
-    #[error("Session store error: {0}")]
-    SessionStoreError(#[from] SessionStoreError),
-
+pub enum SessionError {
     #[error("Missing session cookie")]
     MissingSession,
-
     #[error("Invalid session")]
     InvalidSession,
+    #[error("Session store error: {0}")]
+    Store(#[from] SessionStoreError),
 }
 
-impl IntoStatusMessage for SessionAuthError {
+impl IntoStatusMessage for SessionError {
     fn into_status_message(self) -> (http::StatusCode, String) {
         match self {
-            SessionAuthError::UserError(e) => (http::StatusCode::BAD_REQUEST, e.to_string()),
-
-            SessionAuthError::UserStoreError(UserStoreError::UserNotFound) => {
-                (http::StatusCode::UNAUTHORIZED, "User not found".to_string())
-            }
-            SessionAuthError::UserStoreError(UserStoreError::IncorrectPassword) => (
-                http::StatusCode::UNAUTHORIZED,
-                "Incorrect password".to_string(),
-            ),
-            SessionAuthError::UserStoreError(e) => (
-                http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("User store error: {}", e),
-            ),
-
-            SessionAuthError::MissingSession => {
+            SessionError::MissingSession => {
                 (http::StatusCode::UNAUTHORIZED, "Missing session".to_string())
             }
-            SessionAuthError::InvalidSession => {
+            SessionError::InvalidSession => {
                 (http::StatusCode::UNAUTHORIZED, "Invalid session".to_string())
             }
-            SessionAuthError::SessionStoreError(SessionStoreError::SessionNotFound) => (
+            SessionError::Store(SessionStoreError::SessionNotFound) => (
                 http::StatusCode::UNAUTHORIZED,
                 "Session not found or expired".to_string(),
             ),
-            SessionAuthError::SessionStoreError(SessionStoreError::UnexpectedError(m)) => {
+            SessionError::Store(SessionStoreError::UnexpectedError(m)) => {
                 (http::StatusCode::INTERNAL_SERVER_ERROR, m)
             }
         }
@@ -326,10 +248,15 @@ impl IntoStatusMessage for SessionAuthError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{SessionConfig, SessionError, SessionScheme};
+    use crate::authentication::credential_scheme::{CredentialError, PasswordCredentials};
     use crate::persistence::hashmap_session_store::HashMapSessionStore;
     use crate::persistence::hashmap_user_store::HashMapUserStore;
-    use tempered_core::User;
+    use secrecy::Secret;
+    use tempered_core::{
+        AuthValidator, AuthenticationScheme, Email, LoginOutcome, Password, SupportsElevation, User,
+        UserStore,
+    };
 
     fn config() -> SessionConfig {
         SessionConfig {
@@ -353,15 +280,28 @@ mod tests {
         SessionScheme::new(user_store, HashMapSessionStore::new(), config())
     }
 
+    fn credentials(email: &str, password: &str) -> PasswordCredentials {
+        PasswordCredentials {
+            email: Secret::new(email.to_string()),
+            password: Secret::new(password.to_string()),
+        }
+    }
+
+    fn parts_with_cookie(name: &str, value: &str) -> http::request::Parts {
+        http::Request::builder()
+            .header("cookie", format!("{}={}", name, value))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0
+    }
+
     #[tokio::test]
     async fn login_creates_session_and_validator_accepts_it() {
         let scheme = scheme_with_user("user@example.com", "passwordpassword").await;
 
         let outcome = scheme
-            .login(SessionCredentials {
-                email: Secret::new("user@example.com".to_string()),
-                password: Secret::new("passwordpassword".to_string()),
-            })
+            .login(credentials("user@example.com", "passwordpassword"))
             .await
             .unwrap();
 
@@ -370,20 +310,19 @@ mod tests {
             _ => panic!("expected immediate success"),
         };
 
-        // Build request parts carrying the session cookie and validate.
         let parts = parts_with_cookie("session", &token.0.to_string());
         let claims = scheme.validator().validate(&parts).await.unwrap();
-        assert_eq!(claims.email, Email::try_from(Secret::new("user@example.com".to_string())).unwrap());
+        assert_eq!(
+            claims.email,
+            Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
+        );
     }
 
     #[tokio::test]
     async fn logout_revokes_session_immediately() {
         let scheme = scheme_with_user("user@example.com", "passwordpassword").await;
         let outcome = scheme
-            .login(SessionCredentials {
-                email: Secret::new("user@example.com".to_string()),
-                password: Secret::new("passwordpassword".to_string()),
-            })
+            .login(credentials("user@example.com", "passwordpassword"))
             .await
             .unwrap();
         let token = match outcome {
@@ -401,21 +340,64 @@ mod tests {
     #[tokio::test]
     async fn missing_cookie_is_rejected() {
         let scheme = scheme_with_user("user@example.com", "passwordpassword").await;
-        let parts = http::Request::builder()
-            .body(())
-            .unwrap()
-            .into_parts()
-            .0;
+        let parts = http::Request::builder().body(()).unwrap().into_parts().0;
         let result = scheme.validator().validate(&parts).await;
-        assert!(matches!(result, Err(SessionAuthError::MissingSession)));
+        assert!(matches!(result, Err(SessionError::MissingSession)));
     }
 
-    fn parts_with_cookie(name: &str, value: &str) -> http::request::Parts {
-        http::Request::builder()
-            .header("cookie", format!("{}={}", name, value))
-            .body(())
-            .unwrap()
-            .into_parts()
-            .0
+    /// Behavior change from the old standalone scheme: a 2FA-flagged user logging
+    /// into a session scheme that did not opt into 2FA now errors (consistent
+    /// with JWT), instead of being granted a session immediately.
+    #[tokio::test]
+    async fn twofa_user_without_2fa_support_is_rejected() {
+        let user_store = HashMapUserStore::new();
+        let user = User::parse(
+            Secret::new("user@example.com".to_string()),
+            Secret::new("passwordpassword".to_string()),
+            true, // requires 2FA
+        )
+        .unwrap();
+        user_store.add_user(user).await.unwrap();
+        let scheme = SessionScheme::new(user_store, HashMapSessionStore::new(), config());
+
+        let result = scheme
+            .login(credentials("user@example.com", "passwordpassword"))
+            .await;
+        assert!(matches!(result, Err(CredentialError::TwoFaNotConfigured)));
+    }
+
+    /// A capability the standalone session scheme never had: elevation. The
+    /// elevated session is minted in a separate store and validates via the
+    /// elevated validator.
+    #[tokio::test]
+    async fn inherited_elevation_issues_a_validatable_elevated_session() {
+        let user_store = HashMapUserStore::new();
+        let user = User::parse(
+            Secret::new("user@example.com".to_string()),
+            Secret::new("passwordpassword".to_string()),
+            false,
+        )
+        .unwrap();
+        user_store.add_user(user).await.unwrap();
+
+        let scheme = SessionScheme::new(user_store, HashMapSessionStore::new(), config())
+            .supports_elevation(
+                HashMapSessionStore::new(),
+                SessionConfig {
+                    cookie_name: "elevated_session".to_string(),
+                    ttl_in_seconds: 300,
+                },
+            );
+
+        let email = Email::try_from(Secret::new("user@example.com".to_string())).unwrap();
+        let password = Password::try_from(Secret::new("passwordpassword".to_string())).unwrap();
+        let elevated = scheme.elevate(email, password).await.unwrap();
+
+        let parts = parts_with_cookie("elevated_session", &elevated.0.to_string());
+        let claims = scheme.elevated_validator().validate(&parts).await.unwrap();
+        assert_eq!(
+            claims.email,
+            Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
+        );
     }
 }

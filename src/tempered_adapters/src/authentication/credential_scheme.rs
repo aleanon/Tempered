@@ -23,7 +23,8 @@ use tempered_core::{
     OAuthHttpClient, OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, Password,
     PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
     RequiresEmailVerification, ResponseBuilder, SupportsAccountDeletion, SupportsElevation,
-    SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset, TwoFaAttemptId,
+    SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset,
+    SupportsTokenRevocation, TwoFaAttemptId,
     TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError, TwoFaError, User, UserError, UserStore,
     UserStoreError, ValidatedUser, WebAuthnChallenge, WebAuthnVerifier,
     strategies::authenticator::{
@@ -592,6 +593,31 @@ where
     #[tracing::instrument(name = "CredentialScheme::delete_account", skip(self))]
     async fn delete_account(&self, email: Email) -> Result<(), Self::AccountDeletionError> {
         self.user_store.delete_user(&email).await?;
+        Ok(())
+    }
+}
+
+// Token revocation is just the strategy's `revoke` (used by stateful sessions to
+// delete server-side; by JWT to ban). Always available.
+#[async_trait]
+impl<U, T, F, L, R, M, O, K> SupportsTokenRevocation for CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Clone + Send + Sync + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type RevocationError = CredentialError<T::Error>;
+
+    async fn revoke_token(&self, token: &Self::Token) -> Result<(), Self::RevocationError> {
+        self.tokens
+            .revoke(token)
+            .await
+            .map_err(CredentialError::Token)?;
         Ok(())
     }
 }

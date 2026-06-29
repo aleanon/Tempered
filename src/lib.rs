@@ -89,7 +89,9 @@ pub use tempered_adapters::{
     authentication::jwt_scheme::{
         Elevation, EmailVerify, JwtScheme, OAuth, Passkeys, PasswordReset, TwoFa,
     },
-    authentication::session_scheme::{SessionConfig, SessionScheme},
+    authentication::session_scheme::{
+        SessionClaims, SessionConfig, SessionError, SessionScheme, SessionToken, SessionTokens,
+    },
     authentication::token_strategy::{JwtToken, JwtTokens, TokenStrategy},
     email::{MockEmailClient, PostmarkEmailClient},
     oauth::{OAuthFlow, OAuthFlowError, ReqwestOAuthHttpClient},
