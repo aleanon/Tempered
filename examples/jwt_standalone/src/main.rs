@@ -50,7 +50,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // so `auth_service(...).with_2fa(...)` below only compiles because of them.
     let jwt_scheme = JwtScheme::new(user_store, jwt_config, banned_token_store)
         .supports_2fa(two_fa_code_store, email_client.clone())
-        .supports_elevation(elevated_banned_token_store, elevated_jwt_config)
+        .supports_elevation(elevated_banned_token_store, elevated_jwt_config, |elevated| {
+            elevated
+                .supports_password_change()
+                .supports_account_deletion()
+        })
         .supports_password_reset(password_reset_token_store, email_client)
         .build();
 

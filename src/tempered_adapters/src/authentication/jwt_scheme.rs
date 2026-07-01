@@ -9,7 +9,7 @@
 use tempered_core::{BannedTokenStore, UserStore};
 
 use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
-use crate::authentication::credential_scheme::CredentialScheme;
+use crate::authentication::credential_scheme::{CredentialScheme, ElevatedCapabilities};
 use crate::authentication::token_strategy::JwtTokens;
 
 // Re-export the capability slots, wire types, and error at this module's original
@@ -48,15 +48,19 @@ where
     /// Enable elevated ("sudo") JWTs from a separate config + banned-token store,
     /// lighting up [`SupportsElevation`](tempered_core::SupportsElevation) and
     /// [`HttpElevationScheme`](tempered_core::HttpElevationScheme).
-    pub fn supports_elevation(
+    pub fn supports_elevation<Cfg>(
         self,
         elevated_banned_token_store: B,
         elevated_jwt_config: JwtAuthConfig,
-    ) -> CredentialScheme<U, JwtTokens<B>, F, Elevation<JwtTokens<B>>, R, M, O, K> {
-        self.supports_elevation_with(JwtTokens::new(
-            elevated_jwt_config,
-            elevated_banned_token_store,
-        ))
+        configure: Cfg,
+    ) -> CredentialScheme<U, JwtTokens<B>, F, Elevation<JwtTokens<B>>, R, M, O, K>
+    where
+        Cfg: FnOnce(ElevatedCapabilities) -> ElevatedCapabilities,
+    {
+        self.supports_elevation_with(
+            JwtTokens::new(elevated_jwt_config, elevated_banned_token_store),
+            configure,
+        )
     }
 }
 

@@ -84,7 +84,11 @@ impl TestApp {
         // Build the scheme from a minimal core, opting into each capability.
         let jwt_scheme = JwtScheme::new(user_store, jwt_config, banned_token_store.clone())
             .supports_2fa(two_fa_code_store.clone(), email_client.clone())
-            .supports_elevation(banned_token_store.clone(), elevated_jwt_config)
+            .supports_elevation(banned_token_store.clone(), elevated_jwt_config, |elevated| {
+                elevated
+                    .supports_password_change()
+                    .supports_account_deletion()
+            })
             .supports_password_reset(password_reset_token_store, email_client)
             .build();
 

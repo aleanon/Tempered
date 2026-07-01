@@ -22,7 +22,9 @@ use tempered_core::{
 };
 use thiserror::Error;
 
-use crate::authentication::credential_scheme::{CredentialScheme, Elevation};
+use crate::authentication::credential_scheme::{
+    CredentialScheme, ElevatedCapabilities, Elevation,
+};
 use crate::authentication::token_strategy::TokenStrategy;
 
 // ============================================================================
@@ -148,12 +150,19 @@ where
 {
     /// Enable elevated ("sudo") sessions from a separate store + config, lighting
     /// up [`SupportsElevation`](tempered_core::SupportsElevation).
-    pub fn supports_elevation(
+    pub fn supports_elevation<Cfg>(
         self,
         elevated_session_store: S,
         elevated_config: SessionConfig,
-    ) -> CredentialScheme<U, SessionTokens<S>, F, Elevation<SessionTokens<S>>, R, M, O, K> {
-        self.supports_elevation_with(SessionTokens::new(elevated_session_store, elevated_config))
+        configure: Cfg,
+    ) -> CredentialScheme<U, SessionTokens<S>, F, Elevation<SessionTokens<S>>, R, M, O, K>
+    where
+        Cfg: FnOnce(ElevatedCapabilities) -> ElevatedCapabilities,
+    {
+        self.supports_elevation_with(
+            SessionTokens::new(elevated_session_store, elevated_config),
+            configure,
+        )
     }
 }
 
@@ -387,6 +396,7 @@ mod tests {
                     cookie_name: "elevated_session".to_string(),
                     ttl_in_seconds: 300,
                 },
+                |e| e,
             );
 
         let email = Email::try_from(Secret::new("user@example.com".to_string())).unwrap();

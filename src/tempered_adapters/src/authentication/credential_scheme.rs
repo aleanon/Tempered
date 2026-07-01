@@ -56,6 +56,28 @@ pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()
     email_verify: M,
     oauth: O,
     passkeys: K,
+    routes: RouteFlags,
+}
+
+/// Authorization level a route requires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Authz {
+    /// A valid login session.
+    Login,
+    /// A valid elevated ("sudo") token.
+    Elevated,
+}
+
+/// Route intents for the *always-on* capabilities (registration, password change,
+/// account deletion). Their domain traits are always implemented, so whether a
+/// route is exposed — and at what authz level — is plain data the delivery layer
+/// reads, not type-state. Set via `supports_registration` / `supports_password_change`
+/// / `supports_account_deletion` (login) and the elevation closure (elevated).
+#[derive(Clone, Debug, Default)]
+pub struct RouteFlags {
+    pub registration: bool,
+    pub password_change: Option<Authz>,
+    pub account_deletion: Option<Authz>,
 }
 
 // ============================================================================
@@ -216,6 +238,7 @@ where
             email_verify: (),
             oauth: (),
             passkeys: (),
+            routes: RouteFlags::default(),
         }
     }
 }
@@ -236,6 +259,7 @@ impl<U, T, L, R, M, O, K> CredentialScheme<U, T, (), L, R, M, O, K> {
             email_verify: self.email_verify,
             oauth: self.oauth,
             passkeys: self.passkeys,
+            routes: self.routes,
         }
     }
 }
@@ -244,12 +268,25 @@ impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
     /// Enable elevated ("sudo") tokens from a second token strategy, lighting up
     /// [`SupportsElevation`] and [`tempered_core::HttpElevationScheme`].
     ///
-    /// Per-strategy sugar (e.g. `JwtScheme::supports_elevation(banned, config)`)
-    /// wraps this with the matching strategy.
-    pub fn supports_elevation_with<TE>(
-        self,
+    /// Per-strategy sugar (e.g. `JwtScheme::supports_elevation(banned, config, |e| …)`)
+    /// wraps this with the matching strategy. `configure` declares which sensitive
+    /// operations require an elevated token (served under `/elevated/…`).
+    pub fn supports_elevation_with<TE, Cfg>(
+        mut self,
         elevated_tokens: TE,
-    ) -> CredentialScheme<U, T, F, Elevation<TE>, R, M, O, K> {
+        configure: Cfg,
+    ) -> CredentialScheme<U, T, F, Elevation<TE>, R, M, O, K>
+    where
+        Cfg: FnOnce(ElevatedCapabilities) -> ElevatedCapabilities,
+    {
+        let caps = configure(ElevatedCapabilities::default());
+        if caps.password_change {
+            self.routes.password_change = Some(Authz::Elevated);
+        }
+        if caps.account_deletion {
+            self.routes.account_deletion = Some(Authz::Elevated);
+        }
+
         CredentialScheme {
             user_store: self.user_store,
             tokens: self.tokens,
@@ -261,6 +298,7 @@ impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
             email_verify: self.email_verify,
             oauth: self.oauth,
             passkeys: self.passkeys,
+            routes: self.routes,
         }
     }
 }
@@ -281,6 +319,7 @@ impl<U, T, F, L, M, O, K> CredentialScheme<U, T, F, L, (), M, O, K> {
             email_verify: self.email_verify,
             oauth: self.oauth,
             passkeys: self.passkeys,
+            routes: self.routes,
         }
     }
 }
@@ -301,6 +340,7 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
             email_verify: EmailVerify { store, email },
             oauth: self.oauth,
             passkeys: self.passkeys,
+            routes: self.routes,
         }
     }
 }
@@ -325,6 +365,7 @@ impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
                 post_login_redirect: "/".to_string(),
             },
             passkeys: self.passkeys,
+            routes: self.routes,
         }
     }
 }
@@ -344,6 +385,7 @@ impl<U, T, F, L, R, M, O> CredentialScheme<U, T, F, L, R, M, O, ()> {
             email_verify: self.email_verify,
             oauth: self.oauth,
             passkeys: Passkeys { flow },
+            routes: self.routes,
         }
     }
 }
@@ -372,6 +414,55 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
 
     pub fn user_store(&self) -> &U {
         &self.user_store
+    }
+
+    /// The route intents (which always-on capabilities are exposed, at what level).
+    /// Read by the delivery layer to auto-wire routes.
+    pub fn route_flags(&self) -> &RouteFlags {
+        &self.routes
+    }
+
+    /// Expose the self-service **signup** route (`/signup`).
+    pub fn supports_registration(mut self) -> Self {
+        self.routes.registration = true;
+        self
+    }
+
+    /// Expose **password change** at the login level (`/change-password`). To
+    /// require elevation instead, declare it inside the `supports_elevation` closure.
+    pub fn supports_password_change(mut self) -> Self {
+        self.routes.password_change = Some(Authz::Login);
+        self
+    }
+
+    /// Expose **account deletion** at the login level (`/delete-account`). To
+    /// require elevation instead, declare it inside the `supports_elevation` closure.
+    pub fn supports_account_deletion(mut self) -> Self {
+        self.routes.account_deletion = Some(Authz::Login);
+        self
+    }
+}
+
+/// Sub-builder passed to [`CredentialScheme::supports_elevation_with`]'s closure:
+/// declares which sensitive operations require an elevated token (they are then
+/// served under `/elevated/…`).
+#[derive(Debug, Default)]
+pub struct ElevatedCapabilities {
+    password_change: bool,
+    account_deletion: bool,
+}
+
+impl ElevatedCapabilities {
+    /// Require elevation for password change (`/elevated/change-password`).
+    pub fn supports_password_change(mut self) -> Self {
+        self.password_change = true;
+        self
+    }
+
+    /// Require elevation for account deletion (`/elevated/delete-account`).
+    pub fn supports_account_deletion(mut self) -> Self {
+        self.account_deletion = true;
+        self
     }
 }
 
