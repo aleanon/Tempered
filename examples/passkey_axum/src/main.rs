@@ -78,12 +78,10 @@ async fn main() {
     )
     .supports_passkeys(flow);
 
-    // `auth_service` owns the four passkey ceremony routes under `/passkey/*`
-    // (register/login × start/finish) and POST `/logout`, and serves the frontend.
-    let auth_router: Router = auth_service(scheme.clone(), ASSETS.to_string())
-        .logout_route("/logout")
-        .with_passkeys(Some("/passkey"))
-        .into();
+    // The four passkey ceremony routes under `/passkey/*` (register/login ×
+    // start/finish) auto-wire from `supports_passkeys`; `/logout` and the frontend
+    // come for free.
+    let auth_router: Router = auth_service(scheme.clone(), ASSETS.to_string()).into();
 
     // `/me` reads the JWT the login ceremony issued, so it needs the scheme as
     // state and lives in a sibling router merged into the auth service.

@@ -81,8 +81,9 @@ impl TestApp {
             token_ttl_in_seconds: 900, // 15 minutes for elevated tokens
         };
 
-        // Build the scheme from a minimal core, opting into each capability.
+        // Declare capabilities on the scheme; auth_service auto-wires the routes.
         let jwt_scheme = JwtScheme::new(user_store, jwt_config, banned_token_store.clone())
+            .supports_registration()
             .supports_2fa(two_fa_code_store.clone(), email_client.clone())
             .supports_elevation(banned_token_store.clone(), elevated_jwt_config, |elevated| {
                 elevated
@@ -98,22 +99,12 @@ impl TestApp {
 
         let address = format!("http://{}", listener.local_addr().unwrap());
 
-        // Use the new builder pattern to configure the service with all features
+        // Routes are auto-wired from the scheme's capabilities; override the
+        // elevation paths to the flat form this test suite expects.
         let app = auth_service(jwt_scheme, "./assets".to_string())
-            .login_route("/login")
-            .logout_route("/logout")
-            .verify_token_route("/verify-token")
-            .signup_route(Some("/signup"))
-            .with_2fa(Some("/verify-2fa"))
-            .with_elevation(
-                Some("/elevate"),
-                Some("/verify-elevated-token"),
-                |elevated| {
-                    elevated
-                        .with_change_password(Some("/change-password"))
-                        .with_delete_account(Some("/delete-account"))
-                },
-            );
+            .verify_elevated_token("/verify-elevated-token")
+            .change_password("/change-password")
+            .delete_account("/delete-account");
 
         let _ =
             tokio::spawn(async { app.run(listener).await.expect("Failed to run auth-service") });

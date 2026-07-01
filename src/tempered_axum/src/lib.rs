@@ -33,12 +33,12 @@
 
 pub mod adapters;
 pub mod auth_service;
-pub mod elevated_router;
 pub mod middleware;
 pub mod route_config;
 pub mod routes;
+pub mod wiring;
 
 // Re-export for convenience
 pub use adapters::{AxumRequest, AxumResponseBuilder, response_builder};
-pub use auth_service::AuthService;
-pub use elevated_router::ElevatedRouter;
+pub use auth_service::{AuthService, auth_service};
+pub use wiring::PathOverrides;

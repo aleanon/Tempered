@@ -87,8 +87,8 @@ async fn main() {
     // `auth_service` owns the OAuth start/callback routes (and POST `/logout`,
     // which clears the JWT cookie) and serves the frontend from `ASSETS`.
     let auth_router: Router = auth_service(scheme.clone(), ASSETS.to_string())
-        .logout_route("/logout")
-        .with_oauth(Some("/login/{provider}"), Some("/auth/{provider}/callback"))
+        // OAuth routes auto-wire from `supports_oauth`; override to this frontend's paths.
+        .oauth("/login/{provider}", "/auth/{provider}/callback")
         .into();
 
     // `/me` (reads the issued JWT) and the embedded mock provider need the scheme

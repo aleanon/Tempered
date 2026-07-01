@@ -46,9 +46,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let password_reset_token_store = HashMapPasswordResetTokenStore::new();
 
     // Build the scheme from a minimal core, opting into each capability. Only
-    // the `supports_*` methods that were called light up the matching trait —
-    // so `auth_service(...).with_2fa(...)` below only compiles because of them.
+    // Declare capabilities on the scheme; each `supports_*` auto-wires its route
+    // in `auth_service` below — no route opt-ins needed there.
     let jwt_scheme = JwtScheme::new(user_store, jwt_config, banned_token_store)
+        .supports_registration()
         .supports_2fa(two_fa_code_store, email_client.clone())
         .supports_elevation(elevated_banned_token_store, elevated_jwt_config, |elevated| {
             elevated
@@ -59,25 +60,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     let auth_service = auth_service(jwt_scheme, ASSETS.to_string())
-        .login_route("/login")
-        .logout_route("/logout")
-        .verify_token_route("/verify-token")
-        .signup_route(Some("/signup"))
-        .with_2fa(Some("/verify-2fa"))
-        .with_elevation(
-            Some("/elevate"),
-            Some("/verify-elevated-token"),
-            |elevated| {
-                elevated
-                    .with_change_password(Some("/change-password"))
-                    .with_delete_account(Some("/delete-account"))
-            },
-        )
-        .with_password_reset(None, None)
-        // Attach your own routers, protected by the auth service. `/whoami`
-        // needs a valid login session; `/secret` needs an elevated ("sudo")
-        // token (obtained via `/elevate`). Their handlers read the logged-in
-        // user from the `Claims` the middleware inserts into request extensions.
+        // Keep the flat elevation paths this frontend expects (defaults would be
+        // `/elevated/...`).
+        .verify_elevated_token("/verify-elevated-token")
+        .change_password("/change-password")
+        .delete_account("/delete-account")
+        // Attach your own routers, protected by the auth service. `/whoami` needs
+        // a valid login session; `/secret` needs an elevated ("sudo") token.
         .validated_router(Router::new().route("/whoami", get(whoami)))
         .validated_elevated_router(Router::new().route("/secret", get(secret)));
 
