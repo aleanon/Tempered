@@ -875,7 +875,10 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(name = "CredentialScheme::complete_password_reset", skip(self, new_password))]
+    #[tracing::instrument(
+        name = "CredentialScheme::complete_password_reset",
+        skip(self, new_password, reset_token)
+    )]
     async fn complete_password_reset(
         &self,
         reset_token: String,
@@ -936,7 +939,7 @@ where
         Ok(())
     }
 
-    #[tracing::instrument(name = "CredentialScheme::verify_email", skip(self))]
+    #[tracing::instrument(name = "CredentialScheme::verify_email", skip(self, token))]
     async fn verify_email(&self, token: String) -> Result<(), Self::EmailVerificationError> {
         let token = EmailVerificationToken::parse(&token)
             .ok_or(CredentialError::InvalidVerificationToken)?;
