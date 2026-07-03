@@ -1,23 +1,35 @@
-//! # Auth - Authentication Service Library
+//! # tempered — composable backend authentication
 //!
-//! This is a facade crate that re-exports all public APIs from the auth service components.
-//! Use this crate to get access to all authentication functionality in one place.
+//! `tempered` is a facade crate that re-exports the common public surface of the
+//! workspace so you can reach it through one dependency. Pick a scheme
+//! ([`JwtScheme`], [`SessionScheme`], [`ApiKeyScheme`]), enable the capabilities
+//! you want with its `supports_*` builders, and serve it with the axum adapter.
 //!
 //! ## Usage
 //!
 //! Add to your `Cargo.toml`:
 //! ```toml
 //! [dependencies]
-//! auth = { path = "../auth" }
+//! tempered = { path = "../tempered" }
+//! # The axum service entry point currently lives in its own crate:
+//! tempered_axum = { path = "../tempered/src/tempered_axum" }
 //! ```
+//!
+//! Then build a scheme and hand it to `tempered_axum::auth_service::auth_service`.
+//! See the crate `README.md` and the `examples/` directory for runnable code.
 //!
 //! ## Structure
 //!
-//! - **Core domain types**: `Email`, `Password`, `User`, etc.
-//! - **Repository traits**: `UserStore`, `BannedTokenStore`, `TwoFaCodeStore`
-//! - **Use cases**: `SignupUseCase`, `LoginUseCase`, etc.
-//! - **Adapters**: `PostgresUserStore`, `RedisBannedTokenStore`, `PostmarkEmailClient`, etc.
-//! - **Service**: `AuthService` - The main entry point for the auth service
+//! - **Core domain types**: [`Email`], [`Password`], [`User`], etc.
+//! - **Repository/port traits**: [`UserStore`], [`BannedTokenStore`],
+//!   [`TwoFaCodeStore`], [`EmailClient`], etc. — implement these to swap backends.
+//! - **Schemes**: [`JwtScheme`], [`SessionScheme`], [`ApiKeyScheme`], built on
+//!   [`CredentialScheme`] + [`TokenStrategy`].
+//! - **Adapters**: [`PostgresUserStore`], [`RedisBannedTokenStore`],
+//!   [`PostmarkEmailClient`], and the in-memory `HashMap*` stores for dev/tests.
+//!
+//! The axum service builder (`auth_service` / `AuthService`) lives in the
+//! `tempered_axum` crate; it is not yet re-exported here.
 
 // ============================================================================
 // Core Domain Types
