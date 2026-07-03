@@ -6,6 +6,14 @@ use tempered_core::{
     Email, PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
 };
 
+/// In-memory [`PasswordResetTokenStore`] backed by a `HashMap`.
+///
+/// # Warning: development and tests only
+///
+/// This store applies **no expiry** — a reset token stays valid until it is
+/// consumed or the process restarts. Use
+/// [`RedisPasswordResetTokenStore`](super::redis_password_reset_token_store::RedisPasswordResetTokenStore),
+/// which sets a TTL, in production.
 #[derive(Default, Clone)]
 pub struct HashMapPasswordResetTokenStore {
     tokens: Arc<RwLock<HashMap<PasswordResetToken, Email>>>,

@@ -4,6 +4,15 @@ use tokio::sync::RwLock;
 
 use tempered_core::{Email, Password, User, UserStore, UserStoreError, ValidatedUser};
 
+/// In-memory [`UserStore`] backed by a `HashMap`.
+///
+/// # Warning: development and tests only
+///
+/// This store keeps `Password` values **unhashed** and compares them in
+/// **variable time** (`authenticate_user` uses `PartialEq`, not a constant-time
+/// check). It also loses all data on restart. Do not use it in production — use
+/// [`PostgresUserStore`](super::postgres_user_store::PostgresUserStore), which
+/// hashes with Argon2id.
 #[derive(Default, Clone)]
 pub struct HashMapUserStore {
     users: Arc<RwLock<HashMap<Email, User>>>,

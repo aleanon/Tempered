@@ -6,6 +6,19 @@ use secrecy::{ExposeSecret, Secret};
 use sqlx::{PgPool, Pool, Postgres, postgres::PgPoolOptions};
 use tempered_core::{Email, Password, User, UserStore, UserStoreError, ValidatedUser};
 
+/// PostgreSQL-backed [`UserStore`]. Passwords are hashed with Argon2id.
+///
+/// ## Migrations
+///
+/// The crate ships the schema under `tempered_adapters/migrations/`, but
+/// [`PostgresUserStore::new`] does **not** run it — the consumer is responsible
+/// for migrating the database (the `sqlx::migrate!()` call in this crate is
+/// test-only). Run the migrations at startup, e.g.:
+///
+/// ```ignore
+/// sqlx::migrate!("path/to/migrations").run(&pool).await?;
+/// let store = PostgresUserStore::new(pool);
+/// ```
 #[derive(Clone)]
 pub struct PostgresUserStore {
     pool: sqlx::PgPool,
