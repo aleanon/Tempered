@@ -29,15 +29,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let two_fa_code_store = HashMapTwoFaCodeStore::new();
     let email_client = DummyEmailClient;
 
+    // Demo only: read secrets from the environment, falling back to clearly-
+    // labelled insecure values. Production must supply strong random secrets.
     let jwt_config = JwtAuthConfig {
         jwt_cookie_name: "jwt".to_string(),
-        jwt_secret: Secret::new("input a long random generated string here".to_string()),
+        jwt_secret: Secret::new(
+            std::env::var("JWT_SECRET")
+                .unwrap_or_else(|_| "dev-only-insecure-change-me-0123456789abcd".to_string()),
+        ),
         token_ttl_in_seconds: 3600,
     };
 
     let elevated_jwt_config = JwtAuthConfig {
         jwt_cookie_name: "elevated_jwt".to_string(),
-        jwt_secret: Secret::new("input another long random generated string here".to_string()),
+        jwt_secret: Secret::new(
+            std::env::var("JWT_ELEVATED_SECRET")
+                .unwrap_or_else(|_| "dev-only-insecure-elevated-change-me-9876543210".to_string()),
+        ),
         token_ttl_in_seconds: 900, // 15 minutes for elevated tokens
     };
 

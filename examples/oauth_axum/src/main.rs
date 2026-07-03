@@ -79,7 +79,12 @@ async fn main() {
 
     let jwt_config = JwtAuthConfig {
         jwt_cookie_name: "jwt".to_string(),
-        jwt_secret: Secret::new("input a long random generated string here".to_string()),
+        // Demo only: read from the environment, falling back to a clearly-labelled
+        // insecure value. Production must supply a strong random JWT_SECRET.
+        jwt_secret: Secret::new(
+            std::env::var("JWT_SECRET")
+                .unwrap_or_else(|_| "dev-only-insecure-change-me-0123456789abcd".to_string()),
+        ),
         token_ttl_in_seconds: 3600,
     };
 
@@ -139,12 +144,20 @@ struct AuthorizeParams {
     state: String,
 }
 
-async fn mock_authorize(Query(p): Query<AuthorizeParams>) -> Redirect {
+async fn mock_authorize(Query(p): Query<AuthorizeParams>) -> Response {
+    // Validate redirect_uri against the one this provider is configured to allow,
+    // exactly as a real provider must — otherwise this endpoint is an open
+    // redirect (send any `redirect_uri` and it bounces the victim there).
+    let expected = format!("{BASE}/auth/mock/callback");
+    if p.redirect_uri != expected {
+        return (StatusCode::BAD_REQUEST, "Invalid redirect_uri").into_response();
+    }
     // A real provider shows a consent screen; the mock immediately approves.
     Redirect::to(&format!(
         "{}?code=demo-auth-code&state={}",
         p.redirect_uri, p.state
     ))
+    .into_response()
 }
 
 async fn mock_token() -> Json<serde_json::Value> {
