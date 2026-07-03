@@ -124,23 +124,37 @@ pub fn generate_auth_cookie<'a>(
     let jwt_secret = config.jwt_secret.expose_secret().as_bytes();
 
     let token = generate_auth_token(email, token_ttl, jwt_secret)?;
-    Ok(create_auth_cookie(token, &config.jwt_cookie_name))
+    let max_age = time::Duration::seconds(token_ttl as i64);
+    Ok(create_auth_cookie(
+        token,
+        &config.jwt_cookie_name,
+        Some(max_age),
+    ))
 }
 
 pub fn create_removal_cookie(cookie_name: &str) -> Cookie<'_> {
-    let mut cookie = create_auth_cookie(String::new(), cookie_name);
+    let mut cookie = create_auth_cookie(String::new(), cookie_name, None);
     cookie.make_removal();
     cookie
 }
 
-// Create cookie and set the value to the passed-in token string
-pub fn create_auth_cookie(token: String, cookie_name: &str) -> Cookie<'_> {
-    Cookie::build((cookie_name, token))
+// Create cookie and set the value to the passed-in token string. `max_age`
+// bounds the browser-side lifetime to the token's TTL so a persisted cookie
+// can't outlive the session it represents; pass `None` for a session cookie.
+pub fn create_auth_cookie(
+    token: String,
+    cookie_name: &str,
+    max_age: Option<time::Duration>,
+) -> Cookie<'_> {
+    let mut builder = Cookie::build((cookie_name, token))
         .path("/") // apply cookie to all URLs on the server
         .http_only(true) // prevent JavaScript from accessing the cookie
         .secure(true)
-        .same_site(SameSite::Lax) // send cookie with "same-site" requests, and with "cross-site" top-level navigations.
-        .build()
+        .same_site(SameSite::Lax); // send cookie with "same-site" requests, and with "cross-site" top-level navigations.
+    if let Some(max_age) = max_age {
+        builder = builder.max_age(max_age);
+    }
+    builder.build()
 }
 
 // Create JWT auth token
@@ -264,12 +278,14 @@ mod tests {
         let config = jwt_auth_config();
         let jwt_cookie_name = config.jwt_cookie_name.clone();
         let token = "test_token".to_owned();
-        let cookie = create_auth_cookie(token.clone(), &jwt_cookie_name);
+        let max_age = time::Duration::seconds(3600);
+        let cookie = create_auth_cookie(token.clone(), &jwt_cookie_name, Some(max_age));
         assert_eq!(cookie.name(), jwt_cookie_name);
         assert_eq!(cookie.value(), token);
         assert_eq!(cookie.path(), Some("/"));
         assert_eq!(cookie.http_only(), Some(true));
         assert_eq!(cookie.same_site(), Some(SameSite::Lax));
+        assert_eq!(cookie.max_age(), Some(max_age));
     }
 
     #[tokio::test]

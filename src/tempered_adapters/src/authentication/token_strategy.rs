@@ -138,7 +138,13 @@ where
     }
 
     fn auth_cookie(&self, token: &JwtToken) -> String {
-        create_auth_cookie(token.0.clone(), &self.config.jwt_cookie_name).to_string()
+        let max_age = time::Duration::seconds(self.config.token_ttl_in_seconds as i64);
+        create_auth_cookie(
+            token.0.clone(),
+            &self.config.jwt_cookie_name,
+            Some(max_age),
+        )
+        .to_string()
     }
 
     fn extract<R: AuthRequest>(&self, req: &R) -> Option<JwtToken> {

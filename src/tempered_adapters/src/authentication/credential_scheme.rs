@@ -1035,8 +1035,10 @@ where
         builder: RB,
         authorization: AuthorizationRequest,
     ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
+        // Max-Age bounds how long the CSRF state cookie lingers if the user
+        // abandons the flow; 10 minutes is ample to complete a provider redirect.
         let state_cookie = format!(
-            "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/",
+            "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600",
             self.oauth.state_cookie_name, authorization.state
         );
 
