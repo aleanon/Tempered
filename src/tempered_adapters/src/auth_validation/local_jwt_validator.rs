@@ -76,23 +76,27 @@ impl IntoStatusMessage for TokenAuthError {
     fn into_status_message(self) -> (http::StatusCode, String) {
         match self {
             TokenAuthError::MissingToken => {
-                (http::StatusCode::BAD_REQUEST, "Missing token".to_string())
+                (http::StatusCode::UNAUTHORIZED, "Missing token".to_string())
             }
             TokenAuthError::InvalidToken => {
                 (http::StatusCode::UNAUTHORIZED, "Invalid token".to_string())
             }
-            TokenAuthError::TokenError(e) => (
-                http::StatusCode::UNAUTHORIZED,
-                format!("Token error: {}", e),
-            ),
-            TokenAuthError::TokenIsBanned => (
-                http::StatusCode::UNAUTHORIZED,
-                "Token is banned".to_string(),
-            ),
-            TokenAuthError::UnexpectedError(msg) => (
-                http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Unexpected error: {}", msg),
-            ),
+            // Don't tell the client *why* the token failed (expired vs. bad
+            // signature vs. malformed) — that detail aids forgery analysis.
+            TokenAuthError::TokenError(e) => {
+                tracing::debug!(error = %e, "token validation failed");
+                (http::StatusCode::UNAUTHORIZED, "Invalid token".to_string())
+            }
+            TokenAuthError::TokenIsBanned => {
+                (http::StatusCode::UNAUTHORIZED, "Token is banned".to_string())
+            }
+            TokenAuthError::UnexpectedError(msg) => {
+                tracing::error!(error = %msg, "unexpected token error");
+                (
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal error".to_string(),
+                )
+            }
         }
     }
 }

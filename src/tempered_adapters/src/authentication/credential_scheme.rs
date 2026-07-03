@@ -1219,10 +1219,13 @@ where
             ),
 
             CredentialError::TwoFaError(e) => (http::StatusCode::UNAUTHORIZED, e.to_string()),
-            CredentialError::TwoFaCodeStoreError(e) => (
-                http::StatusCode::UNAUTHORIZED,
-                format!("2FA code store error: {}", e),
-            ),
+            CredentialError::TwoFaCodeStoreError(e) => {
+                tracing::error!(error = %e, "2FA code store error");
+                (
+                    http::StatusCode::UNAUTHORIZED,
+                    "Invalid or expired 2FA code".to_string(),
+                )
+            }
             CredentialError::TwoFaNotConfigured => (
                 http::StatusCode::INTERNAL_SERVER_ERROR,
                 "Two-factor authentication is required but not configured".to_string(),
@@ -1236,24 +1239,39 @@ where
                 "Invalid or expired password reset token".to_string(),
             ),
 
-            CredentialError::UserStoreError(e) => (
-                http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("User store error: {}", e),
-            ),
-            CredentialError::EmailError(e) => (http::StatusCode::INTERNAL_SERVER_ERROR, e),
-            CredentialError::PasswordResetTokenStoreError(e) => (
-                http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Reset token store error: {}", e),
-            ),
+            CredentialError::UserStoreError(e) => {
+                tracing::error!(error = %e, "user store error");
+                (
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal error".to_string(),
+                )
+            }
+            CredentialError::EmailError(e) => {
+                tracing::error!(error = %e, "email send error");
+                (
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal error".to_string(),
+                )
+            }
+            CredentialError::PasswordResetTokenStoreError(e) => {
+                tracing::error!(error = %e, "password reset token store error");
+                (
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal error".to_string(),
+                )
+            }
 
             CredentialError::InvalidVerificationToken => (
                 http::StatusCode::BAD_REQUEST,
                 "Invalid or expired email verification token".to_string(),
             ),
-            CredentialError::EmailVerificationStoreError(e) => (
-                http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Email verification store error: {}", e),
-            ),
+            CredentialError::EmailVerificationStoreError(e) => {
+                tracing::error!(error = %e, "email verification store error");
+                (
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal error".to_string(),
+                )
+            }
 
             CredentialError::OAuth(e) => e.into_status_message(),
             CredentialError::Passkey(e) => e.into_status_message(),
