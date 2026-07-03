@@ -6,6 +6,12 @@ use secrecy::{ExposeSecret, Secret};
 use sqlx::{PgPool, Pool, Postgres, postgres::PgPoolOptions};
 use tempered_core::{Email, Password, User, UserStore, UserStoreError, ValidatedUser};
 
+// Argon2id parameters. Kept at/above the OWASP minimum (m=19456 KiB, t=2, p=1)
+// and shared by hashing and verification so the two never drift apart.
+const ARGON2_M_COST: u32 = 19456;
+const ARGON2_T_COST: u32 = 2;
+const ARGON2_P_COST: u32 = 1;
+
 /// PostgreSQL-backed [`UserStore`]. Passwords are hashed with Argon2id.
 ///
 /// ## Migrations
@@ -114,6 +120,10 @@ impl UserStore for PostgresUserStore {
             .map_err(|_| UserStoreError::UserNotFound)?;
 
         let Some(row) = row else {
+            // Run a verification against a throwaway hash so the "no such user"
+            // path takes the same time as the wrong-password path below. Without
+            // this, response latency leaks whether an email is registered.
+            let _ = verify_password_hash(dummy_password_hash().await, password.clone()).await;
             return Err(UserStoreError::UserNotFound);
         };
 
@@ -194,7 +204,8 @@ async fn verify_password_hash(
             Argon2::new(
                 Algorithm::Argon2id,
                 Version::V0x13,
-                Params::new(15000, 2, 1, None).map_err(|e| e.to_string())?,
+                Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, None)
+                    .map_err(|e| e.to_string())?,
             )
             .verify_password(
                 password_candidate.as_ref().expose_secret().as_bytes(),
@@ -209,6 +220,26 @@ async fn verify_password_hash(
     result
 }
 
+/// A throwaway Argon2id hash (of a fixed dummy password), computed once and
+/// memoized. Verifying an attacker-supplied password against this makes the
+/// "user not found" branch of `authenticate_user` cost the same as a real
+/// verification, closing the timing side-channel for account enumeration.
+async fn dummy_password_hash() -> Secret<String> {
+    static DUMMY: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
+    let hash = DUMMY
+        .get_or_init(|| async {
+            let dummy = Password::try_from(Secret::from("not-a-real-password".to_string()))
+                .expect("static dummy password is valid");
+            compute_password_hash(dummy)
+                .await
+                .map(|h| h.expose_secret().to_string())
+                .expect("hashing the static dummy password should not fail")
+        })
+        .await
+        .clone();
+    Secret::from(hash)
+}
+
 #[tracing::instrument(name = "Computing password hash", skip_all)]
 async fn compute_password_hash(password: Password) -> Result<Secret<String>, String> {
     let current_span: tracing::Span = tracing::Span::current();
@@ -219,7 +250,8 @@ async fn compute_password_hash(password: Password) -> Result<Secret<String>, Str
             let hasher = Argon2::new(
                 Algorithm::Argon2id,
                 Version::V0x13,
-                Params::new(15000, 2, 1, None).map_err(|e| e.to_string())?,
+                Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, None)
+                    .map_err(|e| e.to_string())?,
             );
             hasher
                 .hash_password(password.as_ref().expose_secret().as_bytes(), &salt)
