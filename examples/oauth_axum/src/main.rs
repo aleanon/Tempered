@@ -14,9 +14,16 @@
 //! Unlike the low-level `OAuthFlow` (which only yields a verified `Email`), here
 //! the flow is attached to a `JwtScheme` via `.supports_oauth(flow)`, so a
 //! successful provider callback issues the scheme's **primary JWT** — the exact
-//! same session cookie a password login would produce. `auth_service(...)
-//! .with_oauth(...)` mounts the start + callback routes; `/me` below reads the
-//! issued JWT to prove the session is real.
+//! same session cookie a password login would produce. The start + callback
+//! routes **auto-wire** from `.supports_oauth(flow)`; `auth_service(...).oauth(..)`
+//! only overrides their paths. `/me` below reads the issued JWT to prove the
+//! session is real.
+//!
+//! Note: `/me` validates the token *manually* (via `scheme.validator()`) purely
+//! to demonstrate the session is real — that's why this example names the fully
+//! applied `Scheme` type. To add a normal protected route you don't need any of
+//! that: hand a router to `auth_service(...).validated_router(...)` and read the
+//! identity with `Extension<Claims>` (see the `jwt_standalone` example).
 
 use axum::{
     Json, Router,

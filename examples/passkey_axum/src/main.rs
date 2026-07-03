@@ -11,12 +11,20 @@
 //! `webauthn-rs`-backed [`WebAuthnVerifier`], and the frontend *simulates* the
 //! authenticator instead of calling `navigator.credentials`. That keeps the demo
 //! deterministic while exercising the real server-side capability:
-//! `JwtScheme::new(...).supports_passkeys(flow)` plus
-//! `auth_service(...).with_passkeys(...)`.
+//! `JwtScheme::new(...).supports_passkeys(flow)`. The passkey ceremony routes
+//! **auto-wire** from that `supports_passkeys` call — there is no route opt-in to
+//! add (pass a path to `auth_service(...).passkeys(..)` only to override the
+//! prefix).
 //!
 //! A successful authentication ceremony issues the scheme's **primary JWT** — the
 //! same session cookie a password or OAuth login would produce, which `/me`
 //! validates below.
+//!
+//! Note: like the OAuth example, `/me` validates the JWT manually to prove the
+//! session is real, which is why this example names the fully applied `Scheme`
+//! type. A normal protected route needs none of that — use
+//! `auth_service(...).validated_router(...)` with `Extension<Claims>` (see the
+//! `jwt_standalone` example).
 //!
 //! ⚠️  `DemoVerifier` performs no cryptography and trusts the client-supplied
 //! credential id. A production deployment plugs a real `WebAuthnVerifier` (e.g.
