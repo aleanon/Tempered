@@ -1205,12 +1205,13 @@ where
         match self {
             CredentialError::UserError(e) => (http::StatusCode::BAD_REQUEST, e.to_string()),
 
-            CredentialError::UserStoreError(UserStoreError::UserNotFound) => {
-                (http::StatusCode::UNAUTHORIZED, "User not found".to_string())
-            }
-            CredentialError::UserStoreError(UserStoreError::IncorrectPassword) => (
+            // Same status and body for "no such user" and "wrong password" so
+            // login cannot be used to enumerate registered accounts.
+            CredentialError::UserStoreError(
+                UserStoreError::UserNotFound | UserStoreError::IncorrectPassword,
+            ) => (
                 http::StatusCode::UNAUTHORIZED,
-                "Incorrect password".to_string(),
+                "Invalid email or password".to_string(),
             ),
             CredentialError::UserStoreError(UserStoreError::UserAlreadyExists) => (
                 http::StatusCode::CONFLICT,
