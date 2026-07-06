@@ -10,8 +10,9 @@
 use axum::{Extension, Router, routing::get};
 use tempered::adapters::auth::local_jwt_validator::Claims;
 use tempered::{
-    Email, EmailClient, ExposeSecret, HashMapPasswordResetTokenStore, HashMapTwoFaCodeStore,
-    HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, Secret, async_trait,
+    Email, EmailClient, ExposeSecret, HashMapPasswordResetTokenStore, HashMapTokenEpochStore,
+    HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme,
+    Secret, async_trait,
 };
 use tempered_axum::auth_service::auth_service;
 use tracing_error::ErrorLayer;
@@ -62,7 +63,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the scheme from a minimal core, opting into each capability. Only
     // Declare capabilities on the scheme; each `supports_*` auto-wires its route
     // in `auth_service` below — no route opt-ins needed there.
-    let jwt_scheme = JwtScheme::new(user_store, jwt_config, banned_token_store)
+    // The epoch store makes password change / account deletion revoke every
+    // outstanding token (in-memory here; use RedisTokenEpochStore in production).
+    let jwt_scheme = JwtScheme::new(
+        user_store,
+        jwt_config,
+        banned_token_store,
+        HashMapTokenEpochStore::new(),
+    )
         .supports_registration()
         .supports_2fa(two_fa_code_store, email_client.clone())
         .supports_elevation(elevated_banned_token_store, elevated_jwt_config, |elevated| {

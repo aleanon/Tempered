@@ -44,8 +44,9 @@ use tempered::core::{
     VerifiedRegistration, WebAuthnChallenge, WebAuthnError, WebAuthnVerifier,
 };
 use tempered::{
-    ExposeSecret, HashMapChallengeStore, HashMapPasskeyCredentialStore, HashMapUserStore,
-    HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, Passkeys, PasskeyFlow, Secret,
+    ExposeSecret, HashMapChallengeStore, HashMapPasskeyCredentialStore, HashMapTokenEpochStore,
+    HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, Passkeys, PasskeyFlow,
+    Secret,
 };
 use tempered_axum::auth_service::auth_service;
 
@@ -85,6 +86,7 @@ async fn main() {
         HashMapUserStore::new(),
         jwt_config,
         HashSetBannedTokenStore::new(),
+        HashMapTokenEpochStore::new(),
     )
     .supports_passkeys(flow);
 

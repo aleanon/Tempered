@@ -220,6 +220,14 @@ impl<TE: TokenStrategy> ElevatedCookieName for Elevation<TE> {
 // Builders (token-agnostic): from_tokens() + supports_*()
 // ============================================================================
 
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
+    /// The scheme's token strategy (used by per-strategy builders, e.g. to
+    /// share infrastructure with a companion elevated-token strategy).
+    pub(crate) fn token_strategy(&self) -> &T {
+        &self.tokens
+    }
+}
+
 impl<U, T> CredentialScheme<U, T, (), (), (), (), (), ()>
 where
     U: UserStore,

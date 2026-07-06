@@ -36,9 +36,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tempered::core::{AuthValidator, AuthenticationScheme};
 use tempered::{
-    ExposeSecret, HashMapOAuthIdentityStore, HashMapOAuthStateStore, HashMapUserStore,
-    HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, OAuth, OAuthFlow, OAuthProviderConfig,
-    ReqwestOAuthHttpClient, Secret,
+    ExposeSecret, HashMapOAuthIdentityStore, HashMapOAuthStateStore, HashMapTokenEpochStore,
+    HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, OAuth, OAuthFlow,
+    OAuthProviderConfig, ReqwestOAuthHttpClient, Secret,
 };
 use tempered_axum::auth_service::auth_service;
 
@@ -95,6 +95,7 @@ async fn main() {
         HashMapUserStore::new(),
         jwt_config,
         HashSetBannedTokenStore::new(),
+        HashMapTokenEpochStore::new(),
     )
     .supports_oauth(flow);
 

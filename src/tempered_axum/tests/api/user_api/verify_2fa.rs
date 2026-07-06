@@ -1,6 +1,7 @@
 use secrecy::Secret;
 use serde::Deserialize;
 use tempered_adapters::auth_validation::local_jwt_validator::{JwtAuthConfig, validate_auth_token};
+use tempered_adapters::persistence::HashMapTokenEpochStore;
 use tempered_core::TwoFaAttemptId;
 use wiremock::{
     Mock, ResponseTemplate,
@@ -63,9 +64,14 @@ async fn should_return_200_if_correct_code() {
 
     let response = app.verify_2fa(&verify_2fa_request).await;
     let token = app.get_jwt_token().expect("No jwt token stored");
-    validate_auth_token(&token, &app.banned_token_store, &jwt_config)
-        .await
-        .expect("Invalid auth token");
+    validate_auth_token(
+        &token,
+        &app.banned_token_store,
+        &HashMapTokenEpochStore::new(),
+        &jwt_config,
+    )
+    .await
+    .expect("Invalid auth token");
 
     assert_eq!(response.status().as_u16(), 200);
 }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use axum_extra::extract::{
     CookieJar,
@@ -7,7 +9,7 @@ use chrono::Utc;
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation, decode, encode};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
-use tempered_core::{AuthValidator, BannedTokenStore, Email, IntoStatusMessage};
+use tempered_core::{AuthValidator, BannedTokenStore, Email, IntoStatusMessage, TokenEpochStore};
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -34,13 +36,19 @@ impl JwtAuthConfig {
 pub struct LocalJwtValidator<B> {
     pub banned_token_store: B,
     pub config: JwtAuthConfig,
+    pub token_epoch_store: Arc<dyn TokenEpochStore>,
 }
 
 impl<B> LocalJwtValidator<B> {
-    pub fn new(banned_token_store: B, config: JwtAuthConfig) -> Self {
+    pub fn new(
+        banned_token_store: B,
+        config: JwtAuthConfig,
+        token_epoch_store: Arc<dyn TokenEpochStore>,
+    ) -> Self {
         Self {
             banned_token_store,
             config,
+            token_epoch_store,
         }
     }
 }
@@ -58,8 +66,14 @@ impl<B: BannedTokenStore + Clone + 'static> AuthValidator for LocalJwtValidator<
         // Extract JWT token from cookie
         let token = extract_token(&cookie_jar, &self.config.jwt_cookie_name)?;
 
-        // Validate token signature and check if banned
-        let claims = validate_auth_token(token, &self.banned_token_store, &self.config).await?;
+        // Validate token signature, ban list, and revocation cutoff
+        let claims = validate_auth_token(
+            token,
+            &self.banned_token_store,
+            self.token_epoch_store.as_ref(),
+            &self.config,
+        )
+        .await?;
 
         Ok(claims)
     }
@@ -185,6 +199,7 @@ pub fn generate_auth_token(email: &Email, config: &JwtAuthConfig) -> Result<Stri
     let claims = Claims {
         sub,
         exp,
+        iat: Some(Utc::now().timestamp()),
         aud: config.audience.clone(),
         iss: config.issuer.clone(),
     };
@@ -192,10 +207,12 @@ pub fn generate_auth_token(email: &Email, config: &JwtAuthConfig) -> Result<Stri
     create_token(&claims, config.jwt_secret.expose_secret().as_bytes())
 }
 
-// Check if JWT auth token is valid by decoding it using the JWT secret
+// Check if JWT auth token is valid by decoding it using the JWT secret,
+// then checking the ban list and the user's revocation cutoff.
 pub async fn validate_auth_token(
     token: &str,
     banned_token_store: &dyn BannedTokenStore,
+    token_epoch_store: &dyn TokenEpochStore,
     config: &JwtAuthConfig,
 ) -> Result<Claims, TokenAuthError> {
     let secret = config.jwt_secret.expose_secret().as_bytes();
@@ -230,6 +247,30 @@ pub async fn validate_auth_token(
         return Err(TokenAuthError::TokenIsBanned);
     }
 
+    // Global-revocation cutoff: a password change / account deletion bumps the
+    // user's epoch, killing every token issued before it.
+    let email = Email::try_from(claims.sub.clone()).map_err(|_| TokenAuthError::InvalidToken)?;
+    match token_epoch_store.min_valid_iat(&email).await {
+        Ok(None) => {}
+        Ok(Some(cutoff)) => {
+            // Strict `<`, deliberately: a token issued in the same second as
+            // the revocation (the re-login right after a password change)
+            // stays valid; `<=` would lock the user out of their own fresh
+            // session. The cost is a ≤1 s replay window. Tokens with no iat
+            // (minted before the claim existed) are rejected once a cutoff
+            // exists.
+            if claims.iat.is_none_or(|iat| iat < cutoff) {
+                return Err(TokenAuthError::InvalidToken);
+            }
+        }
+        Err(e) => {
+            // Fail closed: an epoch-store outage must not silently disable
+            // revocation.
+            tracing::error!(error = %e, "token epoch store read failed");
+            return Err(TokenAuthError::UnexpectedError(e.to_string()));
+        }
+    }
+
     Ok(claims)
 }
 
@@ -247,6 +288,10 @@ fn create_token(claims: &Claims, secret: &[u8]) -> Result<String, TokenAuthError
 pub struct Claims {
     pub sub: Secret<String>,
     pub exp: usize,
+    /// Issued-at (unix seconds). Always stamped on new tokens; `Option` only
+    /// so tokens minted before this claim existed still deserialize (they are
+    /// rejected once the user has a revocation cutoff).
+    pub iat: Option<i64>,
     /// Audience binding; present only when the issuing config sets one.
     pub aud: Option<String>,
     /// Issuer binding; present only when the issuing config sets one.
@@ -258,12 +303,18 @@ impl Serialize for Claims {
     where
         S: serde::Serializer,
     {
-        // Omit absent aud/iss entirely: `"aud": null` is not the same as no
-        // audience to JWT validators.
-        let len = 2 + usize::from(self.aud.is_some()) + usize::from(self.iss.is_some());
+        // Omit absent optional claims entirely: `"aud": null` is not the same
+        // as no audience to JWT validators.
+        let len = 2
+            + usize::from(self.iat.is_some())
+            + usize::from(self.aud.is_some())
+            + usize::from(self.iss.is_some());
         let mut state = serializer.serialize_struct("Claims", len)?;
         state.serialize_field("sub", &self.sub.expose_secret())?;
         state.serialize_field("exp", &self.exp)?;
+        if let Some(iat) = &self.iat {
+            state.serialize_field("iat", iat)?;
+        }
         if let Some(aud) = &self.aud {
             state.serialize_field("aud", aud)?;
         }
@@ -278,9 +329,14 @@ impl Serialize for Claims {
 mod tests {
     use secrecy::{ExposeSecret, Secret};
 
+    use crate::persistence::hashmap_token_epoch_store::HashMapTokenEpochStore;
     use crate::persistence::hashset_banned_token_store::HashSetBannedTokenStore;
 
     use super::*;
+
+    fn epoch_store() -> HashMapTokenEpochStore {
+        HashMapTokenEpochStore::new()
+    }
 
     fn jwt_auth_config() -> JwtAuthConfig {
         JwtAuthConfig {
@@ -333,7 +389,7 @@ mod tests {
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
         let token = generate_auth_token(&email, &config).unwrap();
-        let result = validate_auth_token(&token, &banned_token_store, &config)
+        let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &config)
             .await
             .unwrap();
         assert_eq!(result.sub.expose_secret(), "test@example.com");
@@ -351,8 +407,53 @@ mod tests {
         let config = jwt_auth_config();
         let token = "invalid_token".to_owned();
         let banned_token_store = HashSetBannedTokenStore::default();
-        let result = validate_auth_token(&token, &banned_token_store, &config).await;
+        let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &config).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_revocation_cutoff_rejects_older_tokens() {
+        use tempered_core::TokenEpochStore as _;
+
+        let config = jwt_auth_config();
+        let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
+        let banned_token_store = HashSetBannedTokenStore::default();
+        let epoch = epoch_store();
+
+        let token = generate_auth_token(&email, &config).unwrap();
+        let iat = validate_auth_token(&token, &banned_token_store, &epoch, &config)
+            .await
+            .unwrap()
+            .iat
+            .expect("new tokens always carry iat");
+
+        // "Revoke all" = cutoff just after this token's iat.
+        epoch.revoke_before(&email, iat + 1).await.unwrap();
+        let result = validate_auth_token(&token, &banned_token_store, &epoch, &config).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_token_issued_at_the_cutoff_stays_valid() {
+        use tempered_core::TokenEpochStore as _;
+
+        let config = jwt_auth_config();
+        let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
+        let banned_token_store = HashSetBannedTokenStore::default();
+        let epoch = epoch_store();
+
+        let token = generate_auth_token(&email, &config).unwrap();
+        let iat = validate_auth_token(&token, &banned_token_store, &epoch, &config)
+            .await
+            .unwrap()
+            .iat
+            .unwrap();
+
+        // Strict `<`: iat == cutoff is the re-login issued in the same second
+        // as the revocation — it must remain valid.
+        epoch.revoke_before(&email, iat).await.unwrap();
+        let result = validate_auth_token(&token, &banned_token_store, &epoch, &config).await;
+        assert!(result.is_ok());
     }
 
     fn jwt_auth_config_with_aud_iss() -> JwtAuthConfig {
@@ -369,7 +470,7 @@ mod tests {
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
         let token = generate_auth_token(&email, &config).unwrap();
-        let claims = validate_auth_token(&token, &banned_token_store, &config)
+        let claims = validate_auth_token(&token, &banned_token_store, &epoch_store(), &config)
             .await
             .unwrap();
         assert_eq!(claims.aud.as_deref(), Some("test-service"));
@@ -386,7 +487,7 @@ mod tests {
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
         let token = generate_auth_token(&email, &issuing_config).unwrap();
-        let result = validate_auth_token(&token, &banned_token_store, &validating_config).await;
+        let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &validating_config).await;
         assert!(result.is_err());
     }
 
@@ -399,7 +500,7 @@ mod tests {
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
         let token = generate_auth_token(&email, &issuing_config).unwrap();
-        let result = validate_auth_token(&token, &banned_token_store, &validating_config).await;
+        let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &validating_config).await;
         assert!(result.is_err());
     }
 
@@ -411,7 +512,7 @@ mod tests {
         let token = generate_auth_token(&email, &config).unwrap();
 
         banned_token_store.ban_token(token.clone()).await.unwrap();
-        let result = validate_auth_token(&token, &banned_token_store, &config).await;
+        let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &config).await;
         assert!(result.is_err());
     }
 }

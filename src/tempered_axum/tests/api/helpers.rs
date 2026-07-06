@@ -13,8 +13,8 @@ use tempered_adapters::{
     authentication::jwt_scheme::JwtScheme,
     email::PostmarkEmailClient,
     persistence::{
-        PostgresUserStore, RedisBannedTokenStore, RedisPasswordResetTokenStore, RedisTwoFaCodeStore,
-        postgres_user_store::get_postgres_pool,
+        PostgresUserStore, RedisBannedTokenStore, RedisPasswordResetTokenStore,
+        RedisTokenEpochStore, RedisTwoFaCodeStore, postgres_user_store::get_postgres_pool,
     },
 };
 use tempered_axum::auth_service::auth_service;
@@ -58,7 +58,8 @@ impl TestApp {
 
         let banned_token_store = RedisBannedTokenStore::new(redis_connection.clone(), 600);
         let two_fa_code_store = RedisTwoFaCodeStore::new(redis_connection.clone());
-        let password_reset_token_store = RedisPasswordResetTokenStore::new(redis_connection);
+        let password_reset_token_store =
+            RedisPasswordResetTokenStore::new(redis_connection.clone());
 
         let email_server = MockServer::start().await;
         let base_url = email_server.uri();
@@ -86,7 +87,15 @@ impl TestApp {
         };
 
         // Declare capabilities on the scheme; auth_service auto-wires the routes.
-        let jwt_scheme = JwtScheme::new(user_store, jwt_config, banned_token_store.clone())
+        // TTL must be >= the longest token TTL (3600 here) per the epoch-store contract.
+        let token_epoch_store = RedisTokenEpochStore::new(redis_connection.clone(), 3600);
+
+        let jwt_scheme = JwtScheme::new(
+            user_store,
+            jwt_config,
+            banned_token_store.clone(),
+            token_epoch_store,
+        )
             .supports_registration()
             .supports_2fa(two_fa_code_store.clone(), email_client.clone())
             .supports_elevation(banned_token_store.clone(), elevated_jwt_config, |elevated| {

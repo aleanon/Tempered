@@ -23,15 +23,26 @@ use crate::auth_validation::local_jwt_validator::{
 /// JWT-based authentication block.
 ///
 /// This block provides password-based authentication that issues JWT tokens.
+///
+/// Note: this legacy prototype uses an in-process token-epoch store, so
+/// global revocation does not survive restarts or span instances. Use
+/// [`JwtScheme`](crate::authentication::jwt_scheme::JwtScheme) for real
+/// deployments.
 #[derive(Clone)]
 pub struct JwtAuthBlock {
     jwt_config: JwtAuthConfig,
+    token_epoch_store: std::sync::Arc<dyn tempered_core::TokenEpochStore>,
 }
 
 impl JwtAuthBlock {
     /// Create a new JWT authentication block.
     pub fn new(jwt_config: JwtAuthConfig) -> Self {
-        Self { jwt_config }
+        Self {
+            jwt_config,
+            token_epoch_store: std::sync::Arc::new(
+                crate::persistence::HashMapTokenEpochStore::new(),
+            ),
+        }
     }
 
     /// Create a new JWT authentication block with basic configuration.
@@ -122,7 +133,11 @@ where
 
     fn create_validator(&self, ctx: &SchemeContext<U, T>) -> Self::Validator {
         // Clone the inner store from the Arc
-        LocalJwtValidator::new((*ctx.token_store).clone(), self.jwt_config.clone())
+        LocalJwtValidator::new(
+            (*ctx.token_store).clone(),
+            self.jwt_config.clone(),
+            self.token_epoch_store.clone(),
+        )
     }
 
     async fn authenticate_after_2fa(

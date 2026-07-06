@@ -6,7 +6,7 @@
 //! `supports_oauth`, …) live on the generic scheme; only `new` and
 //! `supports_elevation` — which name the JWT config — are defined here.
 
-use tempered_core::{BannedTokenStore, UserStore};
+use tempered_core::{BannedTokenStore, TokenEpochStore, UserStore};
 
 use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
 use crate::authentication::credential_scheme::{CredentialScheme, ElevatedCapabilities};
@@ -35,9 +35,23 @@ where
 {
     /// Create the JWT scheme: password login, logout, and JWT validation.
     ///
+    /// The epoch store is required infrastructure, like the ban store: it is
+    /// what lets a password change or account deletion revoke every
+    /// outstanding token (validation rejects tokens issued before the user's
+    /// recorded cutoff). Use `HashMapTokenEpochStore` in development and
+    /// `RedisTokenEpochStore` (with a TTL ≥ the token TTL) in production.
+    ///
     /// Opt into optional capabilities with the `supports_*` methods.
-    pub fn new(user_store: U, jwt_config: JwtAuthConfig, banned_token_store: B) -> Self {
-        Self::from_tokens(user_store, JwtTokens::new(jwt_config, banned_token_store))
+    pub fn new(
+        user_store: U,
+        jwt_config: JwtAuthConfig,
+        banned_token_store: B,
+        token_epoch_store: impl TokenEpochStore + 'static,
+    ) -> Self {
+        Self::from_tokens(
+            user_store,
+            JwtTokens::new(jwt_config, banned_token_store, token_epoch_store),
+        )
     }
 }
 
@@ -48,6 +62,10 @@ where
     /// Enable elevated ("sudo") JWTs from a separate config + banned-token store,
     /// lighting up [`SupportsElevation`](tempered_core::SupportsElevation) and
     /// [`HttpElevationScheme`](tempered_core::HttpElevationScheme).
+    ///
+    /// The elevated strategy shares the primary strategy's token-epoch store,
+    /// so revoking all of a user's tokens (password change, account deletion)
+    /// kills their elevated tokens too.
     pub fn supports_elevation<Cfg>(
         self,
         elevated_banned_token_store: B,
@@ -57,8 +75,9 @@ where
     where
         Cfg: FnOnce(ElevatedCapabilities) -> ElevatedCapabilities,
     {
+        let epoch = self.token_strategy().epoch();
         self.supports_elevation_with(
-            JwtTokens::new(elevated_jwt_config, elevated_banned_token_store),
+            JwtTokens::from_parts(elevated_jwt_config, elevated_banned_token_store, epoch),
             configure,
         )
     }
@@ -74,7 +93,7 @@ mod oauth_tests {
     use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
     use crate::oauth::OAuthFlow;
     use crate::persistence::{
-        HashMapUserStore, HashSetBannedTokenStore,
+        HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore,
         hashmap_oauth_identity_store::HashMapOAuthIdentityStore,
         hashmap_oauth_state_store::HashMapOAuthStateStore,
     };
@@ -160,6 +179,7 @@ mod oauth_tests {
             HashMapUserStore::new(),
             jwt_config(),
             HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
         )
         .supports_oauth(flow)
     }
@@ -207,7 +227,7 @@ mod passkey_tests {
     use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
     use crate::passkey::PasskeyFlow;
     use crate::persistence::{
-        HashMapUserStore, HashSetBannedTokenStore,
+        HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore,
         hashmap_challenge_store::HashMapChallengeStore,
         hashmap_passkey_credential_store::HashMapPasskeyCredentialStore,
     };
@@ -295,6 +315,7 @@ mod passkey_tests {
             HashMapUserStore::new(),
             jwt_config(),
             HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
         )
         .supports_passkeys(flow)
     }

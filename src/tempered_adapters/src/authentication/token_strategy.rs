@@ -7,9 +7,12 @@
 //! ([`CredentialScheme`](crate::authentication::credential_scheme::CredentialScheme)
 //! and its capabilities) is written once, generic over the strategy.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tempered_core::{
     AuthRequest, AuthValidator, BannedTokenStore, BannedTokenStoreError, Email, IntoStatusMessage,
+    TokenEpochStore,
 };
 use thiserror::Error;
 
@@ -78,12 +81,13 @@ impl From<String> for JwtToken {
 // JWT strategy
 // ============================================================================
 
-/// Stateless JWT tokens: `issue` signs, `revoke` bans, validation is local
-/// signature + ban-list checking.
+/// JWT tokens: `issue` signs, `revoke` bans one token, validation is local
+/// signature checking plus the ban-list and revocation-cutoff lookups.
 #[derive(Clone)]
 pub struct JwtTokens<B> {
     config: JwtAuthConfig,
     banned: B,
+    epoch: Arc<dyn TokenEpochStore>,
     validator: LocalJwtValidator<B>,
 }
 
@@ -91,13 +95,33 @@ impl<B> JwtTokens<B>
 where
     B: BannedTokenStore + Clone,
 {
-    pub fn new(config: JwtAuthConfig, banned: B) -> Self {
-        let validator = LocalJwtValidator::new(banned.clone(), config.clone());
+    /// The epoch store is required infrastructure, like the ban store: it is
+    /// what makes `revoke_all_for_user` (password change, account deletion)
+    /// actually invalidate outstanding tokens. Use `HashMapTokenEpochStore`
+    /// in development and `RedisTokenEpochStore` (TTL ≥ the token TTL) in
+    /// production.
+    pub fn new(config: JwtAuthConfig, banned: B, epoch: impl TokenEpochStore + 'static) -> Self {
+        Self::from_parts(config, banned, Arc::new(epoch))
+    }
+
+    pub(crate) fn from_parts(
+        config: JwtAuthConfig,
+        banned: B,
+        epoch: Arc<dyn TokenEpochStore>,
+    ) -> Self {
+        let validator = LocalJwtValidator::new(banned.clone(), config.clone(), epoch.clone());
         Self {
             config,
             banned,
+            epoch,
             validator,
         }
+    }
+
+    /// The revocation-cutoff store, shared so companion strategies (e.g. the
+    /// elevated-token strategy) revoke together with the primary one.
+    pub fn epoch(&self) -> Arc<dyn TokenEpochStore> {
+        self.epoch.clone()
     }
 }
 
