@@ -3417,8 +3417,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempered",
- "tempered_adapters",
- "tempered_axum",
  "tokio",
  "tower-http",
 ]
@@ -3429,7 +3427,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "tempered",
- "tempered_axum",
  "tokio",
  "tracing-error",
  "tracing-subscriber",
@@ -3443,7 +3440,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempered",
- "tempered_axum",
  "tokio",
 ]
 
@@ -3455,7 +3451,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempered",
- "tempered_axum",
  "tokio",
 ]
 

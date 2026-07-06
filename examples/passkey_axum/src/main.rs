@@ -46,9 +46,8 @@ use tempered::core::{
 use tempered::{
     ExposeSecret, HashMapChallengeStore, HashMapPasskeyCredentialStore, HashMapTokenEpochStore,
     HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, Passkeys, PasskeyFlow,
-    Secret,
+    Secret, auth_service,
 };
-use tempered_axum::auth_service::auth_service;
 
 /// The fully-applied scheme type: a JWT core with only the passkey slot enabled.
 type Scheme = JwtScheme<

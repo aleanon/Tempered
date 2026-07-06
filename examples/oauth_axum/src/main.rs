@@ -38,9 +38,8 @@ use tempered::core::{AuthValidator, AuthenticationScheme};
 use tempered::{
     ExposeSecret, HashMapOAuthIdentityStore, HashMapOAuthStateStore, HashMapTokenEpochStore,
     HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, OAuth, OAuthFlow,
-    OAuthProviderConfig, ReqwestOAuthHttpClient, Secret,
+    OAuthProviderConfig, ReqwestOAuthHttpClient, Secret, auth_service,
 };
-use tempered_axum::auth_service::auth_service;
 
 /// The fully-applied scheme type: a JWT core with only the OAuth slot enabled.
 type Scheme = JwtScheme<

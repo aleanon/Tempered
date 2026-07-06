@@ -11,12 +11,10 @@
 //! ```toml
 //! [dependencies]
 //! tempered = { path = "../tempered" }
-//! # The axum service entry point currently lives in its own crate:
-//! tempered_axum = { path = "../tempered/src/tempered_axum" }
 //! ```
 //!
-//! Then build a scheme and hand it to `tempered_axum::auth_service::auth_service`.
-//! See the crate `README.md` and the `examples/` directory for runnable code.
+//! Then build a scheme and hand it to [`auth_service`]. See the crate
+//! `README.md` and the `examples/` directory for runnable code.
 //!
 //! ## Structure
 //!
@@ -28,8 +26,8 @@
 //! - **Adapters**: [`PostgresUserStore`], [`RedisBannedTokenStore`],
 //!   [`PostmarkEmailClient`], and the in-memory `HashMap*` stores for dev/tests.
 //!
-//! The axum service builder (`auth_service` / `AuthService`) lives in the
-//! `tempered_axum` crate; it is not yet re-exported here.
+//! - **Delivery**: [`auth_service`] / [`AuthService`] (the axum layer,
+//!   re-exported from `tempered_axum`; also available as [`axum_service`]).
 
 // ============================================================================
 // Core Domain Types
@@ -95,8 +93,8 @@ pub mod adapters {
 
 // Re-export commonly used adapters at root level
 pub use tempered_adapters::{
-    auth_validation::local_jwt_validator::JwtAuthConfig,
-    authentication::api_key_scheme::{ApiKeyScheme, Issuance},
+    auth_validation::local_jwt_validator::{Claims, JwtAuthConfig},
+    authentication::api_key_scheme::{ApiKeyClaims, ApiKeyScheme, Issuance},
     authentication::credential_scheme::{
         Authz, CredentialError, CredentialScheme, ElevatedCapabilities, RouteFlags,
     },
@@ -118,6 +116,23 @@ pub use tempered_adapters::{
         RedisBannedTokenStore, RedisPasswordResetTokenStore, RedisTokenEpochStore,
         RedisTwoFaCodeStore,
     },
+};
+
+// ============================================================================
+// Axum service layer
+// ============================================================================
+
+/// The axum delivery layer (service builder, middleware, wiring, routes)
+pub mod axum_service {
+    pub use tempered_axum::*;
+}
+
+// Re-export the service entry points at root level: `auth_service(scheme, assets)`
+// builds the fully-wired service; `validate_token` / `validate_elevated_token`
+// are the middleware behind `.validated_router()` / `.validated_elevated_router()`.
+pub use tempered_axum::{
+    AuthService, PathOverrides, auth_service,
+    middleware::{validate_elevated_token, validate_token},
 };
 
 // ============================================================================

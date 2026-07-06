@@ -8,7 +8,7 @@
 //!
 //! The frontend lets you issue a key and call a protected route with it. The
 //! protected route is guarded by `ApiKeyScheme`'s validator running as Axum
-//! middleware (`tempered_axum::middleware::validate_token`), which inserts the
+//! middleware (`tempered::validate_token`), which inserts the
 //! validated `ApiKeyClaims` into the request extensions.
 
 use axum::{
@@ -20,10 +20,9 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use tempered::{
-    ApiKeyScheme, Email, ExposeSecret, HashMapApiKeyStore, Issuance, Secret, SupportsApiKeyIssuance,
+    ApiKeyClaims, ApiKeyScheme, Email, ExposeSecret, HashMapApiKeyStore, Issuance, Secret,
+    SupportsApiKeyIssuance, validate_token,
 };
-use tempered_adapters::authentication::api_key_scheme::ApiKeyClaims;
-use tempered_axum::middleware::validate_token;
 use tower_http::services::ServeDir;
 
 // This service both issues and validates keys, so it opts into issuance. A

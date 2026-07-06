@@ -8,13 +8,11 @@
 //! ```
 
 use axum::{Extension, Router, routing::get};
-use tempered::adapters::auth::local_jwt_validator::Claims;
 use tempered::{
-    Email, EmailClient, ExposeSecret, HashMapPasswordResetTokenStore, HashMapTokenEpochStore,
+    Claims, Email, EmailClient, ExposeSecret, HashMapPasswordResetTokenStore, HashMapTokenEpochStore,
     HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme,
-    Secret, async_trait,
+    Secret, async_trait, auth_service,
 };
-use tempered_axum::auth_service::auth_service;
 use tracing_error::ErrorLayer;
 use tracing_subscriber::{
     EnvFilter, filter::ParseError, fmt, layer::SubscriberExt, util::SubscriberInitExt,

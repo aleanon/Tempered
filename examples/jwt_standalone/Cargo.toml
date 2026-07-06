@@ -6,7 +6,6 @@ publish = false
 
 [dependencies]
 tempered = { path = "../.." }
-tempered_axum.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
