@@ -31,6 +31,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Demo only: read secrets from the environment, falling back to clearly-
     // labelled insecure values. Production must supply strong random secrets.
+    // Binding aud/iss means a token signed with the same secret for another
+    // service or environment is rejected here.
     let jwt_config = JwtAuthConfig {
         jwt_cookie_name: "jwt".to_string(),
         jwt_secret: Secret::new(
@@ -38,6 +40,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| "dev-only-insecure-change-me-0123456789abcd".to_string()),
         ),
         token_ttl_in_seconds: 3600,
+        audience: Some("tempered-example".to_string()),
+        issuer: Some("tempered-example".to_string()),
     };
 
     let elevated_jwt_config = JwtAuthConfig {
@@ -47,6 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| "dev-only-insecure-elevated-change-me-9876543210".to_string()),
         ),
         token_ttl_in_seconds: 900, // 15 minutes for elevated tokens
+        audience: Some("tempered-example".to_string()),
+        issuer: Some("tempered-example".to_string()),
     };
 
     let banned_token_store = HashSetBannedTokenStore::new();

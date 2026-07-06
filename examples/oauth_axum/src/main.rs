@@ -86,6 +86,8 @@ async fn main() {
                 .unwrap_or_else(|_| "dev-only-insecure-change-me-0123456789abcd".to_string()),
         ),
         token_ttl_in_seconds: 3600,
+        audience: None,
+        issuer: None,
     };
 
     // The OAuth flow is the only capability this scheme opts into.

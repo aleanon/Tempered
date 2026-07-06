@@ -57,6 +57,8 @@ async fn should_return_200_if_correct_code() {
         jwt_cookie_name: JWT_COOKIE_NAME.to_string(),
         jwt_secret: Secret::new(JWT_SECRET.to_string()),
         token_ttl_in_seconds: 3600,
+        audience: None,
+        issuer: None,
     };
 
     let response = app.verify_2fa(&verify_2fa_request).await;

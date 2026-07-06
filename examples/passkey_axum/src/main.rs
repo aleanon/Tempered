@@ -76,6 +76,8 @@ async fn main() {
         jwt_cookie_name: "jwt".to_string(),
         jwt_secret: Secret::new("input a long random generated string here".to_string()),
         token_ttl_in_seconds: 3600,
+        audience: None,
+        issuer: None,
     };
 
     // Passkeys are the only capability this scheme opts into.

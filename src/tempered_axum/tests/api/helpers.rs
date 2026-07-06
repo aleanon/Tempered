@@ -73,12 +73,16 @@ impl TestApp {
             jwt_cookie_name: JWT_COOKIE_NAME.to_string(),
             jwt_secret: Secret::new(JWT_SECRET.to_string()),
             token_ttl_in_seconds: 3600,
+            audience: None,
+            issuer: None,
         };
 
         let elevated_jwt_config = JwtAuthConfig {
             jwt_cookie_name: JWT_ELEVATED_COOKIE_NAME.to_string(),
             jwt_secret: Secret::new(JWT_ELEVATED_SECRET.to_string()),
             token_ttl_in_seconds: 900, // 15 minutes for elevated tokens
+            audience: None,
+            issuer: None,
         };
 
         // Declare capabilities on the scheme; auth_service auto-wires the routes.

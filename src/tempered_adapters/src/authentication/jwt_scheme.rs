@@ -131,6 +131,8 @@ mod oauth_tests {
             jwt_cookie_name: "jwt".to_string(),
             jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
             token_ttl_in_seconds: 3600,
+            audience: None,
+            issuer: None,
         }
     }
 
@@ -302,6 +304,8 @@ mod passkey_tests {
             jwt_cookie_name: "jwt".to_string(),
             jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
             token_ttl_in_seconds: 3600,
+            audience: None,
+            issuer: None,
         }
     }
 

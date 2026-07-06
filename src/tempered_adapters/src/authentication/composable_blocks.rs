@@ -4,7 +4,7 @@
 //! traits defined in `tempered_core::composable`.
 
 use async_trait::async_trait;
-use secrecy::{ExposeSecret, Secret};
+use secrecy::Secret;
 use serde::{Deserialize, Serialize};
 use tempered_core::{
     BannedTokenStore, Email, Password, User, UserError, UserStore, UserStoreError,
@@ -44,6 +44,8 @@ impl JwtAuthBlock {
             jwt_secret,
             token_ttl_in_seconds: token_ttl_seconds,
             jwt_cookie_name: cookie_name,
+            audience: None,
+            issuer: None,
         };
         Self::new(config)
     }
@@ -113,11 +115,7 @@ where
         }
 
         // Generate JWT token
-        let token_string = generate_auth_token(
-            &email,
-            self.jwt_config.token_ttl_in_seconds,
-            self.jwt_config.jwt_secret.expose_secret().as_bytes(),
-        )?;
+        let token_string = generate_auth_token(&email, &self.jwt_config)?;
 
         Ok(JwtToken(token_string))
     }
@@ -133,11 +131,7 @@ where
         email: Email,
     ) -> Result<Self::Token, Self::AuthError> {
         // Generate JWT token after successful 2FA
-        let token_string = generate_auth_token(
-            &email,
-            self.jwt_config.token_ttl_in_seconds,
-            self.jwt_config.jwt_secret.expose_secret().as_bytes(),
-        )?;
+        let token_string = generate_auth_token(&email, &self.jwt_config)?;
 
         Ok(JwtToken(token_string))
     }

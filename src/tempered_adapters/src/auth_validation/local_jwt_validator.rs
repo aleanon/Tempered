@@ -15,6 +15,13 @@ pub struct JwtAuthConfig {
     pub jwt_cookie_name: String,
     pub jwt_secret: Secret<String>,
     pub token_ttl_in_seconds: u64,
+    /// When set, issued tokens carry this `aud` claim and validation requires
+    /// it — a token signed with the same secret for a *different* audience
+    /// (another service or environment) is rejected. `None` disables both.
+    pub audience: Option<String>,
+    /// When set, issued tokens carry this `iss` claim and validation requires
+    /// it. `None` disables both.
+    pub issuer: Option<String>,
 }
 
 impl JwtAuthConfig {
@@ -120,11 +127,8 @@ pub fn generate_auth_cookie<'a>(
     email: &Email,
     config: &'a JwtAuthConfig,
 ) -> Result<Cookie<'a>, TokenAuthError> {
-    let token_ttl = config.token_ttl_in_seconds;
-    let jwt_secret = config.jwt_secret.expose_secret().as_bytes();
-
-    let token = generate_auth_token(email, token_ttl, jwt_secret)?;
-    let max_age = time::Duration::seconds(token_ttl as i64);
+    let token = generate_auth_token(email, config)?;
+    let max_age = time::Duration::seconds(config.token_ttl_in_seconds as i64);
     Ok(create_auth_cookie(
         token,
         &config.jwt_cookie_name,
@@ -158,12 +162,8 @@ pub fn create_auth_cookie(
 }
 
 // Create JWT auth token
-pub fn generate_auth_token(
-    email: &Email,
-    token_ttl_seconds: u64,
-    secret: &[u8],
-) -> Result<String, TokenAuthError> {
-    let delta = chrono::Duration::try_seconds(token_ttl_seconds as i64).ok_or(
+pub fn generate_auth_token(email: &Email, config: &JwtAuthConfig) -> Result<String, TokenAuthError> {
+    let delta = chrono::Duration::try_seconds(config.token_ttl_in_seconds as i64).ok_or(
         TokenAuthError::UnexpectedError("Failed to create auth token duration".to_string()),
     )?;
 
@@ -182,9 +182,14 @@ pub fn generate_auth_token(
 
     let sub = Clone::clone(email.as_ref());
 
-    let claims = Claims { sub: sub, exp };
+    let claims = Claims {
+        sub,
+        exp,
+        aud: config.audience.clone(),
+        iss: config.issuer.clone(),
+    };
 
-    create_token(&claims, secret)
+    create_token(&claims, config.jwt_secret.expose_secret().as_bytes())
 }
 
 // Check if JWT auth token is valid by decoding it using the JWT secret
@@ -195,13 +200,22 @@ pub async fn validate_auth_token(
 ) -> Result<Claims, TokenAuthError> {
     let secret = config.jwt_secret.expose_secret().as_bytes();
 
-    let claims = decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret),
-        &Validation::default(),
-    )
-    .map(|data| data.claims)
-    .map_err(TokenAuthError::TokenError)?;
+    // When an audience/issuer is configured, the claim is *required*, not just
+    // checked-if-present — otherwise a token minted with the same secret but
+    // without the claim (another service or environment) would validate here.
+    let mut validation = Validation::default();
+    if let Some(aud) = &config.audience {
+        validation.set_audience(&[aud]);
+        validation.required_spec_claims.insert("aud".to_owned());
+    }
+    if let Some(iss) = &config.issuer {
+        validation.set_issuer(&[iss]);
+        validation.required_spec_claims.insert("iss".to_owned());
+    }
+
+    let claims = decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation)
+        .map(|data| data.claims)
+        .map_err(TokenAuthError::TokenError)?;
 
     // Check the token string as presented. The store holds tokens exactly as
     // issued (logout bans the cookie value), and re-encoding decoded claims
@@ -233,6 +247,10 @@ fn create_token(claims: &Claims, secret: &[u8]) -> Result<String, TokenAuthError
 pub struct Claims {
     pub sub: Secret<String>,
     pub exp: usize,
+    /// Audience binding; present only when the issuing config sets one.
+    pub aud: Option<String>,
+    /// Issuer binding; present only when the issuing config sets one.
+    pub iss: Option<String>,
 }
 
 impl Serialize for Claims {
@@ -240,9 +258,18 @@ impl Serialize for Claims {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("Claims", 2)?;
+        // Omit absent aud/iss entirely: `"aud": null` is not the same as no
+        // audience to JWT validators.
+        let len = 2 + usize::from(self.aud.is_some()) + usize::from(self.iss.is_some());
+        let mut state = serializer.serialize_struct("Claims", len)?;
         state.serialize_field("sub", &self.sub.expose_secret())?;
         state.serialize_field("exp", &self.exp)?;
+        if let Some(aud) = &self.aud {
+            state.serialize_field("aud", aud)?;
+        }
+        if let Some(iss) = &self.iss {
+            state.serialize_field("iss", iss)?;
+        }
         state.end()
     }
 }
@@ -260,6 +287,8 @@ mod tests {
             token_ttl_in_seconds: 600,
             jwt_cookie_name: "jwt_cookie".to_string(),
             jwt_secret: Secret::from("secret".to_owned()),
+            audience: None,
+            issuer: None,
         }
     }
 
@@ -293,21 +322,17 @@ mod tests {
     #[tokio::test]
     async fn test_generate_auth_token() {
         let config = jwt_auth_config();
-        let token_ttl = config.token_ttl_in_seconds;
-        let jwt_secret = config.jwt_secret.expose_secret().as_bytes();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
-        let result = generate_auth_token(&email, token_ttl, jwt_secret).unwrap();
+        let result = generate_auth_token(&email, &config).unwrap();
         assert_eq!(result.split('.').count(), 3);
     }
 
     #[tokio::test]
     async fn test_validate_token_with_valid_token() {
         let config = jwt_auth_config();
-        let token_ttl = config.token_ttl_in_seconds;
-        let jwt_secret = config.jwt_secret.expose_secret().as_bytes();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
-        let token = generate_auth_token(&email, token_ttl, jwt_secret).unwrap();
+        let token = generate_auth_token(&email, &config).unwrap();
         let result = validate_auth_token(&token, &banned_token_store, &config)
             .await
             .unwrap();
@@ -330,14 +355,60 @@ mod tests {
         assert!(result.is_err());
     }
 
+    fn jwt_auth_config_with_aud_iss() -> JwtAuthConfig {
+        JwtAuthConfig {
+            audience: Some("test-service".to_owned()),
+            issuer: Some("test-issuer".to_owned()),
+            ..jwt_auth_config()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_with_matching_aud_iss() {
+        let config = jwt_auth_config_with_aud_iss();
+        let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
+        let banned_token_store = HashSetBannedTokenStore::default();
+        let token = generate_auth_token(&email, &config).unwrap();
+        let claims = validate_auth_token(&token, &banned_token_store, &config)
+            .await
+            .unwrap();
+        assert_eq!(claims.aud.as_deref(), Some("test-service"));
+        assert_eq!(claims.iss.as_deref(), Some("test-issuer"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_rejects_wrong_audience() {
+        let issuing_config = JwtAuthConfig {
+            audience: Some("other-service".to_owned()),
+            ..jwt_auth_config_with_aud_iss()
+        };
+        let validating_config = jwt_auth_config_with_aud_iss();
+        let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
+        let banned_token_store = HashSetBannedTokenStore::default();
+        let token = generate_auth_token(&email, &issuing_config).unwrap();
+        let result = validate_auth_token(&token, &banned_token_store, &validating_config).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_rejects_missing_aud_when_required() {
+        // Token minted without aud/iss (same secret) must not validate against
+        // a config that binds them.
+        let issuing_config = jwt_auth_config();
+        let validating_config = jwt_auth_config_with_aud_iss();
+        let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
+        let banned_token_store = HashSetBannedTokenStore::default();
+        let token = generate_auth_token(&email, &issuing_config).unwrap();
+        let result = validate_auth_token(&token, &banned_token_store, &validating_config).await;
+        assert!(result.is_err());
+    }
+
     #[tokio::test]
     async fn test_ban_token() {
         let config = jwt_auth_config();
-        let token_ttl = config.token_ttl_in_seconds;
-        let jwt_secret = config.jwt_secret.expose_secret().as_bytes();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
-        let token = generate_auth_token(&email, token_ttl, jwt_secret).unwrap();
+        let token = generate_auth_token(&email, &config).unwrap();
 
         banned_token_store.ban_token(token.clone()).await.unwrap();
         let result = validate_auth_token(&token, &banned_token_store, &config).await;

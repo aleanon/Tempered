@@ -8,7 +8,6 @@
 //! and its capabilities) is written once, generic over the strategy.
 
 use async_trait::async_trait;
-use secrecy::ExposeSecret;
 use tempered_core::{
     AuthRequest, AuthValidator, BannedTokenStore, BannedTokenStoreError, Email, IntoStatusMessage,
 };
@@ -112,12 +111,7 @@ where
     type Error = JwtTokenError;
 
     async fn issue(&self, email: &Email) -> Result<JwtToken, JwtTokenError> {
-        let token = generate_auth_token(
-            email,
-            self.config.token_ttl_in_seconds,
-            self.config.jwt_secret.expose_secret().as_bytes(),
-        )
-        .map_err(JwtTokenError::Generate)?;
+        let token = generate_auth_token(email, &self.config).map_err(JwtTokenError::Generate)?;
         Ok(JwtToken(token))
     }
 
