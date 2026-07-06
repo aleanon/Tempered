@@ -148,7 +148,7 @@ fn random_state() -> String {
 
 fn build_authorize_url(config: &OAuthProviderConfig, state: &str) -> String {
     let mut url =
-        reqwest::Url::parse(&config.auth_url).expect("provider auth_url must be a valid URL");
+        url::Url::parse(&config.auth_url).expect("provider auth_url must be a valid URL");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", &config.client_id)
@@ -276,7 +276,7 @@ mod tests {
     }
 
     fn state_from_url(url: &str) -> String {
-        reqwest::Url::parse(url)
+        url::Url::parse(url)
             .unwrap()
             .query_pairs()
             .find(|(k, _)| k == "state")

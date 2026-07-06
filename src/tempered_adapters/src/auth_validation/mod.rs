@@ -1,7 +1,7 @@
 pub mod local_jwt_validator;
 
 use axum::response::{IntoResponse, Response};
-use reqwest::StatusCode;
+use http::StatusCode;
 
 #[derive(Debug)]
 pub enum AuthenticationError {

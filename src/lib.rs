@@ -105,18 +105,29 @@ pub use tempered_adapters::{
         SessionClaims, SessionConfig, SessionError, SessionScheme, SessionToken, SessionTokens,
     },
     authentication::token_strategy::{JwtToken, JwtTokens, TokenStrategy},
-    email::{MockEmailClient, PostmarkEmailClient},
-    oauth::{OAuthFlow, OAuthFlowError, ReqwestOAuthHttpClient},
+    email::MockEmailClient,
+    oauth::{OAuthFlow, OAuthFlowError},
     passkey::{PasskeyFlow, PasskeyFlowError},
     persistence::{
         HashMapApiKeyStore, HashMapChallengeStore, HashMapEmailVerificationTokenStore,
         HashMapOAuthIdentityStore, HashMapOAuthStateStore, HashMapPasskeyCredentialStore,
         HashMapPasswordResetTokenStore, HashMapSessionStore, HashMapTokenEpochStore,
-        HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore, PostgresUserStore,
-        RedisBannedTokenStore, RedisPasswordResetTokenStore, RedisTokenEpochStore,
-        RedisTwoFaCodeStore,
+        HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
     },
 };
+
+// Feature-gated heavy backends (see the crate features in Cargo.toml).
+#[cfg(feature = "postgres")]
+pub use tempered_adapters::persistence::PostgresUserStore;
+#[cfg(feature = "redis")]
+pub use tempered_adapters::persistence::{
+    RedisBannedTokenStore, RedisPasswordResetTokenStore, RedisTokenEpochStore,
+    RedisTwoFaCodeStore,
+};
+#[cfg(feature = "oauth-client")]
+pub use tempered_adapters::oauth::ReqwestOAuthHttpClient;
+#[cfg(feature = "postmark-email")]
+pub use tempered_adapters::email::PostmarkEmailClient;
 
 // ============================================================================
 // Axum service layer
