@@ -1,7 +1,8 @@
 # Review Correction Plan
 
 Tracks the fixes from the 2026-07 four-lens review (architecture, credential
-security, HTTP security, DX). Phases 1–2 are done; Phases 3–4 are pending.
+security, HTTP security, DX). Phases 1–3 are done; Phase 4 is pending, gated
+on the multi-framework goal.
 
 Convention: one well-described commit per task/subtask.
 
@@ -38,10 +39,32 @@ unit tests pass:
 
 ---
 
-## Phase 3 — Larger security & structural (PENDING)
+## Phase 3 — Larger security & structural ✅ DONE
 
-These change trait signatures / add ports and need test updates, so each is its
-own commit with the affected impls updated in the same commit.
+Implemented 2026-07-06 (commits `ba325e5..1c9955d` on
+`feat/additional-auth-schemes`), in the order 3.3 → 3.4 → 3.1 → 3.2 → 3.5 →
+3.6. Notable deviations from the plan as written:
+
+- A shared `constant_time_eq` was promoted to `tempered_core` (the OAuth flow
+  and API-key scheme carried duplicate private copies); `TwoFaCode` now
+  implements constant-time `PartialEq` itself so every store inherits it.
+- The epoch store is held as `Arc<dyn TokenEpochStore>` inside `JwtTokens`
+  (still a **required** constructor param) rather than a new generic
+  parameter — no ripple through the scheme aliases; precedent is
+  `validate_auth_token` already taking `&dyn BannedTokenStore`.
+- `supports_elevation` shares the primary strategy's epoch store, so
+  revoke-all kills elevated tokens too.
+- `complete_password_reset` also calls `revoke_all_for_user` (a reset is a
+  password change, typically *because* of suspected compromise).
+- 3.6: passkeys needed no feature gate (the WebAuthn verifier is a port with
+  no heavy dep). Features: `postgres`, `redis`, `oauth-client`,
+  `postmark-email`, all default-on; `tempered = { default-features = false }`
+  drops sqlx/redis/reqwest from the tree entirely.
+- The axum API tests, not run during Phase 2, still asserted pre-Phase-2
+  error semantics; aligned in `a5bb12b`.
+
+These changed trait signatures / added ports and needed test updates, each as
+its own commit with the affected impls updated in the same commit.
 
 ### 3.1 — 2FA attempt-limiting + code expiry → `TwoFaCodeStore`
 
@@ -229,6 +252,12 @@ Only worth doing if the "second framework" goal is being pursued soon.
   map to status codes. Removes `serde`/`serde_json` from core too.
 - **Remove library panics:** unconditional `panic!` in `composable.rs:532` (2FA path);
   `expect` in `handlers/login.rs:47`. Thread errors through return types instead.
+  *Scope note (found during Phase 3):* the login `expect` is one of **nine**
+  identical `ResponseBuilderError` expects across five handler files
+  (login, logout, oauth, passkey, verify_2fa) — the real fix is one shared
+  `HandlerError<E> { Auth(E), Response(ResponseBuilderError) }` enum
+  (implementing `IntoStatusMessage`) threaded through all handler signatures
+  and their routes, not a per-site patch.
 - **Decompose `WireCore`** (`wiring.rs:62`) into per-capability traits with no-op
   defaults so `ApiKeyScheme` (which lacks `SupportsRegistration/PasswordChange/
   AccountDeletion`) can use `auth_service()` auto-wiring.
@@ -240,6 +269,7 @@ Only worth doing if the "second framework" goal is being pursued soon.
 
 ## Sequencing
 
-Phase 3 order: **3.3** (isolated, no trait change) → **3.4 constant-time + aud/iss** →
-**3.1** (`TwoFaCodeStore`) → **3.2** (the multi-commit epoch work) → **3.5/3.6**
-(build/facade). Phase 4 is a separate track gated on the multi-framework goal.
+Phase 3 order (as executed): **3.3** (isolated, no trait change) →
+**3.4** (ban-list, constant-time, aud/iss, atomic reset) → **3.1**
+(`TwoFaCodeStore`) → **3.2** (the multi-commit epoch work) → **3.5/3.6**
+(facade/build). Phase 4 is a separate track gated on the multi-framework goal.
