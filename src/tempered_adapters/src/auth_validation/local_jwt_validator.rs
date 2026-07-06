@@ -203,10 +203,12 @@ pub async fn validate_auth_token(
     .map(|data| data.claims)
     .map_err(TokenAuthError::TokenError)?;
 
-    let token = create_token(&claims, secret)?;
-
+    // Check the token string as presented. The store holds tokens exactly as
+    // issued (logout bans the cookie value), and re-encoding decoded claims
+    // would only match if serialization stays byte-for-byte deterministic —
+    // any new claim field would silently disarm every existing ban.
     let is_banned = banned_token_store
-        .contains_token(&token)
+        .contains_token(token)
         .await
         .map_err(|e| TokenAuthError::UnexpectedError(e.to_string()))?;
 
