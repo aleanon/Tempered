@@ -887,16 +887,19 @@ where
         let token =
             PasswordResetToken::parse(&reset_token).ok_or(CredentialError::InvalidResetToken)?;
 
+        // Atomically redeem the token before touching the password: two
+        // concurrent requests can't both pass a check-then-delete, and if the
+        // password update fails the token is burned (the user re-initiates)
+        // rather than left valid after a successful change.
         let email = self
             .password_reset
             .store
-            .get_email_for_token(&token)
+            .consume_token(&token)
             .await
             .map_err(|_| CredentialError::InvalidResetToken)?;
 
         self.user_store.set_new_password(&email, new_password).await?;
 
-        let _ = self.password_reset.store.delete_token(&token).await;
         Ok(())
     }
 }

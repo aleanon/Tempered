@@ -68,6 +68,27 @@ impl PasswordResetTokenStore for RedisPasswordResetTokenStore {
             .del(key)
             .map_err(|_| PasswordResetTokenStoreError::TokenNotFound)
     }
+
+    async fn consume_token(
+        &self,
+        token: &PasswordResetToken,
+    ) -> Result<Email, PasswordResetTokenStoreError> {
+        let key = get_key(token);
+
+        // GETDEL is a single Redis command, so redeeming is atomic even
+        // across multiple service instances.
+        let email_str: Option<String> = self
+            .client
+            .write()
+            .await
+            .get_del(key)
+            .map_err(|e| PasswordResetTokenStoreError::UnexpectedError(e.to_string()))?;
+
+        let email_str = email_str.ok_or(PasswordResetTokenStoreError::TokenNotFound)?;
+
+        Email::try_from(secrecy::Secret::new(email_str))
+            .map_err(|e| PasswordResetTokenStoreError::UnexpectedError(e.to_string()))
+    }
 }
 
 fn get_key(token: &PasswordResetToken) -> String {

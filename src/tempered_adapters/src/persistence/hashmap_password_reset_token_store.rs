@@ -61,4 +61,17 @@ impl PasswordResetTokenStore for HashMapPasswordResetTokenStore {
             .ok_or(PasswordResetTokenStoreError::TokenNotFound)?;
         Ok(())
     }
+
+    async fn consume_token(
+        &self,
+        token: &PasswordResetToken,
+    ) -> Result<Email, PasswordResetTokenStoreError> {
+        // remove() under the write lock is the atomic get-and-delete: the
+        // second concurrent consumer finds nothing.
+        self.tokens
+            .write()
+            .await
+            .remove(token)
+            .ok_or(PasswordResetTokenStoreError::TokenNotFound)
+    }
 }

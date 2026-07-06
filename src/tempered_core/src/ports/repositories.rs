@@ -123,6 +123,14 @@ pub trait PasswordResetTokenStore: Send + Sync {
         &self,
         token: &PasswordResetToken,
     ) -> Result<(), PasswordResetTokenStoreError>;
+
+    /// Retrieve and remove the email for a token in one atomic step, so a
+    /// reset token cannot be redeemed twice by concurrent requests. Mirrors
+    /// [`EmailVerificationTokenStore::consume_token`].
+    async fn consume_token(
+        &self,
+        token: &PasswordResetToken,
+    ) -> Result<Email, PasswordResetTokenStoreError>;
 }
 
 // EmailVerificationTokenStore port trait and errors
