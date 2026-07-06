@@ -69,6 +69,38 @@ pub trait BannedTokenStore: Send + Sync {
     async fn contains_token(&self, token: &str) -> Result<bool, BannedTokenStoreError>;
 }
 
+// TokenEpochStore port trait and errors
+#[derive(Debug, Error)]
+pub enum TokenEpochStoreError {
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+/// Per-user revocation cutoffs ("token epochs") for token schemes with no
+/// server-side session registry (JWTs).
+///
+/// Global revocation for such schemes works by recording a per-user cutoff
+/// instant: validation rejects any token whose issued-at (`iat`) is strictly
+/// before the cutoff. `revoke_before(email, now)` therefore invalidates every
+/// outstanding token for the user at once (password change, account deletion,
+/// "log out everywhere").
+///
+/// Contract: a stored cutoff MUST remain readable for at least the longest
+/// token TTL — if it expires earlier, a revoked (or deleted account's) token
+/// becomes valid again for the rest of its lifetime.
+#[async_trait]
+pub trait TokenEpochStore: Send + Sync {
+    /// Earliest issued-at (unix seconds) still valid for this user;
+    /// `None` = no cutoff recorded.
+    async fn min_valid_iat(&self, email: &Email) -> Result<Option<i64>, TokenEpochStoreError>;
+
+    /// Invalidate every token issued *strictly before* `cutoff` (unix
+    /// seconds). Implementations MUST keep the highest cutoff seen, never
+    /// lower it.
+    async fn revoke_before(&self, email: &Email, cutoff: i64)
+    -> Result<(), TokenEpochStoreError>;
+}
+
 // TwoFaCodeStore port trait and errors
 #[derive(Debug, Error)]
 pub enum TwoFaCodeStoreError {

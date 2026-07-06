@@ -113,9 +113,10 @@ pub use tempered_adapters::{
     persistence::{
         HashMapApiKeyStore, HashMapChallengeStore, HashMapEmailVerificationTokenStore,
         HashMapOAuthIdentityStore, HashMapOAuthStateStore, HashMapPasskeyCredentialStore,
-        HashMapPasswordResetTokenStore, HashMapSessionStore, HashMapTwoFaCodeStore,
-        HashMapUserStore, HashSetBannedTokenStore, PostgresUserStore, RedisBannedTokenStore,
-        RedisPasswordResetTokenStore, RedisTwoFaCodeStore,
+        HashMapPasswordResetTokenStore, HashMapSessionStore, HashMapTokenEpochStore,
+        HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore, PostgresUserStore,
+        RedisBannedTokenStore, RedisPasswordResetTokenStore, RedisTokenEpochStore,
+        RedisTwoFaCodeStore,
     },
 };
 
