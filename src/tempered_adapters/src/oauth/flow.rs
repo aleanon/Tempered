@@ -16,7 +16,7 @@ use rand::RngCore;
 use secrecy::Secret;
 use tempered_core::{
     Email, OAuthHttpClient, OAuthIdentityStore, OAuthIdentityStoreError, OAuthProviderConfig,
-    OAuthStateStore, UserError,
+    OAuthStateStore, UserError, constant_time_eq,
 };
 use thiserror::Error;
 
@@ -144,19 +144,6 @@ fn random_state() -> String {
     let mut buf = [0u8; 16];
     rand::rng().fill_bytes(&mut buf);
     buf.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-/// Length-independent comparison so a mismatch doesn't leak via timing.
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 fn build_authorize_url(config: &OAuthProviderConfig, state: &str) -> String {

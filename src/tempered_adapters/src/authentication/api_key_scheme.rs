@@ -26,7 +26,7 @@ use tempered_core::{
     ApiKeyId, ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, AuthRequest,
     AuthValidator, AuthenticationScheme, Email, HttpAuthenticationScheme, HttpResponseBuilderExt,
     IntoStatusMessage, LoginOutcome, ResponseBuilder, ResponseBuilderError, SupportsApiKeyIssuance,
-    domain::api_key::split_presented_key,
+    constant_time_eq, domain::api_key::split_presented_key,
 };
 use thiserror::Error;
 
@@ -125,19 +125,6 @@ fn hash_secret(secret: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(secret.as_bytes());
     hex(&hasher.finalize())
-}
-
-/// Length-independent comparison to avoid leaking the secret via timing.
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 fn generate_key() -> (String, String) {

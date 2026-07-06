@@ -5,6 +5,7 @@ pub mod http_authentication_scheme;
 pub mod http_error;
 pub mod ports;
 pub mod strategies;
+pub mod util;
 
 // Re-export commonly used types for convenience
 pub use domain::{
@@ -55,3 +56,4 @@ pub use http_authentication_scheme::{
     HttpAuthenticationScheme, HttpElevationScheme, HttpOAuth2Scheme,
 };
 pub use http_error::IntoStatusMessage;
+pub use util::constant_time_eq;
