@@ -78,13 +78,19 @@ and a deleted user's token keeps working against a signature-only validator.
 **Design decision:** revocation belongs with issuance, not in a new capability trait.
 `TokenStrategy` already pairs `issue` (create) with `revoke` (one token)
 (`token_strategy.rs:36,39`), and `SessionStore` already pairs `create_session` with
-`delete_all_for_user` (`repositories.rs:327,340`). So we add **one method** to
-`TokenStrategy`, not a new opt-in trait.
+`delete_all_for_user` (`repositories.rs:327,340`). So we add **one required method**
+to `TokenStrategy` — no default impl, no opt-in trait. Global revocation is
+correctness-critical, so every strategy must answer for it explicitly; a third-party
+strategy that can't support it must write (and document) its own no-op, visibly
+against the stated contract below.
 
 **Trait change** (`src/tempered_adapters/src/authentication/token_strategy.rs:27`):
 
 ```rust
 /// Invalidate every token/session for a user (e.g. after a password change).
+///
+/// Contract: after this returns `Ok`, tokens issued to this user *before*
+/// the call MUST fail validation.
 async fn revoke_all_for_user(&self, email: &Email) -> Result<(), Self::Error>;
 ```
 
@@ -111,35 +117,48 @@ that validation consults. Implementation:
    pub trait TokenEpochStore: Send + Sync {
        /// Earliest `iat` still considered valid for this user; `None` = no cutoff.
        async fn min_valid_iat(&self, email: &Email) -> Result<Option<i64>, TokenEpochStoreError>;
-       /// Invalidate every token issued at or before `cutoff` (usually "now").
+       /// Invalidate every token issued strictly before `cutoff` (usually "now").
        async fn revoke_before(&self, email: &Email, cutoff: i64) -> Result<(), TokenEpochStoreError>;
    }
    ```
-   In-memory + Redis impls (Redis: a `token_epoch:{email}` key).
+   In-memory + Redis impls (Redis: a `token_epoch:{email}` key). **Redis key TTL must
+   be ≥ the max token TTL, never shorter** — if the epoch key expires while a deleted
+   user's token is still within its `exp`, that token becomes valid again.
 
-2. **Add `iat` to `Claims`** (`local_jwt_validator.rs`) — currently only `sub` + `exp`.
+2. **The epoch store is a required constructor parameter** on `JwtTokens` /
+   `JwtScheme::new`, exactly like the existing `BannedTokenStore` — *not* a typestate
+   slot. Slots gate optional product features (2FA, elevation, OAuth); stores the
+   strategy needs for correctness (ban list, epoch) are constructor params. Dev setup
+   stays one line (`HashMapTokenEpochStore::new()`); production wires the Redis impl.
+
+3. **Add `iat` to `Claims`** (`local_jwt_validator.rs`) — currently only `sub` + `exp`.
    Populate it at issue time in `generate_auth_token`.
 
-3. **Validator check** (`LocalJwtValidator`, `local_jwt_validator.rs:~183`): after the
+4. **Validator check** (`LocalJwtValidator`, `local_jwt_validator.rs:~183`): after the
    signature/`exp`/ban checks, if `min_valid_iat(email)` is `Some(t)` and
-   `claims.iat < t`, reject with `InvalidToken`.
+   `claims.iat < t`, reject with `InvalidToken`. Two deliberate edge decisions:
+   - **Strict `<`, not `<=`:** a token issued in the same second as the revocation
+     (e.g. the re-login right after a password change) stays valid. The alternative
+     locks users out of their own fresh session; the cost is a ≤1 s replay window.
+     Don't "fix" this comparison.
+   - **Fail closed:** if the epoch-store read errors, reject the request and log at
+     `error!`. A store outage must not silently disable revocation.
 
-4. **`JwtTokens::revoke_all_for_user`** calls `epoch.revoke_before(email, now)`.
+5. **`JwtTokens::revoke_all_for_user`** calls `epoch.revoke_before(email, now)`.
 
-**Statefulness tradeoff (call this out):** consulting `min_valid_iat` on validation
-means the JWT path is no longer purely stateless — it costs one store read per
-protected request when the feature is active. Mitigate by making the epoch store an
-**optional generic slot** on `JwtTokens` (consistent with the codebase's typestate
-pattern): with the unit type `()` there is no epoch store, `revoke_all_for_user`
-returns an explicit "unsupported" error, and the validator does no extra read (fully
-stateless, as today); with a real store wired in, global revocation works at the cost
-of the per-request lookup. Document the tradeoff where `JwtTokens` is constructed.
+**Statefulness note:** this adds one store read per validated request — but the JWT
+path is *already* stateful: the validator hits the `BannedTokenStore` on every
+validation (that's how logout works). The epoch read is the same shape of lookup, not
+an architectural change, which is why it isn't worth an opt-out.
 
-**Commits:**
-- `feat(adapters): add TokenStrategy::revoke_all_for_user (session impl)`
-- `feat(core): add TokenEpochStore port + in-memory/redis impls`
-- `feat(security): JWT global revocation via token epoch (iat cutoff)`
-- `fix(security): revoke all sessions on password change and account deletion`
+**Commits** (ordered so each compiles — a required trait method breaks all impls at
+once, so the JWT plumbing lands before the trait change):
+1. `feat(core): add TokenEpochStore port + in-memory/redis impls`
+2. `feat(adapters): wire token epoch into JwtTokens (iat claim + validator cutoff)`
+   — constructor param, `iat` in `Claims`, validator check, examples updated
+3. `feat(adapters): require TokenStrategy::revoke_all_for_user`
+   — trait method + both impls (session: `delete_all_for_user`; JWT: `revoke_before`)
+4. `fix(security): revoke all sessions on password change and account deletion`
 
 ---
 
@@ -150,8 +169,10 @@ it matches the current session's subject, so a logged-in user who learns another
 password gets an elevated token scoped to that other user.
 
 **Fix:** `/elevate` is already in the login-validated bucket (`wiring.rs:218`), so
-`Claims` are present. Add `Extension<Claims>` to `routes/elevate.rs` and reject if
-`claims.sub != request.email` before calling `handle_elevate`.
+`Claims` are present. Add `Extension<Claims>` to `routes/elevate.rs` and reject unless
+`claims.sub` matches `request.email` before calling `handle_elevate`. Note `claims.sub`
+is `Secret`-wrapped and the body email is attacker-supplied — compare with
+`constant_time_eq` (as in 3.4), not `==`.
 
 **Commit:** `fix(security): bind elevation to the session owner`.
 
