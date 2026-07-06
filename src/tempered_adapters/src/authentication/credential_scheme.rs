@@ -1224,6 +1224,12 @@ where
             ),
 
             CredentialError::TwoFaError(e) => (http::StatusCode::UNAUTHORIZED, e.to_string()),
+            // Distinct, safe-to-reveal signal: the code is burned and the user
+            // must log in again for a fresh one.
+            CredentialError::TwoFaCodeStoreError(TwoFaCodeStoreError::TooManyAttempts) => (
+                http::StatusCode::TOO_MANY_REQUESTS,
+                "Too many failed attempts; log in again for a new code".to_string(),
+            ),
             CredentialError::TwoFaCodeStoreError(e) => {
                 tracing::error!(error = %e, "2FA code store error");
                 (

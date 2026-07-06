@@ -112,6 +112,57 @@ async fn should_return_400_with_invalid_input() {
 }
 
 #[tokio::test]
+async fn should_return_429_after_too_many_wrong_codes() {
+    let app = TestApp::new().await;
+
+    let body = get_standard_test_user(true);
+    assert!(app.post_signup(&body).await.status().is_success());
+
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&app.email_server)
+        .await;
+
+    let response = app.login(&body).await;
+    assert_eq!(response.status().as_u16(), 206);
+
+    let two_fa_response = response
+        .json::<TwoFactorAuthResponse>()
+        .await
+        .expect("Failed to get two factor response");
+    let email = body["email"]
+        .as_str()
+        .expect("Email was not of type String");
+    let two_fa_attempt_id =
+        TwoFaAttemptId::parse(&two_fa_response.login_attempt_id).expect("Invalid attempt Id");
+    let verify_2fa_body = app
+        .get_verify_two_fa_request(email, two_fa_attempt_id)
+        .await;
+
+    let right_code = verify_2fa_body["2FACode"].as_str().unwrap();
+    let wrong_code = if right_code == "000000" { "000001" } else { "000000" };
+    let wrong_body = serde_json::json!({
+        "email": verify_2fa_body["email"],
+        "loginAttemptId": verify_2fa_body["loginAttemptId"],
+        "2FACode": wrong_code,
+    });
+
+    // Guesses 1-4 fail generically; the 5th trips the cap.
+    for _ in 0..4 {
+        let response = app.verify_2fa(&wrong_body).await;
+        assert_eq!(response.status().as_u16(), 401);
+    }
+    let response = app.verify_2fa(&wrong_body).await;
+    assert_eq!(response.status().as_u16(), 429);
+
+    // The code is burned: even the correct one is rejected now.
+    let response = app.verify_2fa(&verify_2fa_body).await;
+    assert_eq!(response.status().as_u16(), 401);
+}
+
+#[tokio::test]
 async fn should_return_401_with_outdated_login_attempt_id() {
     let app = TestApp::new().await;
 

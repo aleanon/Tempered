@@ -78,6 +78,10 @@ pub enum TwoFaCodeStoreError {
     InvalidAttemptId,
     #[error("Invalid 2FA code")]
     Invalid2FACode,
+    #[error("Too many failed attempts")]
+    TooManyAttempts,
+    #[error("2FA code expired")]
+    CodeExpired,
     #[error("Unexpected error")]
     UnexpectedError(String),
 }
@@ -89,6 +93,8 @@ impl PartialEq for TwoFaCodeStoreError {
             (Self::UserNotFound, Self::UserNotFound) => true,
             (Self::InvalidAttemptId, Self::InvalidAttemptId) => true,
             (Self::Invalid2FACode, Self::Invalid2FACode) => true,
+            (Self::TooManyAttempts, Self::TooManyAttempts) => true,
+            (Self::CodeExpired, Self::CodeExpired) => true,
             (Self::UnexpectedError(_), Self::UnexpectedError(_)) => true,
             _ => false,
         }
@@ -356,6 +362,14 @@ pub trait TwoFaCodeStore: Send + Sync {
         login_attempt_id: TwoFaAttemptId,
         two_fa_code: TwoFaCode,
     ) -> Result<(), TwoFaCodeStoreError>;
+
+    /// Check a presented code against the stored one.
+    ///
+    /// Contract: implementations MUST bound the guessing budget — count failed
+    /// attempts and, past a cap, delete the code and return
+    /// [`TwoFaCodeStoreError::TooManyAttempts`]; stored codes MUST expire
+    /// (return [`TwoFaCodeStoreError::CodeExpired`] past their TTL). A 6-digit
+    /// code is brute-forceable within its lifetime without both.
     async fn validate(
         &self,
         user_id: &Email,
