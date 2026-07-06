@@ -99,6 +99,12 @@ where
         Ok(())
     }
 
+    async fn revoke_all_for_user(&self, email: &Email) -> Result<(), SessionError> {
+        // Sessions live server-side, so global revocation is just deleting them.
+        self.store.delete_all_for_user(email).await?;
+        Ok(())
+    }
+
     fn validator(&self) -> &SessionValidator<S> {
         &self.validator
     }

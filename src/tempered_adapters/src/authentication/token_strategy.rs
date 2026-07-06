@@ -40,6 +40,16 @@ pub trait TokenStrategy: Clone + Send + Sync + 'static {
     /// Invalidate a token (logout / ban / delete).
     async fn revoke(&self, token: &Self::Token) -> Result<(), Self::Error>;
 
+    /// Invalidate every outstanding token/session for a user (password
+    /// change, account deletion, "log out everywhere").
+    ///
+    /// Contract: after this returns `Ok`, tokens issued to this user *before*
+    /// the call MUST fail validation. This is deliberately a required method
+    /// with no default — global revocation is correctness-critical, so a
+    /// strategy that cannot support it must say so explicitly in its own
+    /// impl, visibly against this contract.
+    async fn revoke_all_for_user(&self, email: &Email) -> Result<(), Self::Error>;
+
     /// The validator middleware uses.
     fn validator(&self) -> &Self::Validator;
 
@@ -147,6 +157,16 @@ where
         Ok(())
     }
 
+    async fn revoke_all_for_user(&self, email: &Email) -> Result<(), JwtTokenError> {
+        // Move the user's epoch cutoff to "now": the validator rejects every
+        // token with an earlier iat (see LocalJwtValidator).
+        self.epoch
+            .revoke_before(email, chrono::Utc::now().timestamp())
+            .await
+            .map_err(JwtTokenError::RevokeAll)?;
+        Ok(())
+    }
+
     fn validator(&self) -> &LocalJwtValidator<B> {
         &self.validator
     }
@@ -178,6 +198,8 @@ pub enum JwtTokenError {
     Generate(TokenAuthError),
     #[error("Failed to ban JWT token: {0}")]
     Revoke(BannedTokenStoreError),
+    #[error("Failed to record revocation cutoff: {0}")]
+    RevokeAll(tempered_core::TokenEpochStoreError),
 }
 
 impl IntoStatusMessage for JwtTokenError {
@@ -190,6 +212,60 @@ impl IntoStatusMessage for JwtTokenError {
                 http::StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Token store error: {}", e),
             ),
+            JwtTokenError::RevokeAll(e) => {
+                tracing::error!(error = %e, "failed to record revocation cutoff");
+                (
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal error".to_string(),
+                )
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use secrecy::Secret;
+
+    use crate::persistence::{HashMapTokenEpochStore, HashSetBannedTokenStore};
+
+    use super::*;
+
+    fn email() -> Email {
+        Email::try_from(Secret::new("test@example.com".to_string())).unwrap()
+    }
+
+    fn strategy() -> JwtTokens<HashSetBannedTokenStore> {
+        JwtTokens::new(
+            JwtAuthConfig {
+                jwt_cookie_name: "jwt".to_string(),
+                jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+                token_ttl_in_seconds: 3600,
+                audience: None,
+                issuer: None,
+            },
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn revoke_all_records_a_cutoff_the_validator_reads() {
+        let tokens = strategy();
+        assert_eq!(
+            tokens.epoch().min_valid_iat(&email()).await.unwrap(),
+            None
+        );
+
+        let before = chrono::Utc::now().timestamp();
+        tokens.revoke_all_for_user(&email()).await.unwrap();
+
+        let cutoff = tokens
+            .epoch()
+            .min_valid_iat(&email())
+            .await
+            .unwrap()
+            .expect("revoke_all_for_user must record a cutoff");
+        assert!(cutoff >= before);
     }
 }
