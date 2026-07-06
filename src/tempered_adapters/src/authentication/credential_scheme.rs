@@ -671,6 +671,12 @@ where
         new_password: Password,
     ) -> Result<(), Self::PasswordChangeError> {
         self.user_store.set_new_password(&email, new_password).await?;
+        // A password change must strand whoever was holding the old password's
+        // sessions — revoke every outstanding token (all devices).
+        self.tokens
+            .revoke_all_for_user(&email)
+            .await
+            .map_err(CredentialError::Token)?;
         Ok(())
     }
 }
@@ -692,6 +698,12 @@ where
     #[tracing::instrument(name = "CredentialScheme::delete_account", skip(self))]
     async fn delete_account(&self, email: Email) -> Result<(), Self::AccountDeletionError> {
         self.user_store.delete_user(&email).await?;
+        // Without this, a deleted user's token keeps validating until it
+        // expires (JWT validation is signature-based, not a user-store read).
+        self.tokens
+            .revoke_all_for_user(&email)
+            .await
+            .map_err(CredentialError::Token)?;
         Ok(())
     }
 }
@@ -907,6 +919,13 @@ where
             .map_err(|_| CredentialError::InvalidResetToken)?;
 
         self.user_store.set_new_password(&email, new_password).await?;
+
+        // A reset is a password change — typically *because* the account may
+        // be compromised — so strand every outstanding session.
+        self.tokens
+            .revoke_all_for_user(&email)
+            .await
+            .map_err(CredentialError::Token)?;
 
         Ok(())
     }

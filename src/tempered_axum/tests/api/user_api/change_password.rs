@@ -37,6 +37,32 @@ async fn should_return_200_with_valid_request_and_elevated_auth() {
 }
 
 #[tokio::test]
+async fn should_invalidate_existing_sessions_after_password_change() {
+    let app = TestApp::new().await;
+
+    let body = get_standard_test_user(false);
+    assert!(app.post_signup(&body).await.status().is_success());
+    assert!(app.login(&body).await.status().is_success());
+    let stolen_token = app.get_jwt_token().expect("login sets the jwt cookie");
+    assert_eq!(app.post_elevate(&body).await.status().as_u16(), 200);
+
+    // Cross a second boundary: the revocation cutoff has 1 s granularity and
+    // deliberately keeps same-second tokens valid (see LocalJwtValidator).
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    let new_password = serde_json::json!({ "new_password": "newpassword123" });
+    assert_eq!(
+        app.post_change_password(&new_password).await.status().as_u16(),
+        200
+    );
+
+    // A token captured before the change (e.g. on a stolen device) must no
+    // longer validate, even though its exp is far in the future.
+    let response = app.verify_token(&stolen_token).await;
+    assert_eq!(response.status().as_u16(), 401);
+}
+
+#[tokio::test]
 async fn should_return_401_with_missing_token() {
     let app = TestApp::new().await;
 
