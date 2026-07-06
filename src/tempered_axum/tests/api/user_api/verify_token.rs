@@ -64,10 +64,10 @@ async fn should_return_401_if_token_is_banned() {
 }
 
 #[tokio::test]
-async fn should_return_400_if_missing_token() {
+async fn should_return_401_if_missing_token() {
     let app = TestApp::new().await;
 
     let response = app.verify_token("").await;
 
-    assert_eq!(response.status().as_u16(), 400);
+    assert_eq!(response.status().as_u16(), 401);
 }

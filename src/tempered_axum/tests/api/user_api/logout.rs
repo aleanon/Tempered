@@ -18,16 +18,16 @@ async fn should_return_200_if_jwt_cookie_is_valid() {
 }
 
 #[tokio::test]
-async fn logout_returns_400_if_jwt_cookie_is_missing() {
+async fn logout_returns_401_if_jwt_cookie_is_missing() {
     let app = TestApp::new().await;
 
     let response = app.logout().await;
 
-    assert_eq!(response.status().as_u16(), 400);
+    assert_eq!(response.status().as_u16(), 401);
 }
 
 #[tokio::test]
-async fn should_return_400_if_logout_is_called_twice() {
+async fn should_return_401_if_logout_is_called_twice() {
     let app = TestApp::new().await;
 
     let body = get_standard_test_user(false);
@@ -41,7 +41,7 @@ async fn should_return_400_if_logout_is_called_twice() {
 
     let response = app.logout().await;
 
-    assert_eq!(response.status().as_u16(), 400);
+    assert_eq!(response.status().as_u16(), 401);
 }
 
 #[tokio::test]

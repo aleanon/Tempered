@@ -33,7 +33,7 @@ pub async fn should_return_204_with_valid_elevated_auth_token() {
 }
 
 #[tokio::test]
-pub async fn should_return_400_without_elevated_auth_token() {
+pub async fn should_return_401_without_elevated_auth_token() {
     let app = TestApp::new().await;
 
     let body = get_standard_test_user(false);
@@ -42,7 +42,7 @@ pub async fn should_return_400_without_elevated_auth_token() {
     assert_eq!(app.login(&body).await.status().as_u16(), 200);
 
     let user_deleted = app.delete_account().await;
-    assert_eq!(user_deleted.status().as_u16(), 400);
+    assert_eq!(user_deleted.status().as_u16(), 401);
     let error_response = user_deleted
         .json::<ErrorResponse>()
         .await
@@ -51,7 +51,7 @@ pub async fn should_return_400_without_elevated_auth_token() {
 }
 
 #[tokio::test]
-pub async fn should_return_400_after_logout() {
+pub async fn should_return_401_after_logout() {
     let client = TestApp::new().await;
     let body = get_standard_test_user(false);
 
@@ -61,7 +61,7 @@ pub async fn should_return_400_after_logout() {
     client.logout().await;
 
     let response = client.delete_account().await;
-    assert_eq!(response.status().as_u16(), 400);
+    assert_eq!(response.status().as_u16(), 401);
     let error_response = response
         .json::<ErrorResponse>()
         .await

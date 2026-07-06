@@ -37,7 +37,7 @@ async fn should_return_200_with_valid_request_and_elevated_auth() {
 }
 
 #[tokio::test]
-async fn should_return_400_with_missing_token() {
+async fn should_return_401_with_missing_token() {
     let app = TestApp::new().await;
 
     let body = serde_json::json!({
@@ -45,7 +45,7 @@ async fn should_return_400_with_missing_token() {
     });
 
     let response = app.post_change_password(&body).await;
-    assert_eq!(response.status().as_u16(), 400);
+    assert_eq!(response.status().as_u16(), 401);
 }
 
 #[tokio::test]

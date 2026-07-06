@@ -13,14 +13,14 @@ async fn should_return_200_with_valid_credentials_and_logged_in_user() {
 }
 
 #[tokio::test]
-async fn should_return_400_with_valid_credentials_but_missing_auth_token() {
+async fn should_return_401_with_valid_credentials_but_missing_auth_token() {
     let app = TestApp::new().await;
 
     let body = get_standard_test_user(false);
     assert!(app.post_signup(&body).await.status().is_success());
 
     let response = app.post_elevate(&body).await;
-    assert_eq!(response.status().as_u16(), 400)
+    assert_eq!(response.status().as_u16(), 401)
 }
 
 #[tokio::test]

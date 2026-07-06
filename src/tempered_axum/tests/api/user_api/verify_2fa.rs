@@ -2,7 +2,6 @@ use secrecy::Secret;
 use serde::Deserialize;
 use tempered_adapters::auth_validation::local_jwt_validator::{JwtAuthConfig, validate_auth_token};
 use tempered_core::TwoFaAttemptId;
-use tempered_core::ports::repositories::TwoFaCodeStoreError;
 use wiremock::{
     Mock, ResponseTemplate,
     matchers::{method, path},
@@ -147,16 +146,14 @@ async fn should_return_401_with_outdated_login_attempt_id() {
     let response = app.verify_2fa(&body).await;
 
     assert_eq!(response.status().as_u16(), 401);
+    // Generic message: internals (store errors, attempt-id state) stay server-side.
     assert_eq!(
         response
             .json::<ErrorResponse>()
             .await
             .expect("Failed to parse error response")
             .error,
-        format!(
-            "2FA code store error: {}",
-            TwoFaCodeStoreError::InvalidAttemptId
-        )
+        "Invalid or expired 2FA code"
     )
 }
 

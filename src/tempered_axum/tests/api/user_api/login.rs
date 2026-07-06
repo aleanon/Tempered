@@ -1,6 +1,5 @@
 use secrecy::Secret;
 use serde::Deserialize;
-use tempered_core::ports::repositories::UserStoreError;
 use tempered_core::{Email, TwoFaAttemptId, TwoFaCodeStore};
 use wiremock::{
     Mock, ResponseTemplate,
@@ -226,13 +225,14 @@ async fn should_return_401_with_unregistered_email() {
     let response = app.login(&body).await;
 
     assert_eq!(response.status().as_u16(), 401);
+    // Unified message: the response must not reveal whether the email exists.
     assert_eq!(
         response
             .json::<ErrorResponse>()
             .await
             .expect("Unable to parse error response")
             .error,
-        UserStoreError::UserNotFound.to_string()
+        "Invalid email or password"
     )
 }
 
