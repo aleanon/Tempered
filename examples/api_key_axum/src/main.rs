@@ -10,6 +10,13 @@
 //! protected route is guarded by `ApiKeyScheme`'s validator running as Axum
 //! middleware (`tempered::validate_token`), which inserts the
 //! validated `ApiKeyClaims` into the request extensions.
+//!
+//! This example wires the middleware by hand because key *issuance* is
+//! app-specific (it needs an owner + scopes). If you only need "serve a
+//! frontend + protect some routes with key validation," you can instead hand
+//! the scheme to `auth_service(scheme, assets).validated_router(..)` — it now
+//! accepts `ApiKeyScheme` and applies the same key-validation middleware to the
+//! protected bucket (see `tests/api_key_service.rs`).
 
 use axum::{
     Extension, Json, Router,

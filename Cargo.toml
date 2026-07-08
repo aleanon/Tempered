@@ -62,6 +62,7 @@ tempered_axum = { path = "src/tempered_axum" }
 axum = "0.8"
 axum-extra = { version = "0.12", features = ["cookie"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "trace", "tower"] }
 http = "*"
 

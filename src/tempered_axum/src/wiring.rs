@@ -12,6 +12,7 @@ use axum::{
     Router,
     routing::{delete, get, post},
 };
+use tempered_adapters::authentication::api_key_scheme::ApiKeyScheme;
 use tempered_adapters::authentication::credential_scheme::{
     Authz, CredentialScheme, Elevation, EmailVerify, OAuth, Passkeys, PasswordReset, TwoFa,
 };
@@ -373,13 +374,17 @@ where
 /// Wires every route the scheme declared. Elevation runs first so it can install
 /// the elevated-bucket middleware hook + elevation-aware logout before core wires
 /// logout and the elevation-gated sensitive routes.
+///
+/// Implemented per scheme family (rather than as a blanket over the `Wire*`
+/// traits) so a scheme with no credential routes — [`ApiKeyScheme`] — can wire
+/// nothing while still being served by `auth_service`.
 pub trait AutoWire: Sized {
     fn auto_wire(&self, routers: Routers<Self>, o: &PathOverrides) -> Routers<Self>;
 }
 
-impl<S> AutoWire for S
+impl<U, T, F, L, R, M, O, K> AutoWire for CredentialScheme<U, T, F, L, R, M, O, K>
 where
-    S: WireCore
+    Self: WireCore
         + WireElevation
         + WireTwoFa
         + WirePasswordReset
@@ -395,5 +400,22 @@ where
         let routers = self.wire_email_verify(routers, o);
         let routers = self.wire_oauth(routers, o);
         self.wire_passkeys(routers, o)
+    }
+}
+
+/// API-key schemes have no credential routes (no login/logout/signup, 2FA,
+/// elevation, password reset, OAuth, or passkeys) to auto-wire. `auth_service`
+/// still serves static assets and protects the validated bucket with the
+/// scheme's key validator, so
+/// `auth_service(api_key_scheme, assets).validated_router(..)` works exactly as
+/// it does for a JWT scheme. Key *issuance* is app-specific (it needs an owner
+/// and scopes), so it stays a caller-supplied route rather than an auto-wired one.
+impl<S, I> AutoWire for ApiKeyScheme<S, I>
+where
+    S: Clone + Send + Sync + 'static,
+    I: Clone + Send + Sync + 'static,
+{
+    fn auto_wire(&self, routers: Routers<Self>, _o: &PathOverrides) -> Routers<Self> {
+        routers
     }
 }

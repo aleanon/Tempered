@@ -3508,6 +3508,7 @@ dependencies = [
  "testcontainers-modules",
  "thiserror",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
  "uuid",

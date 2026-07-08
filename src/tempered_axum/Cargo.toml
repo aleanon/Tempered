@@ -51,6 +51,7 @@ tempered_adapters = { path = "../tempered_adapters", features = [
 testcontainers-modules.workspace = true
 wiremock.workspace = true
 reqwest.workspace = true
+tower.workspace = true
 
 # Database
 sqlx.workspace = true
