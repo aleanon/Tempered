@@ -1,11 +1,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum_extra::extract::{
-    CookieJar,
-    cookie::{Cookie, SameSite},
-};
 use chrono::Utc;
+use cookie::{Cookie, SameSite};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation, decode, encode};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
@@ -60,15 +57,12 @@ impl<B: BannedTokenStore + Clone + 'static> AuthValidator for LocalJwtValidator<
     type Error = TokenAuthError;
 
     async fn validate(&self, parts: &Self::RequestParts) -> Result<Self::Claims, Self::Error> {
-        // Extract cookie jar from request headers
-        let cookie_jar = CookieJar::from_headers(&parts.headers);
-
-        // Extract JWT token from cookie
-        let token = extract_token(&cookie_jar, &self.config.jwt_cookie_name)?;
+        // Extract the JWT token from the request's Cookie header
+        let token = extract_token(parts, &self.config.jwt_cookie_name)?;
 
         // Validate token signature, ban list, and revocation cutoff
         let claims = validate_auth_token(
-            token,
+            &token,
             &self.banned_token_store,
             self.token_epoch_store.as_ref(),
             &self.config,
@@ -122,17 +116,15 @@ impl IntoStatusMessage for TokenAuthError {
     }
 }
 
-pub fn extract_token<'a>(jar: &'a CookieJar, cookie_name: &str) -> Result<&'a str, TokenAuthError> {
-    match jar.get(cookie_name) {
-        Some(cookie) => {
-            let value = cookie.value();
-            if value.is_empty() {
-                Err(TokenAuthError::MissingToken)
-            } else {
-                Ok(value)
-            }
-        }
-        None => Err(TokenAuthError::MissingToken),
+/// Read the named cookie's value from the request's `Cookie` header, treating a
+/// missing/empty cookie as [`TokenAuthError::MissingToken`].
+pub fn extract_token(
+    parts: &http::request::Parts,
+    cookie_name: &str,
+) -> Result<String, TokenAuthError> {
+    match crate::cookie_util::cookie_value(parts, cookie_name) {
+        Some(value) if !value.is_empty() => Ok(value),
+        _ => Err(TokenAuthError::MissingToken),
     }
 }
 

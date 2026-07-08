@@ -15,7 +15,7 @@
 //! rather than being granted a session immediately.
 
 use async_trait::async_trait;
-use axum_extra::extract::CookieJar;
+use crate::cookie_util::cookie_value;
 use tempered_core::{
     AuthRequest, AuthValidator, Email, IntoStatusMessage, SessionId, SessionStore,
     SessionStoreError, UserStore,
@@ -207,11 +207,7 @@ where
     type Error = SessionError;
 
     async fn validate(&self, parts: &Self::RequestParts) -> Result<Self::Claims, Self::Error> {
-        let jar = CookieJar::from_headers(&parts.headers);
-
-        let raw = jar
-            .get(&self.cookie_name)
-            .map(|c| c.value().to_string())
+        let raw = cookie_value(parts, &self.cookie_name)
             .filter(|v| !v.is_empty())
             .ok_or(SessionError::MissingSession)?;
 

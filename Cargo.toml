@@ -82,6 +82,7 @@ sqlx = { version = "0.8", features = [
 redis = { version = "1.0.1", features = ["tokio-comp"] }
 
 # Utilities
+cookie = "0.18"
 url = "2"
 uuid = { version = "1.19", features = ["v4", "serde"] }
 chrono = "0.4"
