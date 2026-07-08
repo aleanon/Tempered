@@ -4,6 +4,8 @@ use tempered_core::{
     Email, HttpResponseBuilderExt, Password, ResponseBuilder, SupportsRegistration,
 };
 
+use crate::handlers::HandlerError;
+
 /// Request data for user signup.
 ///
 /// This is a framework-agnostic representation of the signup request.
@@ -32,7 +34,7 @@ pub async fn handle_signup<S, B>(
     scheme: &S,
     data: SignupData<S::RegistrationData>,
     builder: B,
-) -> Result<B::Response, S::RegistrationError>
+) -> Result<B::Response, HandlerError<S::RegistrationError>>
 where
     S: SupportsRegistration,
     B: ResponseBuilder,
@@ -40,19 +42,15 @@ where
     // Register the user
     scheme
         .register(data.email, data.password, data.registration_data)
-        .await?;
+        .await
+        .map_err(HandlerError::Auth)?;
 
-    // Return success response
-    builder
+    // Return success response; a builder error is a scheme bug (propagated → 500).
+    Ok(builder
         .status(201)
         .json_body(serde_json::json!({
             "status": "success",
             "message": "User created successfully"
         }))
-        .build()
-        .map_err(|_e| {
-            // ResponseBuilder errors are programming errors (invalid status codes, etc.)
-            // This should never happen as we're using valid status 201
-            panic!("ResponseBuilder error in signup handler - this is a bug")
-        })
+        .build()?)
 }

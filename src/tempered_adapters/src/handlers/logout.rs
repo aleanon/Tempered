@@ -86,8 +86,11 @@ where
         let _ = scheme.revoke_elevated_token(&elevated_token).await;
     }
 
-    let response = scheme.create_logout_response(builder, None)
-        .expect("ResponseBuilder error in create_logout_response - this is a bug in the scheme implementation");
+    // A builder error is a scheme bug; surface it as the error message
+    // (matches `handle_logout`) rather than panicking.
+    let response = scheme
+        .create_logout_response(builder, None)
+        .map_err(|e| e.message)?;
 
     Ok(response)
 }

@@ -44,6 +44,10 @@ where
                 Verify2FaError::InvalidAttemptId(err) => (StatusCode::BAD_REQUEST, err.to_string()),
                 Verify2FaError::InvalidCode(err) => (StatusCode::BAD_REQUEST, err.to_string()),
                 Verify2FaError::VerificationFailed(err) => err.into_status_message(),
+                Verify2FaError::ResponseBuild(err) => {
+                    tracing::error!(error = %err, "response builder failed (scheme bug)");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "Internal error".to_string())
+                }
             };
             (status, Json(serde_json::json!({ "error": message }))).into_response()
         }

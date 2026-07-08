@@ -2,6 +2,8 @@
 
 use tempered_core::{HttpAuthenticationScheme, ResponseBuilder};
 
+use crate::handlers::HandlerError;
+
 /// Handle login request - framework agnostic.
 ///
 /// This function contains the pure authentication logic without any framework dependencies.
@@ -35,14 +37,15 @@ pub async fn handle_login<S, B>(
     scheme: &S,
     credentials: S::Credentials,
     builder: B,
-) -> Result<B::Response, S::AuthError>
+) -> Result<B::Response, HandlerError<S::AuthError>>
 where
     S: HttpAuthenticationScheme,
     B: ResponseBuilder,
 {
     // Call the scheme's login method (domain logic)
-    let outcome = scheme.login(credentials).await?;
+    let outcome = scheme.login(credentials).await.map_err(HandlerError::Auth)?;
 
-    // Let the scheme decide how to deliver the token via HTTP
-    Ok(scheme.create_login_response(builder, outcome).expect("ResponseBuilder error in create_login_response - this is a bug in the scheme implementation"))
+    // Let the scheme decide how to deliver the token via HTTP; a builder error
+    // is a scheme bug (propagated, not panicked).
+    Ok(scheme.create_login_response(builder, outcome)?)
 }

@@ -8,6 +8,7 @@ pub mod change_password;
 pub mod complete_password_reset;
 pub mod delete_account;
 pub mod elevate;
+pub mod error;
 pub mod initiate_password_reset;
 pub mod login;
 pub mod logout;
@@ -21,6 +22,7 @@ pub mod verify_token;
 
 pub use change_password::handle_change_password;
 pub use complete_password_reset::handle_complete_password_reset;
+pub use error::HandlerError;
 pub use delete_account::handle_delete_account;
 pub use elevate::handle_elevate;
 pub use initiate_password_reset::handle_initiate_password_reset;

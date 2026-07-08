@@ -1,8 +1,8 @@
 //! Framework-agnostic 2FA verification handler.
 
 use tempered_core::{
-    Email, HttpAuthenticationScheme, ResponseBuilder, SupportsTwoFactor, TwoFaAttemptId, TwoFaCode,
-    TwoFaError, UserError,
+    Email, HttpAuthenticationScheme, ResponseBuilder, ResponseBuilderError, SupportsTwoFactor,
+    TwoFaAttemptId, TwoFaCode, TwoFaError, UserError,
 };
 
 /// Request data for 2FA verification.
@@ -75,11 +75,11 @@ where
         .await
         .map_err(Verify2FaError::VerificationFailed)?;
 
-    // Create the 2FA success response
-    // ResponseBuilder errors here are programming errors in the scheme implementation
-    Ok(scheme.create_2fa_response(builder, token).expect(
-        "ResponseBuilder error in create_2fa_response - this is a bug in the scheme implementation",
-    ))
+    // Create the 2FA success response; a builder error is a scheme bug,
+    // surfaced through the error type instead of panicking.
+    Ok(scheme
+        .create_2fa_response(builder, token)
+        .map_err(Verify2FaError::ResponseBuild)?)
 }
 
 /// Errors that can occur during 2FA verification
@@ -89,4 +89,6 @@ pub enum Verify2FaError<E> {
     InvalidAttemptId(TwoFaError),
     InvalidCode(TwoFaError),
     VerificationFailed(E),
+    /// The scheme failed to build the success response (a scheme bug → 500).
+    ResponseBuild(ResponseBuilderError),
 }
