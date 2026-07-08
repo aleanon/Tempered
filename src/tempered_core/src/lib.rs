@@ -1,4 +1,3 @@
-pub mod composable;
 pub mod domain;
 pub mod http_abstraction;
 pub mod http_authentication_scheme;
