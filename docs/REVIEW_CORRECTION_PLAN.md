@@ -1,8 +1,7 @@
 # Review Correction Plan
 
 Tracks the fixes from the 2026-07 four-lens review (architecture, credential
-security, HTTP security, DX). Phases 1–3 are done; Phase 4 is pending, gated
-on the multi-framework goal.
+security, HTTP security, DX). Phases 1–4 are all done.
 
 Convention: one well-described commit per task/subtask.
 
@@ -242,28 +241,66 @@ the facade).
 
 ---
 
-## Phase 4 — Deep architecture (PENDING, pre-1.0)
+## Phase 4 — Deep architecture ✅ DONE
 
-Only worth doing if the "second framework" goal is being pursued soon.
+Implemented 2026-07-06..09 (commits `84f33b0..c427bf6` on
+`feat/additional-auth-schemes`) after the user opted into the full scope
+including the http-lift. Order: 4A → 4B → 4E → 4D → 4C (safest first; the
+invasive http-lift last, on a stabilized base).
 
-- **Lift the `http` crate out of `tempered_core`:** move `IntoStatusMessage`
-  (`http_error.rs:60`) and the `Http*` scheme traits into an adapter/HTTP crate;
-  replace `IntoStatusMessage` with a protocol-neutral error-category enum that adapters
-  map to status codes. Removes `serde`/`serde_json` from core too.
-- **Remove library panics:** unconditional `panic!` in `composable.rs:532` (2FA path);
-  `expect` in `handlers/login.rs:47`. Thread errors through return types instead.
-  *Scope note (found during Phase 3):* the login `expect` is one of **nine**
-  identical `ResponseBuilderError` expects across five handler files
-  (login, logout, oauth, passkey, verify_2fa) — the real fix is one shared
-  `HandlerError<E> { Auth(E), Response(ResponseBuilderError) }` enum
-  (implementing `IntoStatusMessage`) threaded through all handler signatures
-  and their routes, not a per-site patch.
-- **Decompose `WireCore`** (`wiring.rs:62`) into per-capability traits with no-op
-  defaults so `ApiKeyScheme` (which lacks `SupportsRegistration/PasswordChange/
-  AccountDeletion`) can use `auth_service()` auto-wiring.
-- **Drop axum deps from `tempered_adapters`** (`Cargo.toml:12`) once `cargo udeps`
-  confirms they're unused, or split axum-touching code into `tempered_axum`.
-- Optionally retire the legacy `composable.rs` prototype from `tempered_core`.
+- **4A — Retire the legacy `composable.rs` prototype** (`refactor(core): remove
+  the dead composable prototype`). `composable.rs` (571 lines, holder of the
+  `composable.rs:532` panic) + its only consumer `composable_blocks.rs` were
+  dead (nothing referenced `JwtAuthBlock`/`SchemeBuilder`/etc.). Deleted both —
+  removing that panic and ~700 lines.
+- **4B — Remove library panics on response building** (`refactor(adapters):
+  propagate ResponseBuilder errors instead of panicking`). It was **eleven**
+  sites, not nine: 9 `expect()` + 2 raw `panic!` (signup, verify_email), across
+  seven handler files. Added `HandlerError<E> { Auth(E), Response(...) }`
+  threaded through login/signup/verify_email/oauth/passkey; `verify_2fa` got a
+  `ResponseBuild` variant (its route variant-matches); `logout_with_elevation`
+  now mirrors the base logout. Route callers unchanged (`HandlerError<E>`
+  classifies when `E` does).
+- **4E — Drop axum from `tempered_adapters`** (`refactor(adapters): drop axum
+  from tempered_adapters, use the cookie crate`). Adapters pulled axum +
+  axum-extra + tower-http only for cookie parse/build in two validators and a
+  dead `AuthenticationError`. Swapped to the `cookie` crate directly (what
+  axum-extra wraps) via a `cookie_util` helper; deleted the dead type; tower-http
+  was unused. Adapters now pulls **zero** axum crates (`cargo tree`).
+- **4D — `auth_service` serves `ApiKeyScheme`** (`feat(axum): let auth_service
+  serve ApiKeyScheme`). The blocker was narrower than "decompose WireCore":
+  ApiKeyScheme already impls `HttpAuthenticationScheme`, but the *blanket*
+  `AutoWire` impl required the seven `Wire*` traits. Replaced the blanket with
+  explicit per-family impls — `CredentialScheme` (unchanged body) and
+  `ApiKeyScheme` (wires nothing). Key issuance stays a caller route (needs
+  owner+scopes); the example keeps its explicit wiring and documents the option.
+  Container-free oneshot tests added.
+- **4C — Lift the `http` crate out of `tempered_core`** (`refactor(core): lift
+  the http crate out of tempered_core via ErrorCategory`). Core depended on
+  `http` for exactly one thing: `IntoStatusMessage` returned `http::StatusCode`.
+  Replaced with a neutral `ErrorCategory` enum + `ClassifyError` trait
+  (`classify(self) -> (ErrorCategory, String)`) in core; the eight adapter error
+  types classify into categories; the axum layer maps `ErrorCategory →
+  StatusCode` behind an `into_status_message()` ext trait, so **every axum call
+  site is unchanged** (only the import source moved). Core's `Cargo.toml` drops
+  `http` — `cargo tree` shows zero transport crates in the core subtree.
+
+**Deviations from the plan as written:**
+- The plan said the http-lift also "removes `serde`/`serde_json` from core."
+  It doesn't: the domain types need `serde` for JWT/Redis serialization, and the
+  WebAuthn/OAuth ports (`services.rs`, `authenticator.rs`) pass `serde_json::Value`
+  payloads verbatim. Only `http` was transport-coupled; `serde`/`serde_json` are
+  genuine domain deps and stay.
+- The plan's "move the `Http*` scheme traits into an adapter/HTTP crate" was the
+  *assumed mechanism* for removing `http`; it turned out unnecessary (those traits
+  use `serde`, not `http`). `HttpAuthenticationScheme`/`ResponseBuilder`/
+  `AuthRequest` remain in core. Relocating them to adapters would be **pure
+  layering with no dependency benefit** (the graph `framework_adapter → adapters →
+  core` is identical either way, and `serde` still can't leave core), so it was
+  deliberately not done. Revisit only if "core = strictly no HTTP-shaped traits"
+  becomes a hard requirement.
+- `cargo udeps` wasn't needed for 4E — the axum usage was found by grep and was
+  narrow (3 files).
 
 ---
 
@@ -272,4 +309,8 @@ Only worth doing if the "second framework" goal is being pursued soon.
 Phase 3 order (as executed): **3.3** (isolated, no trait change) →
 **3.4** (ban-list, constant-time, aud/iss, atomic reset) → **3.1**
 (`TwoFaCodeStore`) → **3.2** (the multi-commit epoch work) → **3.5/3.6**
-(facade/build). Phase 4 is a separate track gated on the multi-framework goal.
+(facade/build).
+
+Phase 4 order (as executed): **4A** (delete dead prototype) → **4B**
+(HandlerError) → **4E** (cookie crate) → **4D** (ApiKeyScheme auto-wire) →
+**4C** (http-lift, last because most invasive).
