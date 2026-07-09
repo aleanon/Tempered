@@ -27,8 +27,7 @@ src/tempered_core/             pure domain + capability contracts
   src/strategies/              Authenticator, AuthValidator
   src/http_authentication_scheme.rs   HttpAuthenticationScheme / HttpElevationScheme
   src/http_abstraction.rs      AuthRequest, ResponseBuilder
-  src/http_error.rs            IntoStatusMessage
-  src/composable.rs            (legacy composition prototype — see Known limitations)
+  src/error.rs                 ErrorCategory + ClassifyError (transport-neutral)
 
 src/tempered_adapters/         concrete implementations
   src/authentication/          CredentialScheme (+ JwtScheme, SessionScheme aliases),
@@ -47,6 +46,7 @@ src/tempered_axum/             the axum adapter
   src/routes/                  axum handlers (signup, login, verify_2fa, oauth, ...)
   src/middleware.rs            validate_token / validate_elevated_token
   src/adapters.rs              axum AuthRequest / ResponseBuilder impls
+  src/error.rs                 ErrorCategory -> http::StatusCode + IntoStatusMessage
 ```
 
 Dependency direction is `tempered_axum → tempered_adapters → tempered_core`. The
@@ -158,17 +158,16 @@ cookie and injects `Claims` before the handler runs.
 This section is deliberately honest about where the code does not yet match the
 goals above; these are tracked for future work.
 
-- **`tempered_core` still depends on the `http` crate** (`http::StatusCode` in
-  `IntoStatusMessage`, the `Http*` scheme traits, and `serde`/`serde_json` in the
-  HTTP abstraction). A fully transport-neutral core would move these into an
-  adapter/HTTP crate and replace `IntoStatusMessage` with a protocol-neutral error
-  category. Until then, "framework-agnostic core" is a direction, not a finished
-  guarantee.
-- **`tempered_adapters` currently declares axum-related dependencies.** A second
-  framework adapter would want those removed or split out.
 - **Only the axum adapter ships.** Actix/Rocket/Warp are possible given the
-  handler/scheme split but are not implemented; earlier drafts of this document
-  overstated this.
-- **`src/tempered_core/src/composable.rs`** is an earlier composition prototype
-  that predates the `CredentialScheme` typestate builder and is not part of the
-  supported surface.
+  handler/scheme split but are not implemented. The boundaries are now in place
+  for it: `tempered_core` depends on **no** transport crate (errors classify into
+  a neutral `ErrorCategory`; the axum layer maps that to `http::StatusCode`), and
+  `tempered_adapters` pulls **no** axum crates (cookies go through the `cookie`
+  crate). A second adapter would depend on `tempered_adapters` for the schemes and
+  supply its own `ResponseBuilder` impl, routes, and `ErrorCategory -> status` map.
+- **The HTTP-shaped traits still live in `tempered_core`.** `HttpAuthenticationScheme`,
+  `ResponseBuilder`, and `AuthRequest` are transport-*neutral* (no `http` crate —
+  they use `serde` for JSON bodies) but are HTTP-flavoured in spirit. They could be
+  relocated to an HTTP-abstraction crate for a stricter "core = pure domain" split,
+  but there is **no dependency benefit** (`serde` must stay in core for the domain
+  types and the WebAuthn/OAuth `serde_json::Value` ports), so this is left undone.
