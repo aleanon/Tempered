@@ -10,8 +10,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use tempered_core::{
-    AuthValidator, AuthenticationScheme, HttpElevationScheme, IntoStatusMessage, SupportsElevation,
+    AuthValidator, AuthenticationScheme, HttpElevationScheme, SupportsElevation,
 };
+use crate::IntoStatusMessage;
 
 /// Middleware that validates a regular token and extracts claims into the request extensions.
 ///

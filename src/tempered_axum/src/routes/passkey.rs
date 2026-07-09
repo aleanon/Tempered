@@ -11,8 +11,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
 use tempered_core::{
-    Email, HttpAuthenticationScheme, IntoStatusMessage, SupportsPasskeys, WebAuthnChallenge,
+    Email, HttpAuthenticationScheme, SupportsPasskeys, WebAuthnChallenge,
 };
+use crate::IntoStatusMessage;
 
 use crate::adapters::into_axum_response;
 

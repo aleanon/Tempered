@@ -6,7 +6,7 @@ use cookie::{Cookie, SameSite};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation, decode, encode};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
-use tempered_core::{AuthValidator, BannedTokenStore, Email, IntoStatusMessage, TokenEpochStore};
+use tempered_core::{AuthValidator, BannedTokenStore, ClassifyError, Email, ErrorCategory, TokenEpochStore};
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -87,28 +87,28 @@ pub enum TokenAuthError {
     UnexpectedError(String),
 }
 
-impl IntoStatusMessage for TokenAuthError {
-    fn into_status_message(self) -> (http::StatusCode, String) {
+impl ClassifyError for TokenAuthError {
+    fn classify(self) -> (ErrorCategory, String) {
         match self {
             TokenAuthError::MissingToken => {
-                (http::StatusCode::UNAUTHORIZED, "Missing token".to_string())
+                (ErrorCategory::Unauthorized, "Missing token".to_string())
             }
             TokenAuthError::InvalidToken => {
-                (http::StatusCode::UNAUTHORIZED, "Invalid token".to_string())
+                (ErrorCategory::Unauthorized, "Invalid token".to_string())
             }
             // Don't tell the client *why* the token failed (expired vs. bad
             // signature vs. malformed) — that detail aids forgery analysis.
             TokenAuthError::TokenError(e) => {
                 tracing::debug!(error = %e, "token validation failed");
-                (http::StatusCode::UNAUTHORIZED, "Invalid token".to_string())
+                (ErrorCategory::Unauthorized, "Invalid token".to_string())
             }
             TokenAuthError::TokenIsBanned => {
-                (http::StatusCode::UNAUTHORIZED, "Token is banned".to_string())
+                (ErrorCategory::Unauthorized, "Token is banned".to_string())
             }
             TokenAuthError::UnexpectedError(msg) => {
                 tracing::error!(error = %msg, "unexpected token error");
                 (
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorCategory::Internal,
                     "Internal error".to_string(),
                 )
             }

@@ -19,7 +19,7 @@ use serde::Deserialize;
 use tempered_core::{
     AuthRequest, AuthorizationRequest, ChallengeStore, Email, EmailClient,
     EmailVerificationStoreError, EmailVerificationToken, EmailVerificationTokenStore,
-    HttpAuthenticationScheme, HttpOAuth2Scheme, HttpResponseBuilderExt, IntoStatusMessage,
+    HttpAuthenticationScheme, HttpOAuth2Scheme, ClassifyError, ErrorCategory, HttpResponseBuilderExt,
     OAuthHttpClient, OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, Password,
     PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
     RequiresEmailVerification, ResponseBuilder, SupportsAccountDeletion, SupportsElevation,
@@ -1229,90 +1229,90 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
     Passkey(#[from] PasskeyFlowError),
 }
 
-impl<TE> IntoStatusMessage for CredentialError<TE>
+impl<TE> ClassifyError for CredentialError<TE>
 where
-    TE: std::error::Error + Send + Sync + 'static + IntoStatusMessage,
+    TE: std::error::Error + Send + Sync + 'static + ClassifyError,
 {
-    fn into_status_message(self) -> (http::StatusCode, String) {
+    fn classify(self) -> (ErrorCategory, String) {
         match self {
-            CredentialError::UserError(e) => (http::StatusCode::BAD_REQUEST, e.to_string()),
+            CredentialError::UserError(e) => (ErrorCategory::BadRequest, e.to_string()),
 
             // Same status and body for "no such user" and "wrong password" so
             // login cannot be used to enumerate registered accounts.
             CredentialError::UserStoreError(
                 UserStoreError::UserNotFound | UserStoreError::IncorrectPassword,
             ) => (
-                http::StatusCode::UNAUTHORIZED,
+                ErrorCategory::Unauthorized,
                 "Invalid email or password".to_string(),
             ),
             CredentialError::UserStoreError(UserStoreError::UserAlreadyExists) => (
-                http::StatusCode::CONFLICT,
+                ErrorCategory::Conflict,
                 "User already exists".to_string(),
             ),
 
-            CredentialError::TwoFaError(e) => (http::StatusCode::UNAUTHORIZED, e.to_string()),
+            CredentialError::TwoFaError(e) => (ErrorCategory::Unauthorized, e.to_string()),
             // Distinct, safe-to-reveal signal: the code is burned and the user
             // must log in again for a fresh one.
             CredentialError::TwoFaCodeStoreError(TwoFaCodeStoreError::TooManyAttempts) => (
-                http::StatusCode::TOO_MANY_REQUESTS,
+                ErrorCategory::TooManyRequests,
                 "Too many failed attempts; log in again for a new code".to_string(),
             ),
             CredentialError::TwoFaCodeStoreError(e) => {
                 tracing::error!(error = %e, "2FA code store error");
                 (
-                    http::StatusCode::UNAUTHORIZED,
+                    ErrorCategory::Unauthorized,
                     "Invalid or expired 2FA code".to_string(),
                 )
             }
             CredentialError::TwoFaNotConfigured => (
-                http::StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorCategory::Internal,
                 "Two-factor authentication is required but not configured".to_string(),
             ),
 
             // Token errors use their own mapping (JWT signing / ban-store, …).
-            CredentialError::Token(e) => e.into_status_message(),
+            CredentialError::Token(e) => e.classify(),
 
             CredentialError::InvalidResetToken => (
-                http::StatusCode::BAD_REQUEST,
+                ErrorCategory::BadRequest,
                 "Invalid or expired password reset token".to_string(),
             ),
 
             CredentialError::UserStoreError(e) => {
                 tracing::error!(error = %e, "user store error");
                 (
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorCategory::Internal,
                     "Internal error".to_string(),
                 )
             }
             CredentialError::EmailError(e) => {
                 tracing::error!(error = %e, "email send error");
                 (
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorCategory::Internal,
                     "Internal error".to_string(),
                 )
             }
             CredentialError::PasswordResetTokenStoreError(e) => {
                 tracing::error!(error = %e, "password reset token store error");
                 (
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorCategory::Internal,
                     "Internal error".to_string(),
                 )
             }
 
             CredentialError::InvalidVerificationToken => (
-                http::StatusCode::BAD_REQUEST,
+                ErrorCategory::BadRequest,
                 "Invalid or expired email verification token".to_string(),
             ),
             CredentialError::EmailVerificationStoreError(e) => {
                 tracing::error!(error = %e, "email verification store error");
                 (
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorCategory::Internal,
                     "Internal error".to_string(),
                 )
             }
 
-            CredentialError::OAuth(e) => e.into_status_message(),
-            CredentialError::Passkey(e) => e.into_status_message(),
+            CredentialError::OAuth(e) => e.classify(),
+            CredentialError::Passkey(e) => e.classify(),
         }
     }
 }

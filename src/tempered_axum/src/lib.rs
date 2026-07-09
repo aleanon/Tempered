@@ -33,6 +33,7 @@
 
 pub mod adapters;
 pub mod auth_service;
+pub mod error;
 pub mod middleware;
 pub mod route_config;
 pub mod routes;
@@ -41,4 +42,5 @@ pub mod wiring;
 // Re-export for convenience
 pub use adapters::{AxumRequest, AxumResponseBuilder, response_builder};
 pub use auth_service::{AuthService, auth_service};
+pub use error::{IntoStatusMessage, status_code};
 pub use wiring::PathOverrides;

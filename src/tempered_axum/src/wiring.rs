@@ -19,10 +19,11 @@ use tempered_adapters::authentication::credential_scheme::{
 use tempered_adapters::authentication::token_strategy::TokenStrategy;
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    HttpOAuth2Scheme, IntoStatusMessage, RequiresEmailVerification, SupportsAccountDeletion,
+    HttpOAuth2Scheme, RequiresEmailVerification, SupportsAccountDeletion,
     SupportsElevation, SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange,
     SupportsPasswordReset, SupportsRegistration, SupportsTwoFactor,
 };
+use crate::IntoStatusMessage;
 
 use crate::route_config::{Routers, apply_elevated_validation, register_logout_with_elevation};
 

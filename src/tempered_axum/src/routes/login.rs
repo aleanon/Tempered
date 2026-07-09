@@ -2,7 +2,8 @@
 
 use axum::{Json, extract::State, response::IntoResponse};
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
-use tempered_core::{HttpAuthenticationScheme, IntoStatusMessage};
+use tempered_core::{HttpAuthenticationScheme};
+use crate::IntoStatusMessage;
 
 use crate::adapters::into_axum_response;
 

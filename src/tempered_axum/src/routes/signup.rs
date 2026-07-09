@@ -7,7 +7,8 @@ use tempered_adapters::{
     handlers::{self, signup::SignupData},
     http::HttpResponseBuilder,
 };
-use tempered_core::{Email, IntoStatusMessage, Password, SupportsRegistration};
+use tempered_core::{Email, Password, SupportsRegistration};
+use crate::IntoStatusMessage;
 
 use crate::adapters::into_axum_response;
 

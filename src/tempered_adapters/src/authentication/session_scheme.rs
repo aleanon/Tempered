@@ -17,7 +17,7 @@
 use async_trait::async_trait;
 use crate::cookie_util::cookie_value;
 use tempered_core::{
-    AuthRequest, AuthValidator, Email, IntoStatusMessage, SessionId, SessionStore,
+    AuthRequest, AuthValidator, ClassifyError, Email, ErrorCategory, SessionId, SessionStore,
     SessionStoreError, UserStore,
 };
 use thiserror::Error;
@@ -237,21 +237,21 @@ pub enum SessionError {
     Store(#[from] SessionStoreError),
 }
 
-impl IntoStatusMessage for SessionError {
-    fn into_status_message(self) -> (http::StatusCode, String) {
+impl ClassifyError for SessionError {
+    fn classify(self) -> (ErrorCategory, String) {
         match self {
             SessionError::MissingSession => {
-                (http::StatusCode::UNAUTHORIZED, "Missing session".to_string())
+                (ErrorCategory::Unauthorized, "Missing session".to_string())
             }
             SessionError::InvalidSession => {
-                (http::StatusCode::UNAUTHORIZED, "Invalid session".to_string())
+                (ErrorCategory::Unauthorized, "Invalid session".to_string())
             }
             SessionError::Store(SessionStoreError::SessionNotFound) => (
-                http::StatusCode::UNAUTHORIZED,
+                ErrorCategory::Unauthorized,
                 "Session not found or expired".to_string(),
             ),
             SessionError::Store(SessionStoreError::UnexpectedError(m)) => {
-                (http::StatusCode::INTERNAL_SERVER_ERROR, m)
+                (ErrorCategory::Internal, m)
             }
         }
     }

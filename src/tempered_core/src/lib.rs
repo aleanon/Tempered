@@ -1,7 +1,7 @@
 pub mod domain;
+pub mod error;
 pub mod http_abstraction;
 pub mod http_authentication_scheme;
-pub mod http_error;
 pub mod ports;
 pub mod strategies;
 pub mod util;
@@ -54,5 +54,5 @@ pub use http_abstraction::{
 pub use http_authentication_scheme::{
     HttpAuthenticationScheme, HttpElevationScheme, HttpOAuth2Scheme,
 };
-pub use http_error::IntoStatusMessage;
+pub use error::{ClassifyError, ErrorCategory};
 pub use util::constant_time_eq;

@@ -60,8 +60,8 @@ pub mod repositories {
 // Re-export repository traits at root level
 pub use core::{
     ApiKeyStore, ApiKeyStoreError, AuthorizationRequest, BannedTokenStore, BannedTokenStoreError,
-    ChallengeStore, ChallengeStoreError, EmailClient, EmailVerificationStoreError,
-    EmailVerificationTokenStore, HttpOAuth2Scheme, OAuthHttpClient, OAuthHttpError,
+    ChallengeStore, ChallengeStoreError, ClassifyError, EmailClient, EmailVerificationStoreError,
+    EmailVerificationTokenStore, ErrorCategory, HttpOAuth2Scheme, OAuthHttpClient, OAuthHttpError,
     OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, PasskeyStoreError,
     RequiresEmailVerification, SessionStore, SessionStoreError, SupportsApiKeyIssuance,
     SupportsOAuth2, SupportsPasskeys, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
@@ -142,7 +142,7 @@ pub mod axum_service {
 // builds the fully-wired service; `validate_token` / `validate_elevated_token`
 // are the middleware behind `.validated_router()` / `.validated_elevated_router()`.
 pub use tempered_axum::{
-    AuthService, PathOverrides, auth_service,
+    AuthService, IntoStatusMessage, PathOverrides, auth_service,
     middleware::{validate_elevated_token, validate_token},
 };
 

@@ -1,6 +1,6 @@
 //! Shared handler error wrapper.
 
-use tempered_core::{IntoStatusMessage, ResponseBuilderError};
+use tempered_core::{ClassifyError, ErrorCategory, ResponseBuilderError};
 
 /// A handler failure: either the scheme's own error (`E`) or a failure while
 /// building the HTTP response.
@@ -28,14 +28,14 @@ impl<E> From<ResponseBuilderError> for HandlerError<E> {
     }
 }
 
-impl<E: IntoStatusMessage> IntoStatusMessage for HandlerError<E> {
-    fn into_status_message(self) -> (http::StatusCode, String) {
+impl<E: ClassifyError> ClassifyError for HandlerError<E> {
+    fn classify(self) -> (ErrorCategory, String) {
         match self {
-            HandlerError::Auth(e) => e.into_status_message(),
+            HandlerError::Auth(e) => e.classify(),
             HandlerError::Response(e) => {
                 tracing::error!(error = %e, "response builder failed (scheme bug)");
                 (
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorCategory::Internal,
                     "Internal error".to_string(),
                 )
             }

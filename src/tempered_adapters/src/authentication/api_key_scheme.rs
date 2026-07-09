@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use tempered_core::{
     ApiKeyId, ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, AuthRequest,
     AuthValidator, AuthenticationScheme, Email, HttpAuthenticationScheme, HttpResponseBuilderExt,
-    IntoStatusMessage, LoginOutcome, ResponseBuilder, ResponseBuilderError, SupportsApiKeyIssuance,
+    ClassifyError, ErrorCategory, LoginOutcome, ResponseBuilder, ResponseBuilderError, SupportsApiKeyIssuance,
     constant_time_eq, domain::api_key::split_presented_key,
 };
 use thiserror::Error;
@@ -360,19 +360,19 @@ fn store_err(e: ApiKeyStoreError) -> ApiKeyAuthError {
     }
 }
 
-impl IntoStatusMessage for ApiKeyAuthError {
-    fn into_status_message(self) -> (http::StatusCode, String) {
+impl ClassifyError for ApiKeyAuthError {
+    fn classify(self) -> (ErrorCategory, String) {
         match self {
             ApiKeyAuthError::MissingKey => {
-                (http::StatusCode::UNAUTHORIZED, "Missing API key".to_string())
+                (ErrorCategory::Unauthorized, "Missing API key".to_string())
             }
             ApiKeyAuthError::Malformed => {
-                (http::StatusCode::BAD_REQUEST, "Malformed API key".to_string())
+                (ErrorCategory::BadRequest, "Malformed API key".to_string())
             }
             ApiKeyAuthError::InvalidKey => {
-                (http::StatusCode::UNAUTHORIZED, "Invalid API key".to_string())
+                (ErrorCategory::Unauthorized, "Invalid API key".to_string())
             }
-            ApiKeyAuthError::StoreError(m) => (http::StatusCode::INTERNAL_SERVER_ERROR, m),
+            ApiKeyAuthError::StoreError(m) => (ErrorCategory::Internal, m),
         }
     }
 }

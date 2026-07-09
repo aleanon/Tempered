@@ -11,7 +11,8 @@ use axum::{
 };
 use serde::Deserialize;
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
-use tempered_core::{AuthRequest, HttpOAuth2Scheme, IntoStatusMessage};
+use tempered_core::{AuthRequest, HttpOAuth2Scheme};
+use crate::IntoStatusMessage;
 
 use crate::adapters::{AuthRequestExtractor, into_axum_response};
 

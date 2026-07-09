@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tempered_core::{
-    AuthRequest, AuthValidator, BannedTokenStore, BannedTokenStoreError, Email, IntoStatusMessage,
+    AuthRequest, AuthValidator, BannedTokenStore, BannedTokenStoreError, ClassifyError, Email, ErrorCategory,
     TokenEpochStore,
 };
 use thiserror::Error;
@@ -32,7 +32,7 @@ pub trait TokenStrategy: Clone + Send + Sync + 'static {
     /// The validator the middleware runs on protected routes.
     type Validator: AuthValidator<RequestParts = http::request::Parts>;
     /// Errors from issuing/revoking (validation errors belong to the validator).
-    type Error: std::error::Error + Send + Sync + 'static + IntoStatusMessage;
+    type Error: std::error::Error + Send + Sync + 'static + ClassifyError;
 
     /// Mint a token for an already-verified identity.
     async fn issue(&self, email: &Email) -> Result<Self::Token, Self::Error>;
@@ -202,20 +202,20 @@ pub enum JwtTokenError {
     RevokeAll(tempered_core::TokenEpochStoreError),
 }
 
-impl IntoStatusMessage for JwtTokenError {
-    fn into_status_message(self) -> (http::StatusCode, String) {
+impl ClassifyError for JwtTokenError {
+    fn classify(self) -> (ErrorCategory, String) {
         match self {
             // Preserve the previous mapping: a token (signing/decoding) error uses
             // its own status; a ban-store failure is a 500.
-            JwtTokenError::Generate(e) => e.into_status_message(),
+            JwtTokenError::Generate(e) => e.classify(),
             JwtTokenError::Revoke(e) => (
-                http::StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorCategory::Internal,
                 format!("Token store error: {}", e),
             ),
             JwtTokenError::RevokeAll(e) => {
                 tracing::error!(error = %e, "failed to record revocation cutoff");
                 (
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorCategory::Internal,
                     "Internal error".to_string(),
                 )
             }

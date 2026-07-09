@@ -11,6 +11,7 @@
 
 use rand::RngCore;
 use tempered_core::{
+    ClassifyError, ErrorCategory,
     ChallengeStore, ChallengeStoreError, CredentialId, Email, PasskeyCredential,
     PasskeyCredentialStore, PasskeyStoreError, WebAuthnChallenge, WebAuthnError, WebAuthnVerifier,
 };
@@ -161,32 +162,32 @@ pub enum PasskeyFlowError {
     Challenge(#[from] ChallengeStoreError),
 }
 
-impl tempered_core::IntoStatusMessage for PasskeyFlowError {
-    fn into_status_message(self) -> (http::StatusCode, String) {
+impl ClassifyError for PasskeyFlowError {
+    fn classify(self) -> (ErrorCategory, String) {
         match self {
             PasskeyFlowError::MissingUser => (
-                http::StatusCode::BAD_REQUEST,
+                ErrorCategory::BadRequest,
                 "No user bound to challenge".to_string(),
             ),
-            PasskeyFlowError::Malformed(m) => (http::StatusCode::BAD_REQUEST, m),
+            PasskeyFlowError::Malformed(m) => (ErrorCategory::BadRequest, m),
             PasskeyFlowError::SignCountRegression => (
-                http::StatusCode::UNAUTHORIZED,
+                ErrorCategory::Unauthorized,
                 "Sign count regression".to_string(),
             ),
-            PasskeyFlowError::WebAuthn(e) => (http::StatusCode::UNAUTHORIZED, e.to_string()),
+            PasskeyFlowError::WebAuthn(e) => (ErrorCategory::Unauthorized, e.to_string()),
             PasskeyFlowError::Credential(PasskeyStoreError::CredentialNotFound) => (
-                http::StatusCode::UNAUTHORIZED,
+                ErrorCategory::Unauthorized,
                 "Unknown credential".to_string(),
             ),
             PasskeyFlowError::Credential(e) => {
-                (http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                (ErrorCategory::Internal, e.to_string())
             }
             PasskeyFlowError::Challenge(ChallengeStoreError::ChallengeNotFound) => (
-                http::StatusCode::BAD_REQUEST,
+                ErrorCategory::BadRequest,
                 "Challenge not found or expired".to_string(),
             ),
             PasskeyFlowError::Challenge(e) => {
-                (http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                (ErrorCategory::Internal, e.to_string())
             }
         }
     }

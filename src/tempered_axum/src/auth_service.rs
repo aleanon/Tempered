@@ -11,8 +11,9 @@
 use axum::{Router, middleware};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    IntoStatusMessage, SupportsElevation,
+    SupportsElevation,
 };
+use crate::IntoStatusMessage;
 use tokio::net::TcpListener;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;

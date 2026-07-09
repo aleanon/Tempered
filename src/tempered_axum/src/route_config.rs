@@ -1,7 +1,8 @@
 //! Route buckets ([`Routers`]) + the elevation appliers the auto-wiring uses.
 
 use axum::{Router, routing::post};
-use tempered_core::{AuthValidator, HttpElevationScheme, IntoStatusMessage, SupportsElevation};
+use tempered_core::{AuthValidator, HttpElevationScheme, SupportsElevation};
+use crate::IntoStatusMessage;
 
 pub struct Routers<Scheme> {
     pub main_router: Router<Scheme>,

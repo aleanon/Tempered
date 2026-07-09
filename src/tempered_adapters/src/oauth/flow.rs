@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use rand::RngCore;
 use secrecy::Secret;
 use tempered_core::{
+    ClassifyError, ErrorCategory,
     Email, OAuthHttpClient, OAuthIdentityStore, OAuthIdentityStoreError, OAuthProviderConfig,
     OAuthStateStore, UserError, constant_time_eq,
 };
@@ -178,33 +179,33 @@ pub enum OAuthFlowError {
     Identity(String),
 }
 
-impl tempered_core::IntoStatusMessage for OAuthFlowError {
-    fn into_status_message(self) -> (http::StatusCode, String) {
+impl ClassifyError for OAuthFlowError {
+    fn classify(self) -> (ErrorCategory, String) {
         match self {
             OAuthFlowError::UnknownProvider(p) => {
-                (http::StatusCode::NOT_FOUND, format!("Unknown provider: {}", p))
+                (ErrorCategory::NotFound, format!("Unknown provider: {}", p))
             }
             OAuthFlowError::InvalidState => (
-                http::StatusCode::BAD_REQUEST,
+                ErrorCategory::BadRequest,
                 "Invalid or expired OAuth state".to_string(),
             ),
-            OAuthFlowError::Email(e) => (http::StatusCode::BAD_REQUEST, e.to_string()),
+            OAuthFlowError::Email(e) => (ErrorCategory::BadRequest, e.to_string()),
             OAuthFlowError::EmailNotVerified => (
-                http::StatusCode::UNAUTHORIZED,
+                ErrorCategory::Unauthorized,
                 "Provider email is not verified".to_string(),
             ),
             OAuthFlowError::IdentityConflict => (
-                http::StatusCode::CONFLICT,
+                ErrorCategory::Conflict,
                 "Identity already linked to a different account".to_string(),
             ),
             // Don't leak provider/internal detail to clients; the full cause
             // stays available server-side via the error's Display (for logging).
             OAuthFlowError::Http(_) => (
-                http::StatusCode::BAD_GATEWAY,
+                ErrorCategory::BadGateway,
                 "OAuth provider error".to_string(),
             ),
             OAuthFlowError::State(_) | OAuthFlowError::Identity(_) => {
-                (http::StatusCode::INTERNAL_SERVER_ERROR, "Internal error".to_string())
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
         }
     }

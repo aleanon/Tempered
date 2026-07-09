@@ -10,7 +10,8 @@ use tempered_adapters::{
     },
     http::HttpResponseBuilder,
 };
-use tempered_core::{HttpAuthenticationScheme, IntoStatusMessage, SupportsTwoFactor};
+use tempered_core::{HttpAuthenticationScheme, SupportsTwoFactor};
+use crate::IntoStatusMessage;
 
 use crate::adapters::into_axum_response;
 
