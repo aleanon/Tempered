@@ -12,7 +12,7 @@ commits already on this branch are not held behind them.
 
 ---
 
-## Phase 0 — Leaked secrets (urgent)
+## Phase 0 — Leaked secrets (urgent) ✅ repo side DONE — rotation (0.1) still owed
 
 `.env` is tracked, and it is on `origin/main` of a **public** GitHub repo (11
 commits touch it, 2025-09-05 → 2025-09-24). It holds `JWT_SECRET`,
@@ -36,7 +36,7 @@ Treat all three as compromised regardless of what is done to git.
 
 ---
 
-## Phase 1 — Stale docs and housekeeping
+## Phase 1 — Stale docs and housekeeping ✅ DONE
 
 - **1.1 README quickstart compiles again.** It calls `JwtScheme::new` with three
   arguments and builds `JwtAuthConfig` without `audience` / `issuer`; the real
@@ -69,7 +69,7 @@ Treat all three as compromised regardless of what is done to git.
 
 ---
 
-## Phase 2 — Lint and CI
+## Phase 2 — Lint and CI ✅ DONE (CI not yet run on GitHub)
 
 - **2.1 Clippy to zero.** `cargo clippy --fix` handles about 29 of the warnings
   (needless borrows, `Ok(x?)`, collapsible `if`, `matches!`). By hand:
@@ -95,6 +95,31 @@ Treat all three as compromised regardless of what is done to git.
     to guard the lean build;
   - delete the commented-out bootcamp deploy steps.
   Commit: `ci: run fmt, clippy, tests and the lean build on PRs`.
+
+### Phases 0–2 as executed (2026-11-16, commits `8c693fc..6972e91`)
+
+Result: 0 clippy warnings under `-D warnings`, `cargo fmt --check` clean, 128
+tests passing, lean build verified. Deviations from the plan as written:
+
+- **0.1 is not done.** Untracking `.env` does not revoke anything; the Postmark
+  token and both JWT secrets are still in public history until rotated.
+- **1.1** also corrected the README's claim that every capability store has a
+  Redis/Postgres implementation (only 2FA codes and reset tokens do).
+- **1.4** also removed `src/tempered_adapters/config/config.json` (a second
+  unreferenced copy).
+- **1.5** surfaced a gap the analysis missed: OAuth PKCE was never implemented.
+  Added as task 3.0.
+- **2.1** four of the six "very complex type" warnings are typestate builder
+  return types, where an alias would hide which slot changes; those carry
+  `#[allow(clippy::type_complexity)]` with a reason. The two `fn`-pointer hooks
+  in `route_config.rs` got aliases. The two core `PartialEq` impls now compare
+  discriminants.
+- **2.1** added a workspace-wide `cargo fmt` commit (51 files, formatting only)
+  so CI can enforce `fmt --check`.
+- **2.4** the lean job also greps `cargo tree` so sqlx/redis/reqwest cannot
+  leak back into the no-default-features build. The workflow has only been
+  validated locally (YAML parse + each command run by hand); its first real run
+  is the PR.
 
 **Then:** push the branch, open the PR to `main`, merge.
 
