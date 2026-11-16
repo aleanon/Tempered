@@ -48,7 +48,7 @@ pub use strategies::{
 };
 
 pub use http_abstraction::{
-    AuthRequest, AuthResponseBuilder, AuthResponseHelpers, HttpResponseBuilderExt, ResponseBuilder,
+    AuthRequest, AuthResponseHelpers, HttpResponseBuilderExt, ResponseBuilder,
     ResponseBuilderError,
 };
 pub use http_authentication_scheme::{

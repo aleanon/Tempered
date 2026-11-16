@@ -1,6 +1,6 @@
 //! Axum framework adapters for zero-cost HTTP authentication.
 //!
-//! This module implements `AuthRequest` and `AuthResponseBuilder` for Axum's types
+//! This module implements `AuthRequest` and `ResponseBuilder` for Axum's types
 //! using newtype wrappers to avoid the orphan rule, while maintaining zero runtime cost.
 //!
 //! # Architecture
@@ -151,7 +151,7 @@ impl AuthRequest for AuthRequestExtractor {
 
 /// Newtype wrapper around Axum's response builder.
 ///
-/// This wrapper is zero-cost and allows us to implement `tempered_core::AuthResponseBuilder`
+/// This wrapper is zero-cost and allows us to implement `tempered_core::ResponseBuilder`
 /// without violating the orphan rule.
 pub struct AxumResponseBuilder {
     builder: axum::http::response::Builder,

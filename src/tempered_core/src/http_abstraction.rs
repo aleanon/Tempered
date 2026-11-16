@@ -247,13 +247,6 @@ pub trait ResponseBuilder: Sized {
     fn build(self) -> Result<Self::Response, ResponseBuilderError>;
 }
 
-/// Type alias for backward compatibility
-///
-/// This allows existing code using `AuthResponseBuilder` to continue working
-/// while we transition to the more generic `ResponseBuilder` name.
-#[deprecated(since = "0.1.0", note = "Use ResponseBuilder instead")]
-pub trait AuthResponseBuilder: ResponseBuilder {}
-
 /// HTTP-specific extension methods for ResponseBuilder.
 ///
 /// These provide HTTP-specific conveniences like headers, cookies, and JSON bodies.
