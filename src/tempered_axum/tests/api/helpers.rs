@@ -338,7 +338,7 @@ async fn setup_and_connect_user_store_container() -> (ContainerAsync<postgres::P
         .await
         .expect("Failed to connect to database");
 
-    sqlx::migrate!()
+    sqlx::migrate!("../tempered_adapters/migrations")
         .run(&connection)
         .await
         .expect("Failed to migrate the database");
