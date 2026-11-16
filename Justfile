@@ -1,48 +1,44 @@
 default:
     @just --list
 
-compose name="":
-    docker compose build {{ name }}
-    docker compose down {{ name }}
-    docker compose up {{ name }} -d
+# Build every crate and example
+build:
+    cargo build --workspace
 
-compose-up:
-    docker compose -f compose.dev.yml up -d
+# Run all tests (the API tests need Docker for testcontainers)
+test *args:
+    cargo test --workspace {{ args }}
 
-compose-down:
-    docker compose -f compose.dev.yml down
+# Clippy with warnings as errors
+lint:
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-compose-build:
-    docker compose -f compose.dev.yml build
+fmt:
+    cargo fmt --all
 
-run:
-    REDIS_HOST_NAME=127.0.0.1 cd auth-service/ && cargo run
-    cd app-service/ && cargo run
+# The facade must keep compiling without the heavy backends
+check-lean:
+    cargo check -p tempered --no-default-features
 
-log name:
-    docker logs project-{{ name }}-1
+# Run an example crate: jwt, oauth, passkey, api-key
+example name:
+    cargo run -p tempered-example-{{ name }}
 
-enter name:
-    docker exec -it project-{{ name }}-1 bash
+# Start local Postgres + Redis for manual work against the real stores
+db-up:
+    docker run --name tempered-pg -e POSTGRES_PASSWORD=password -p 5432:5432 -d postgres:15.4-alpine
+    docker run --name tempered-redis -p 6379:6379 -d redis:7.0-alpine
 
-test args="":
-    cd {{ args }}/ && cargo nextest run
+db-down:
+    -docker rm -f tempered-pg tempered-redis
 
-cleanup-containers:
-    docker stop $(docker ps -q)
-    docker rm $(docker ps -aq)
-    docker volume prune -f
+# Apply the shipped migrations to DATABASE_URL
+migrate:
+    cd src/tempered_adapters && cargo sqlx migrate run
 
-remake-db-containers:
-    -docker stop ps-db redis-db
-    -docker rm ps-db redis-db
-    docker volume prune -f
-    docker run --name ps-db -e POSTGRES_PASSWORD=password -p 5432:5432 -d postgres:15.4-alpine
-    docker run --name redis-db -p "6379:6379" -d redis:7.0-alpine
-    cd auth-service/ && cargo sqlx migrate run
+# Refresh the offline sqlx query data after changing a query or migration
+sqlx-prepare:
+    cd src/tempered_adapters && cargo sqlx prepare
 
 generate-secret length="64":
     openssl rand -base64 {{ length }}
-
-connect:
-    ssh root@134.122.65.215
