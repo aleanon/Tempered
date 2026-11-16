@@ -1,98 +1,73 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository.
 
-## Project Architecture
+## What this is
 
-This is a live bootcamp project implementing a multi-service authentication system using Rust and Axum. The project consists of two main services:
+`tempered` is a composable authentication **library** for Rust (pre-1.0). A
+consumer picks one auth scheme (JWT, session, API key), enables capabilities
+(2FA, elevation/"sudo", password reset, email verification, OAuth2, passkeys),
+and the axum adapter auto-wires the matching routes.
 
-### Services Overview
-- **auth-service** (port 3000): Authentication service handling user registration, login, 2FA, JWT token management, and account deletion
-- **app-service** (port 8000): Frontend application service that consumes the auth service
+Read `ARCHITECTURE.md` for the design. Plans and their status live in `docs/`:
+`AUTH_SCHEMES_PLAN.md`, `REVIEW_CORRECTION_PLAN.md`, `FOLLOWUP_PLAN.md` (open work).
 
-### Authentication Service Architecture
-The auth-service follows a layered architecture pattern:
+## Workspace layout
 
-- **Domain Layer** (`src/domain/`): Core business entities and validation logic
-  - User management, email/password validation, authentication errors
-  - Data store traits for user and token storage abstractions
-- **Services Layer** (`src/services/`): Business logic implementations  
-  - In-memory HashMap user store and HashSet banned token store
-- **Routes Layer** (`src/routes/`): HTTP endpoint handlers
-  - REST API endpoints for signup, login, logout, verify-2fa, verify-token, delete-account
-- **Utils Layer** (`src/utils/`): Cross-cutting concerns
-  - JWT token management, configuration handling, CORS setup, authentication utilities
+Dependency direction: `tempered_axum → tempered_adapters → tempered_core`.
 
-### Key Architectural Patterns
-- **Dependency Injection**: AppState pattern for sharing services across routes
-- **Configuration Management**: Dynamic configuration reload with file watching (`utils/config.rs`)
-- **Dynamic CORS**: Environment-based CORS configuration supporting multiple origins
-- **Cookie-based Authentication**: JWT tokens stored in secure HTTP-only cookies
+- `src/tempered_core/` — domain types (`domain/`), port traits for stores and
+  clients (`ports/`), strategy traits, transport-neutral `ErrorCategory`. No web
+  or HTTP crates; keep it that way.
+- `src/tempered_adapters/` — `CredentialScheme` (+ `JwtScheme` / `SessionScheme`
+  aliases over a `TokenStrategy`), `ApiKeyScheme`, framework-agnostic `handlers/`,
+  and backends in `persistence/`, `email/`, `oauth/`, `passkey/`. No axum crates.
+- `src/tempered_axum/` — `auth_service()`, `wiring.rs` (capability slots →
+  routes), middleware, axum route shims, API integration tests in `tests/api/`.
+- `src/lib.rs` — the `tempered` facade; everything public is re-exported here.
+  Examples import from the facade only.
+- `examples/` — `quickstart.rs` (mirrored in the README), `composed_scheme.rs`,
+  and standalone crates `jwt_standalone`, `oauth_axum`, `passkey_axum`, `api_key_axum`.
 
-## Development Commands
+## Key patterns
 
-### Building Services
+- **Capability slots (typestate).** Each optional capability is a generic slot on
+  `CredentialScheme` defaulting to `()`; `supports_*` fills it and the capability
+  trait is implemented only for the filled slot. Adding a capability means a new
+  slot threaded through every impl header.
+- **Auto-wiring.** `wiring.rs` has a no-op impl for `()` and a route-mounting impl
+  for the real slot. There are no per-route opt-ins on `auth_service`, only path
+  overrides.
+- **One scheme per service.** Multiple schemes are composed by the user on their
+  own enum; do not add a library-level composite scheme.
+- **Protected user routes** go through `.validated_router(...)` /
+  `.validated_elevated_router(...)` and read `Extension<Claims>`.
+- **Stores a strategy needs for correctness** (ban list, token epoch) are
+  constructor parameters, not slots.
+
+## Commands
+
 ```bash
-# Build auth-service
-cd auth-service && cargo build
-
-# Build app-service  
-cd app-service && cargo build
+cargo build --workspace
+cargo test --workspace                 # API tests start Postgres/Redis via testcontainers: Docker must be running
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo check -p tempered --no-default-features   # the lean build must keep compiling
+cargo run -p tempered-example-jwt      # also: -example-oauth, -example-passkey, -example-api-key
+cargo run --example quickstart         # needs JWT_SECRET
 ```
 
-### Running Services Locally (Manual)
-```bash
-# Install cargo-watch for hot reloading
-cargo install cargo-watch
+`just` wraps these (`just --list`).
 
-# Run auth-service with hot reload
-cd auth-service
-cargo watch -q -c -w src/ -w assets/ -x run
+sqlx queries build offline from `src/tempered_adapters/.sqlx/` (`SQLX_OFFLINE=true`).
+After changing a query or migration, regenerate with `cargo sqlx prepare` against
+a live database. Migrations live in `src/tempered_adapters/migrations/`;
+`PostgresUserStore::new` does not run them.
 
-# Run app-service with hot reload (in separate terminal)
-cd app-service  
-cargo watch -q -c -w src/ -w assets/ -w templates/ -x run
-```
+## Conventions
 
-### Running with Docker
-```bash
-# Build and run all services
-docker compose build
-docker compose up
-```
-
-## Service Dependencies and Environment
-
-### Required Environment Variables
-- **AUTH_SERVICE_ALLOWED_ORIGINS**: Comma-separated list of allowed CORS origins for auth-service
-- **JWT_SECRET**: Secret key for JWT token signing
-- **AUTH_SERVICE_IP**: IP address for auth-service (defaults to localhost)
-- **AUTH_SERVICE_URL**: Full URL for auth-service (defaults to http://localhost:3000)
-
-### Service Communication
-- App-service communicates with auth-service via HTTP requests
-- Authentication state is maintained through JWT tokens in cookies
-- Services are orchestrated using Docker Compose with Caddy as reverse proxy
-
-### Docker Architecture
-- **auth-service**: Exposed on port 3000 internally
-- **app-service**: Exposed on port 8000 internally  
-- **caddy**: Acts as reverse proxy handling external traffic on ports 80/443
-- **Network**: All services communicate through `backend` Docker network
-
-## Testing and Development
-
-### Hot Reloading
-Both services use `cargo watch` for automatic rebuilds on file changes:
-- auth-service watches `src/` and `assets/` directories
-- app-service watches `src/`, `assets/`, and `templates/` directories
-
-### Service Endpoints
-- **auth-service**: http://localhost:3000
-- **app-service**: http://localhost:8000 (main application interface)
-
-### Key Files for Development
-- Configuration management: `auth-service/src/utils/config.rs`
-- CORS setup: `auth-service/src/utils/dynamic_cors.rs`
-- JWT handling: `auth-service/src/utils/auth.rs`
-- Main application state: `auth-service/src/app_state.rs`
+- One well-described commit per plan task/subtask (conventional-commit prefixes).
+- Cargo features `postgres`, `redis`, `oauth-client`, `postmark-email` gate the
+  heavy backends; new heavy dependencies go behind a feature.
+- In-memory `HashMap*` / `HashSet*` stores are dev/test only.
+- Secrets come from the environment. `.env` is git-ignored; `.env.example` lists
+  the keys. Never commit real values.
