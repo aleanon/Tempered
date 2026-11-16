@@ -119,8 +119,10 @@ impl TestApp {
             .change_password("/change-password")
             .delete_account("/delete-account");
 
-        let _ =
-            tokio::spawn(async { app.run(listener).await.expect("Failed to run auth-service") });
+        // Detached on purpose: the server task lives until the test runtime shuts down.
+        drop(tokio::spawn(async {
+            app.run(listener).await.expect("Failed to run auth-service")
+        }));
 
         let cookie_jar = Arc::new(Jar::default());
         let http_client = reqwest::Client::builder()

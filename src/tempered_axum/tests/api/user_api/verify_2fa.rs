@@ -17,7 +17,11 @@ struct ErrorResponse {
 
 #[derive(Deserialize)]
 struct TwoFactorAuthResponse {
+    // Never read, but deserializing it asserts the field is in the response.
+    #[allow(dead_code)]
     status: String,
+    // Never read, but deserializing it asserts the field is in the response.
+    #[allow(dead_code)]
     message: String,
     #[serde(rename = "loginAttemptId")]
     login_attempt_id: String,

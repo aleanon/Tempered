@@ -156,6 +156,9 @@ where
 {
     /// Enable elevated ("sudo") sessions from a separate store + config, lighting
     /// up [`SupportsElevation`](tempered_core::SupportsElevation).
+    // The return type spells out every capability slot on purpose: it is the
+    // typestate transition. An alias would hide which slot changes.
+    #[allow(clippy::type_complexity)]
     pub fn supports_elevation<Cfg>(
         self,
         elevated_session_store: S,

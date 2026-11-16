@@ -356,6 +356,9 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
 impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
     /// Enable OAuth2/OIDC login, lighting up [`SupportsOAuth2`] and
     /// [`tempered_core::HttpOAuth2Scheme`].
+    // The return type spells out every capability slot on purpose: it is the
+    // typestate transition. An alias would hide which slot changes.
+    #[allow(clippy::type_complexity)]
     pub fn supports_oauth<ST, ID, HC>(
         self,
         flow: OAuthFlow<ST, ID, HC>,
@@ -380,6 +383,9 @@ impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
 
 impl<U, T, F, L, R, M, O> CredentialScheme<U, T, F, L, R, M, O, ()> {
     /// Enable passkey (WebAuthn) authentication, lighting up [`SupportsPasskeys`].
+    // The return type spells out every capability slot on purpose: it is the
+    // typestate transition. An alias would hide which slot changes.
+    #[allow(clippy::type_complexity)]
     pub fn supports_passkeys<CS, ChS, V>(
         self,
         flow: PasskeyFlow<CS, ChS, V>,

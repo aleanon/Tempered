@@ -28,14 +28,9 @@ pub enum UserStoreError {
 }
 
 impl PartialEq for UserStoreError {
+    /// Equal when the variants match; an `UnexpectedError` message is ignored.
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::UserAlreadyExists, Self::UserAlreadyExists) => true,
-            (Self::UserNotFound, Self::UserNotFound) => true,
-            (Self::IncorrectPassword, Self::IncorrectPassword) => true,
-            (Self::UnexpectedError(_), Self::UnexpectedError(_)) => true,
-            _ => false,
-        }
+        std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }
 
@@ -120,16 +115,9 @@ pub enum TwoFaCodeStoreError {
 
 #[cfg(debug_assertions)]
 impl PartialEq for TwoFaCodeStoreError {
+    /// Equal when the variants match; an `UnexpectedError` message is ignored.
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::UserNotFound, Self::UserNotFound) => true,
-            (Self::InvalidAttemptId, Self::InvalidAttemptId) => true,
-            (Self::Invalid2FACode, Self::Invalid2FACode) => true,
-            (Self::TooManyAttempts, Self::TooManyAttempts) => true,
-            (Self::CodeExpired, Self::CodeExpired) => true,
-            (Self::UnexpectedError(_), Self::UnexpectedError(_)) => true,
-            _ => false,
-        }
+        std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }
 

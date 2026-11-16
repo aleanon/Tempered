@@ -66,6 +66,9 @@ where
     /// The elevated strategy shares the primary strategy's token-epoch store,
     /// so revoking all of a user's tokens (password change, account deletion)
     /// kills their elevated tokens too.
+    // The return type spells out every capability slot on purpose: it is the
+    // typestate transition. An alias would hide which slot changes.
+    #[allow(clippy::type_complexity)]
     pub fn supports_elevation<Cfg>(
         self,
         elevated_banned_token_store: B,

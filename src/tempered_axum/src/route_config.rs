@@ -4,6 +4,12 @@ use axum::{Router, routing::post};
 use tempered_core::{AuthValidator, HttpElevationScheme, SupportsElevation};
 use crate::IntoStatusMessage;
 
+/// Applies the elevated-token middleware to a router. See [`apply_elevated_validation`].
+pub type ElevatedLayerFn<Scheme> = fn(Router<Scheme>, Scheme) -> Router<Scheme>;
+
+/// Registers the logout route at a path. See [`register_logout_with_elevation`].
+pub type LogoutRegisterFn<Scheme> = fn(Router<Scheme>, &str) -> Router<Scheme>;
+
 pub struct Routers<Scheme> {
     pub main_router: Router<Scheme>,
     pub validated_router: Router<Scheme>,
@@ -13,13 +19,13 @@ pub struct Routers<Scheme> {
     /// `HttpElevationScheme` bound) can call it; the bound is only required to
     /// *take* the pointer, which the elevation builder methods do. See
     /// [`apply_elevated_validation`].
-    pub elevated_layer: Option<fn(Router<Scheme>, Scheme) -> Router<Scheme>>,
+    pub elevated_layer: Option<ElevatedLayerFn<Scheme>>,
     /// Registers the logout route. When elevation is configured this is swapped
     /// for the elevation-aware variant (which also revokes the elevated token),
     /// again via a `fn` pointer so the base `logout_route` can install it without
     /// the `HttpElevationScheme` bound. `None` → plain logout. See
     /// [`register_logout_with_elevation`].
-    pub logout_register: Option<fn(Router<Scheme>, &str) -> Router<Scheme>>,
+    pub logout_register: Option<LogoutRegisterFn<Scheme>>,
 }
 
 impl<Scheme> Routers<Scheme>
