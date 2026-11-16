@@ -22,9 +22,9 @@ pub mod verify_token;
 
 pub use change_password::handle_change_password;
 pub use complete_password_reset::handle_complete_password_reset;
-pub use error::HandlerError;
 pub use delete_account::handle_delete_account;
 pub use elevate::handle_elevate;
+pub use error::HandlerError;
 pub use initiate_password_reset::handle_initiate_password_reset;
 pub use login::handle_login;
 pub use logout::{handle_logout, handle_logout_with_elevation};

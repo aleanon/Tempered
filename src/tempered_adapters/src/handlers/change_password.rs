@@ -2,7 +2,9 @@
 //!
 //! Password changes are sensitive operations that typically require elevated authentication.
 
-use tempered_core::{ResponseBuilder, HttpResponseBuilderExt, Email, Password, SupportsPasswordChange};
+use tempered_core::{
+    Email, HttpResponseBuilderExt, Password, ResponseBuilder, SupportsPasswordChange,
+};
 
 /// Framework-agnostic password change handler.
 ///
@@ -44,5 +46,6 @@ where
             "status": "success",
             "message": "Password changed successfully"
         }))
-        .build().map_err(|e| e.message)
+        .build()
+        .map_err(|e| e.message)
 }

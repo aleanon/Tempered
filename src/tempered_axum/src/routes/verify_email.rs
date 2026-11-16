@@ -1,8 +1,8 @@
+use crate::IntoStatusMessage;
 use axum::{Json, extract::State, response::IntoResponse};
 use serde::Deserialize;
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
-use tempered_core::{RequiresEmailVerification};
-use crate::IntoStatusMessage;
+use tempered_core::RequiresEmailVerification;
 
 use crate::adapters::into_axum_response;
 

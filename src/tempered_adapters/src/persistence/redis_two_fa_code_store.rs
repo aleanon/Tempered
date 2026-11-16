@@ -132,5 +132,9 @@ fn get_key(email: &Email) -> String {
 }
 
 fn get_attempts_key(email: &Email) -> String {
-    format!("{}{}", TWO_FA_ATTEMPTS_PREFIX, email.as_ref().expose_secret())
+    format!(
+        "{}{}",
+        TWO_FA_ATTEMPTS_PREFIX,
+        email.as_ref().expose_secret()
+    )
 }

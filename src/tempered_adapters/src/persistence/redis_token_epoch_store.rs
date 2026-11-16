@@ -39,11 +39,7 @@ impl TokenEpochStore for RedisTokenEpochStore {
             .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
     }
 
-    async fn revoke_before(
-        &self,
-        email: &Email,
-        cutoff: i64,
-    ) -> Result<(), TokenEpochStoreError> {
+    async fn revoke_before(&self, email: &Email, cutoff: i64) -> Result<(), TokenEpochStoreError> {
         let key = get_key(email);
         let mut client = self.client.write().await;
 

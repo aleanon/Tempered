@@ -52,7 +52,10 @@ async fn should_invalidate_existing_sessions_after_password_change() {
 
     let new_password = serde_json::json!({ "new_password": "newpassword123" });
     assert_eq!(
-        app.post_change_password(&new_password).await.status().as_u16(),
+        app.post_change_password(&new_password)
+            .await
+            .status()
+            .as_u16(),
         200
     );
 

@@ -36,10 +36,7 @@ where
 
     // The body email is attacker-controlled and the session subject is secret,
     // so compare in constant time.
-    if !constant_time_eq(
-        claims.sub.expose_secret(),
-        email.as_ref().expose_secret(),
-    ) {
+    if !constant_time_eq(claims.sub.expose_secret(), email.as_ref().expose_secret()) {
         return Err(ElevateError::NotSessionOwner);
     }
 

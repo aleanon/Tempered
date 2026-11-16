@@ -11,7 +11,10 @@ where
     S: RequiresEmailVerification,
     B: ResponseBuilder,
 {
-    scheme.verify_email(token).await.map_err(HandlerError::Auth)?;
+    scheme
+        .verify_email(token)
+        .await
+        .map_err(HandlerError::Auth)?;
 
     Ok(builder
         .status(200)

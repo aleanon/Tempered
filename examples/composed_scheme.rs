@@ -38,14 +38,14 @@ mod composed {
     // Stand-ins for the schemes from Phases 1–4. Each must expose its Token,
     // Validator, Claims and error types as public, nameable types so they can
     // be wrapped here.
+    use tempered_adapters::authentication::api_key_scheme::{ApiKeyId, ApiKeyScheme};
     use tempered_adapters::authentication::jwt_scheme::{JwtAuthError, JwtScheme, JwtToken};
     use tempered_adapters::authentication::session_scheme::{SessionId, SessionScheme};
-    use tempered_adapters::authentication::api_key_scheme::{ApiKeyId, ApiKeyScheme};
 
     // Concrete store generics elided as `..` for readability.
-    type Jwt = JwtScheme</* .. */>;
-    type Session = SessionScheme</* .. */>;
-    type ApiKey = ApiKeyScheme</* .. */>;
+    type Jwt = JwtScheme;
+    type Session = SessionScheme;
+    type ApiKey = ApiKeyScheme;
 
     // === The composed scheme ===============================================
     #[derive(Clone)]

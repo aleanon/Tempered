@@ -1,5 +1,6 @@
 //! Axum-specific 2FA verification route.
 
+use crate::IntoStatusMessage;
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
@@ -11,7 +12,6 @@ use tempered_adapters::{
     http::HttpResponseBuilder,
 };
 use tempered_core::{HttpAuthenticationScheme, SupportsTwoFactor};
-use crate::IntoStatusMessage;
 
 use crate::adapters::into_axum_response;
 
@@ -47,7 +47,10 @@ where
                 Verify2FaError::VerificationFailed(err) => err.into_status_message(),
                 Verify2FaError::ResponseBuild(err) => {
                     tracing::error!(error = %err, "response builder failed (scheme bug)");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "Internal error".to_string())
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Internal error".to_string(),
+                    )
                 }
             };
             (status, Json(serde_json::json!({ "error": message }))).into_response()

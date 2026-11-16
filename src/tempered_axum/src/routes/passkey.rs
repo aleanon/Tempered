@@ -5,15 +5,13 @@
 //! authenticator response). A successful `login/finish` sets the scheme's auth
 //! cookie, exactly like a password login.
 
+use crate::IntoStatusMessage;
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
 use serde_json::json;
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
-use tempered_core::{
-    Email, HttpAuthenticationScheme, SupportsPasskeys, WebAuthnChallenge,
-};
-use crate::IntoStatusMessage;
+use tempered_core::{Email, HttpAuthenticationScheme, SupportsPasskeys, WebAuthnChallenge};
 
 use crate::adapters::into_axum_response;
 

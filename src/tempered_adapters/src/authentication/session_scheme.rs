@@ -14,17 +14,15 @@
 //! session scheme *without* `supports_2fa` now errors (consistent with JWT)
 //! rather than being granted a session immediately.
 
-use async_trait::async_trait;
 use crate::cookie_util::cookie_value;
+use async_trait::async_trait;
 use tempered_core::{
     AuthRequest, AuthValidator, ClassifyError, Email, ErrorCategory, SessionId, SessionStore,
     SessionStoreError, UserStore,
 };
 use thiserror::Error;
 
-use crate::authentication::credential_scheme::{
-    CredentialScheme, ElevatedCapabilities, Elevation,
-};
+use crate::authentication::credential_scheme::{CredentialScheme, ElevatedCapabilities, Elevation};
 use crate::authentication::token_strategy::TokenStrategy;
 
 // ============================================================================
@@ -268,8 +266,8 @@ mod tests {
     use crate::persistence::hashmap_user_store::HashMapUserStore;
     use secrecy::Secret;
     use tempered_core::{
-        AuthValidator, AuthenticationScheme, Email, LoginOutcome, Password, SupportsElevation, User,
-        UserStore,
+        AuthValidator, AuthenticationScheme, Email, LoginOutcome, Password, SupportsElevation,
+        User, UserStore,
     };
 
     fn config() -> SessionConfig {

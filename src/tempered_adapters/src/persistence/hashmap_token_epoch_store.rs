@@ -29,11 +29,7 @@ impl TokenEpochStore for HashMapTokenEpochStore {
         Ok(self.cutoffs.read().await.get(email).copied())
     }
 
-    async fn revoke_before(
-        &self,
-        email: &Email,
-        cutoff: i64,
-    ) -> Result<(), TokenEpochStoreError> {
+    async fn revoke_before(&self, email: &Email, cutoff: i64) -> Result<(), TokenEpochStoreError> {
         let mut cutoffs = self.cutoffs.write().await;
         let entry = cutoffs.entry(email.clone()).or_insert(cutoff);
         // Never lower an existing cutoff (contract).

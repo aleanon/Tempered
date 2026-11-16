@@ -9,9 +9,9 @@
 
 use axum::{Extension, Router, routing::get};
 use tempered::{
-    Claims, Email, EmailClient, ExposeSecret, HashMapPasswordResetTokenStore, HashMapTokenEpochStore,
-    HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme,
-    Secret, async_trait, auth_service,
+    Claims, Email, EmailClient, ExposeSecret, HashMapPasswordResetTokenStore,
+    HashMapTokenEpochStore, HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
+    JwtAuthConfig, JwtScheme, Secret, async_trait, auth_service,
 };
 use tracing_error::ErrorLayer;
 use tracing_subscriber::{
@@ -69,15 +69,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         banned_token_store,
         HashMapTokenEpochStore::new(),
     )
-        .supports_registration()
-        .supports_2fa(two_fa_code_store, email_client.clone())
-        .supports_elevation(elevated_banned_token_store, elevated_jwt_config, |elevated| {
+    .supports_registration()
+    .supports_2fa(two_fa_code_store, email_client.clone())
+    .supports_elevation(
+        elevated_banned_token_store,
+        elevated_jwt_config,
+        |elevated| {
             elevated
                 .supports_password_change()
                 .supports_account_deletion()
-        })
-        .supports_password_reset(password_reset_token_store, email_client)
-        .build();
+        },
+    )
+    .supports_password_reset(password_reset_token_store, email_client)
+    .build();
 
     let auth_service = auth_service(jwt_scheme, ASSETS.to_string())
         // Keep the flat elevation paths this frontend expects (defaults would be

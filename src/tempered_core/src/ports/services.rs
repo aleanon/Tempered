@@ -77,11 +77,8 @@ pub struct VerifiedAssertion {
 /// core library free of WebAuthn internals.
 pub trait WebAuthnVerifier: Send + Sync {
     /// Build the `PublicKeyCredentialCreationOptions` to send to the browser.
-    fn start_registration(
-        &self,
-        email: &Email,
-        challenge: &WebAuthnChallenge,
-    ) -> serde_json::Value;
+    fn start_registration(&self, email: &Email, challenge: &WebAuthnChallenge)
+    -> serde_json::Value;
 
     /// Verify the attestation returned by the browser.
     fn verify_registration(

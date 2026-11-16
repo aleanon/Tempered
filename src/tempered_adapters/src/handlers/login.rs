@@ -43,7 +43,10 @@ where
     B: ResponseBuilder,
 {
     // Call the scheme's login method (domain logic)
-    let outcome = scheme.login(credentials).await.map_err(HandlerError::Auth)?;
+    let outcome = scheme
+        .login(credentials)
+        .await
+        .map_err(HandlerError::Auth)?;
 
     // Let the scheme decide how to deliver the token via HTTP; a builder error
     // is a scheme bug (propagated, not panicked).

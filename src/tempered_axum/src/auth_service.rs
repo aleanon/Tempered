@@ -8,12 +8,12 @@
 //! own router with [`validated_router`](AuthService::validated_router) /
 //! [`validated_elevated_router`](AuthService::validated_elevated_router).
 
+use crate::IntoStatusMessage;
 use axum::{Router, middleware};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
     SupportsElevation,
 };
-use crate::IntoStatusMessage;
 use tokio::net::TcpListener;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;
@@ -139,10 +139,12 @@ where
         }
 
         // 3. Apply the login middleware to the validated bucket and merge.
-        let validated = routers.validated_router.layer(middleware::from_fn_with_state(
-            scheme.clone(),
-            crate::middleware::validate_token::<S>,
-        ));
+        let validated = routers
+            .validated_router
+            .layer(middleware::from_fn_with_state(
+                scheme.clone(),
+                crate::middleware::validate_token::<S>,
+            ));
         let router = routers.main_router.merge(validated);
 
         // 4. Protect + merge the elevated bucket, if any (via the stored applier).

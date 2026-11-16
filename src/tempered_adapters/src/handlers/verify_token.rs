@@ -1,6 +1,6 @@
 //! Framework-agnostic token verification handler.
 
-use tempered_core::{ResponseBuilder, HttpResponseBuilderExt};
+use tempered_core::{HttpResponseBuilderExt, ResponseBuilder};
 
 /// Framework-agnostic token verification handler.
 ///
@@ -24,5 +24,6 @@ where
     builder
         .status(200)
         .json_body(serde_json::json!({"status": "valid"}))
-        .build().map_err(|e| e.message)
+        .build()
+        .map_err(|e| e.message)
 }

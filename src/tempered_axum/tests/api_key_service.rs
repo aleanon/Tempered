@@ -13,8 +13,8 @@ use axum::{
 };
 use tempered_adapters::authentication::api_key_scheme::ApiKeyScheme;
 use tempered_adapters::persistence::HashMapApiKeyStore;
-use tempered_core::{Email, SupportsApiKeyIssuance};
 use tempered_axum::auth_service::auth_service;
+use tempered_core::{Email, SupportsApiKeyIssuance};
 use tower::ServiceExt; // for `oneshot`
 
 fn owner() -> Email {

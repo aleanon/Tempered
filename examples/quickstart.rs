@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // auto-wires its route(s) in `auth_service` below — there are no route
     // opt-ins to remember.
     let scheme = JwtScheme::new(
-        HashMapUserStore::new(),        // swap for PostgresUserStore in production
+        HashMapUserStore::new(), // swap for PostgresUserStore in production
         jwt_config,
         HashSetBannedTokenStore::new(), // swap for RedisBannedTokenStore in production
         HashMapTokenEpochStore::new(),  // swap for RedisTokenEpochStore in production

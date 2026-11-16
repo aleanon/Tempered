@@ -37,8 +37,8 @@ pub use redis_token_epoch_store::RedisTokenEpochStore;
 pub use redis_two_fa_code_store::RedisTwoFaCodeStore;
 
 pub use hashmap_api_key_store::HashMapApiKeyStore;
-pub use hashmap_email_verification_token_store::HashMapEmailVerificationTokenStore;
 pub use hashmap_challenge_store::HashMapChallengeStore;
+pub use hashmap_email_verification_token_store::HashMapEmailVerificationTokenStore;
 pub use hashmap_oauth_identity_store::HashMapOAuthIdentityStore;
 pub use hashmap_oauth_state_store::HashMapOAuthStateStore;
 pub use hashmap_passkey_credential_store::HashMapPasskeyCredentialStore;

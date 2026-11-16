@@ -34,10 +34,7 @@ impl<E: ClassifyError> ClassifyError for HandlerError<E> {
             HandlerError::Auth(e) => e.classify(),
             HandlerError::Response(e) => {
                 tracing::error!(error = %e, "response builder failed (scheme bug)");
-                (
-                    ErrorCategory::Internal,
-                    "Internal error".to_string(),
-                )
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
         }
     }

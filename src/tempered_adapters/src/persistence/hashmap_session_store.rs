@@ -24,11 +24,7 @@ impl HashMapSessionStore {
 
 #[async_trait::async_trait]
 impl SessionStore for HashMapSessionStore {
-    async fn create_session(
-        &self,
-        id: SessionId,
-        email: Email,
-    ) -> Result<(), SessionStoreError> {
+    async fn create_session(&self, id: SessionId, email: Email) -> Result<(), SessionStoreError> {
         self.sessions.write().await.insert(id, email);
         Ok(())
     }

@@ -24,9 +24,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tempered_core::{
     ApiKeyId, ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, AuthRequest,
-    AuthValidator, AuthenticationScheme, Email, HttpAuthenticationScheme, HttpResponseBuilderExt,
-    ClassifyError, ErrorCategory, LoginOutcome, ResponseBuilder, ResponseBuilderError, SupportsApiKeyIssuance,
-    constant_time_eq, domain::api_key::split_presented_key,
+    AuthValidator, AuthenticationScheme, ClassifyError, Email, ErrorCategory,
+    HttpAuthenticationScheme, HttpResponseBuilderExt, LoginOutcome, ResponseBuilder,
+    ResponseBuilderError, SupportsApiKeyIssuance, constant_time_eq,
+    domain::api_key::split_presented_key,
 };
 use thiserror::Error;
 
@@ -158,13 +159,11 @@ async fn validate_presented_key<S: ApiKeyStore>(
 
 fn extract_from_headers(headers: &http::HeaderMap, header_name: &str) -> Option<String> {
     if let Some(v) = headers.get(header_name).and_then(|v| v.to_str().ok())
-        && !v.is_empty() {
-            return Some(v.to_string());
-        }
-    let auth = headers
-        .get(http::header::AUTHORIZATION)?
-        .to_str()
-        .ok()?;
+        && !v.is_empty()
+    {
+        return Some(v.to_string());
+    }
+    let auth = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
     auth.strip_prefix("Bearer ")
         .or_else(|| auth.strip_prefix("bearer "))
         .map(|k| k.to_string())
@@ -244,9 +243,10 @@ where
 
     fn extract_token_from_request<Req: AuthRequest>(&self, req: &Req) -> Option<Self::Token> {
         if let Some(v) = req.header(&self.header_name)
-            && !v.is_empty() {
-                return Some(ApiKeyToken(v.to_string()));
-            }
+            && !v.is_empty()
+        {
+            return Some(ApiKeyToken(v.to_string()));
+        }
         let auth = req.header("authorization")?;
         auth.strip_prefix("Bearer ")
             .or_else(|| auth.strip_prefix("bearer "))

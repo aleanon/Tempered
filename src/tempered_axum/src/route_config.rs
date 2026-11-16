@@ -1,8 +1,8 @@
 //! Route buckets ([`Routers`]) + the elevation appliers the auto-wiring uses.
 
+use crate::IntoStatusMessage;
 use axum::{Router, routing::post};
 use tempered_core::{AuthValidator, HttpElevationScheme, SupportsElevation};
-use crate::IntoStatusMessage;
 
 /// Applies the elevated-token middleware to a router. See [`apply_elevated_validation`].
 pub type ElevatedLayerFn<Scheme> = fn(Router<Scheme>, Scheme) -> Router<Scheme>;
@@ -70,8 +70,5 @@ pub fn register_logout_with_elevation<S>(validated: Router<S>, logout_path: &str
 where
     S: HttpElevationScheme + SupportsElevation + Clone + Send + Sync + 'static,
 {
-    validated.route(
-        logout_path,
-        post(crate::routes::logout_with_elevation::<S>),
-    )
+    validated.route(logout_path, post(crate::routes::logout_with_elevation::<S>))
 }

@@ -17,16 +17,16 @@ use async_trait::async_trait;
 use secrecy::Secret;
 use serde::Deserialize;
 use tempered_core::{
-    AuthRequest, AuthorizationRequest, ChallengeStore, Email, EmailClient,
+    AuthRequest, AuthorizationRequest, ChallengeStore, ClassifyError, Email, EmailClient,
     EmailVerificationStoreError, EmailVerificationToken, EmailVerificationTokenStore,
-    HttpAuthenticationScheme, HttpOAuth2Scheme, ClassifyError, ErrorCategory, HttpResponseBuilderExt,
+    ErrorCategory, HttpAuthenticationScheme, HttpOAuth2Scheme, HttpResponseBuilderExt,
     OAuthHttpClient, OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, Password,
     PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
     RequiresEmailVerification, ResponseBuilder, SupportsAccountDeletion, SupportsElevation,
     SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset,
-    SupportsTokenRevocation, TwoFaAttemptId,
-    TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError, TwoFaError, User, UserError, UserStore,
-    UserStoreError, ValidatedUser, WebAuthnChallenge, WebAuthnVerifier,
+    SupportsTokenRevocation, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError,
+    TwoFaError, User, UserError, UserStore, UserStoreError, ValidatedUser, WebAuthnChallenge,
+    WebAuthnVerifier,
     strategies::authenticator::{
         AuthenticationScheme, LoginOutcome, SupportsRegistration, SupportsTwoFactor,
     },
@@ -605,7 +605,11 @@ where
                 Ok(LoginOutcome::Requires2Fa { email, attempt_id })
             }
             ValidatedUser::No2Fa(email) => {
-                let token = self.tokens.issue(&email).await.map_err(CredentialError::Token)?;
+                let token = self
+                    .tokens
+                    .issue(&email)
+                    .await
+                    .map_err(CredentialError::Token)?;
                 Ok(LoginOutcome::Success(token))
             }
         }
@@ -676,7 +680,9 @@ where
         email: Email,
         new_password: Password,
     ) -> Result<(), Self::PasswordChangeError> {
-        self.user_store.set_new_password(&email, new_password).await?;
+        self.user_store
+            .set_new_password(&email, new_password)
+            .await?;
         // A password change must strand whoever was holding the old password's
         // sessions — revoke every outstanding token (all devices).
         self.tokens
@@ -766,9 +772,16 @@ where
         attempt_id: TwoFaAttemptId,
         code: TwoFaCode,
     ) -> Result<Self::Token, Self::TwoFactorError> {
-        self.two_fa.store.validate(&email, &attempt_id, &code).await?;
+        self.two_fa
+            .store
+            .validate(&email, &attempt_id, &code)
+            .await?;
         self.two_fa.store.delete(&email).await?;
-        Ok(self.tokens.issue(&email).await.map_err(CredentialError::Token)?)
+        Ok(self
+            .tokens
+            .issue(&email)
+            .await
+            .map_err(CredentialError::Token)?)
     }
 }
 
@@ -924,7 +937,9 @@ where
             .await
             .map_err(|_| CredentialError::InvalidResetToken)?;
 
-        self.user_store.set_new_password(&email, new_password).await?;
+        self.user_store
+            .set_new_password(&email, new_password)
+            .await?;
 
         // A reset is a password change — typically *because* the account may
         // be compromised — so strand every outstanding session.
@@ -992,10 +1007,7 @@ where
     }
 
     #[tracing::instrument(name = "CredentialScheme::is_email_verified", skip(self))]
-    async fn is_email_verified(
-        &self,
-        email: &Email,
-    ) -> Result<bool, Self::EmailVerificationError> {
+    async fn is_email_verified(&self, email: &Email) -> Result<bool, Self::EmailVerificationError> {
         Ok(self.email_verify.store.is_verified(email).await?)
     }
 }
@@ -1022,10 +1034,7 @@ where
     type OAuth2Error = CredentialError<T::Error>;
 
     #[tracing::instrument(name = "CredentialScheme::begin_oauth", skip(self))]
-    async fn begin_oauth(
-        &self,
-        provider: &str,
-    ) -> Result<AuthorizationRequest, Self::OAuth2Error> {
+    async fn begin_oauth(&self, provider: &str) -> Result<AuthorizationRequest, Self::OAuth2Error> {
         Ok(self.oauth.flow.begin(provider).await?)
     }
 
@@ -1044,7 +1053,11 @@ where
             .flow
             .complete(provider, code, query_state, cookie_state)
             .await?;
-        Ok(self.tokens.issue(&email).await.map_err(CredentialError::Token)?)
+        Ok(self
+            .tokens
+            .issue(&email)
+            .await
+            .map_err(CredentialError::Token)?)
     }
 }
 
@@ -1135,7 +1148,10 @@ where
         Ok(self.passkeys.flow.start_registration(email).await?)
     }
 
-    #[tracing::instrument(name = "CredentialScheme::finish_passkey_registration", skip(self, response))]
+    #[tracing::instrument(
+        name = "CredentialScheme::finish_passkey_registration",
+        skip(self, response)
+    )]
     async fn finish_passkey_registration(
         &self,
         challenge: WebAuthnChallenge,
@@ -1156,7 +1172,10 @@ where
         Ok(self.passkeys.flow.start_authentication(email).await?)
     }
 
-    #[tracing::instrument(name = "CredentialScheme::finish_passkey_authentication", skip(self, response))]
+    #[tracing::instrument(
+        name = "CredentialScheme::finish_passkey_authentication",
+        skip(self, response)
+    )]
     async fn finish_passkey_authentication(
         &self,
         challenge: WebAuthnChallenge,
@@ -1167,7 +1186,11 @@ where
             .flow
             .finish_authentication(challenge, response)
             .await?;
-        Ok(self.tokens.issue(&email).await.map_err(CredentialError::Token)?)
+        Ok(self
+            .tokens
+            .issue(&email)
+            .await
+            .map_err(CredentialError::Token)?)
     }
 }
 
@@ -1251,10 +1274,9 @@ where
                 ErrorCategory::Unauthorized,
                 "Invalid email or password".to_string(),
             ),
-            CredentialError::UserStoreError(UserStoreError::UserAlreadyExists) => (
-                ErrorCategory::Conflict,
-                "User already exists".to_string(),
-            ),
+            CredentialError::UserStoreError(UserStoreError::UserAlreadyExists) => {
+                (ErrorCategory::Conflict, "User already exists".to_string())
+            }
 
             CredentialError::TwoFaError(e) => (ErrorCategory::Unauthorized, e.to_string()),
             // Distinct, safe-to-reveal signal: the code is burned and the user
@@ -1285,24 +1307,15 @@ where
 
             CredentialError::UserStoreError(e) => {
                 tracing::error!(error = %e, "user store error");
-                (
-                    ErrorCategory::Internal,
-                    "Internal error".to_string(),
-                )
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
             CredentialError::EmailError(e) => {
                 tracing::error!(error = %e, "email send error");
-                (
-                    ErrorCategory::Internal,
-                    "Internal error".to_string(),
-                )
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
             CredentialError::PasswordResetTokenStoreError(e) => {
                 tracing::error!(error = %e, "password reset token store error");
-                (
-                    ErrorCategory::Internal,
-                    "Internal error".to_string(),
-                )
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
 
             CredentialError::InvalidVerificationToken => (
@@ -1311,10 +1324,7 @@ where
             ),
             CredentialError::EmailVerificationStoreError(e) => {
                 tracing::error!(error = %e, "email verification store error");
-                (
-                    ErrorCategory::Internal,
-                    "Internal error".to_string(),
-                )
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
 
             CredentialError::OAuth(e) => e.classify(),

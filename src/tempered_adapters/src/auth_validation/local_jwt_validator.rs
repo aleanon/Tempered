@@ -6,7 +6,9 @@ use cookie::{Cookie, SameSite};
 use jsonwebtoken::{DecodingKey, EncodingKey, Validation, decode, encode};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
-use tempered_core::{AuthValidator, BannedTokenStore, ClassifyError, Email, ErrorCategory, TokenEpochStore};
+use tempered_core::{
+    AuthValidator, BannedTokenStore, ClassifyError, Email, ErrorCategory, TokenEpochStore,
+};
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -107,10 +109,7 @@ impl ClassifyError for TokenAuthError {
             }
             TokenAuthError::UnexpectedError(msg) => {
                 tracing::error!(error = %msg, "unexpected token error");
-                (
-                    ErrorCategory::Internal,
-                    "Internal error".to_string(),
-                )
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
         }
     }
@@ -168,7 +167,10 @@ pub fn create_auth_cookie(
 }
 
 // Create JWT auth token
-pub fn generate_auth_token(email: &Email, config: &JwtAuthConfig) -> Result<String, TokenAuthError> {
+pub fn generate_auth_token(
+    email: &Email,
+    config: &JwtAuthConfig,
+) -> Result<String, TokenAuthError> {
     let delta = chrono::Duration::try_seconds(config.token_ttl_in_seconds as i64).ok_or(
         TokenAuthError::UnexpectedError("Failed to create auth token duration".to_string()),
     )?;
@@ -399,7 +401,8 @@ mod tests {
         let config = jwt_auth_config();
         let token = "invalid_token".to_owned();
         let banned_token_store = HashSetBannedTokenStore::default();
-        let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &config).await;
+        let result =
+            validate_auth_token(&token, &banned_token_store, &epoch_store(), &config).await;
         assert!(result.is_err());
     }
 
@@ -479,7 +482,13 @@ mod tests {
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
         let token = generate_auth_token(&email, &issuing_config).unwrap();
-        let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &validating_config).await;
+        let result = validate_auth_token(
+            &token,
+            &banned_token_store,
+            &epoch_store(),
+            &validating_config,
+        )
+        .await;
         assert!(result.is_err());
     }
 
@@ -492,7 +501,13 @@ mod tests {
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
         let token = generate_auth_token(&email, &issuing_config).unwrap();
-        let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &validating_config).await;
+        let result = validate_auth_token(
+            &token,
+            &banned_token_store,
+            &epoch_store(),
+            &validating_config,
+        )
+        .await;
         assert!(result.is_err());
     }
 
@@ -504,7 +519,8 @@ mod tests {
         let token = generate_auth_token(&email, &config).unwrap();
 
         banned_token_store.ban_token(token.clone()).await.unwrap();
-        let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &config).await;
+        let result =
+            validate_auth_token(&token, &banned_token_store, &epoch_store(), &config).await;
         assert!(result.is_err());
     }
 }

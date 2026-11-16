@@ -161,8 +161,7 @@ pub trait SupportsOAuth2: AuthenticationScheme {
     ///
     /// Returns the provider authorize URL plus the anti-CSRF `state` the delivery
     /// layer must bind to the initiating browser (see [`AuthorizationRequest`]).
-    async fn begin_oauth(&self, provider: &str)
-    -> Result<AuthorizationRequest, Self::OAuth2Error>;
+    async fn begin_oauth(&self, provider: &str) -> Result<AuthorizationRequest, Self::OAuth2Error>;
 
     /// Leg 2: complete the callback and issue this scheme's primary token.
     ///
@@ -396,10 +395,7 @@ pub trait RequiresEmailVerification: AuthenticationScheme {
     async fn verify_email(&self, token: String) -> Result<(), Self::EmailVerificationError>;
 
     /// Returns `true` if the given email address has been verified.
-    async fn is_email_verified(
-        &self,
-        email: &Email,
-    ) -> Result<bool, Self::EmailVerificationError>;
+    async fn is_email_verified(&self, email: &Email) -> Result<bool, Self::EmailVerificationError>;
 }
 
 // ============================================================================

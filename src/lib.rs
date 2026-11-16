@@ -117,17 +117,16 @@ pub use tempered_adapters::{
 };
 
 // Feature-gated heavy backends (see the crate features in Cargo.toml).
+#[cfg(feature = "postmark-email")]
+pub use tempered_adapters::email::PostmarkEmailClient;
+#[cfg(feature = "oauth-client")]
+pub use tempered_adapters::oauth::ReqwestOAuthHttpClient;
 #[cfg(feature = "postgres")]
 pub use tempered_adapters::persistence::PostgresUserStore;
 #[cfg(feature = "redis")]
 pub use tempered_adapters::persistence::{
-    RedisBannedTokenStore, RedisPasswordResetTokenStore, RedisTokenEpochStore,
-    RedisTwoFaCodeStore,
+    RedisBannedTokenStore, RedisPasswordResetTokenStore, RedisTokenEpochStore, RedisTwoFaCodeStore,
 };
-#[cfg(feature = "oauth-client")]
-pub use tempered_adapters::oauth::ReqwestOAuthHttpClient;
-#[cfg(feature = "postmark-email")]
-pub use tempered_adapters::email::PostmarkEmailClient;
 
 // ============================================================================
 // Axum service layer

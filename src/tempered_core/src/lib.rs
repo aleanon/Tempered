@@ -47,12 +47,11 @@ pub use strategies::{
     },
 };
 
+pub use error::{ClassifyError, ErrorCategory};
 pub use http_abstraction::{
-    AuthRequest, AuthResponseHelpers, HttpResponseBuilderExt, ResponseBuilder,
-    ResponseBuilderError,
+    AuthRequest, AuthResponseHelpers, HttpResponseBuilderExt, ResponseBuilder, ResponseBuilderError,
 };
 pub use http_authentication_scheme::{
     HttpAuthenticationScheme, HttpElevationScheme, HttpOAuth2Scheme,
 };
-pub use error::{ClassifyError, ErrorCategory};
 pub use util::constant_time_eq;

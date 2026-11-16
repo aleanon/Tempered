@@ -2,6 +2,7 @@
 //!
 //! Provides middleware for validating tokens and extracting claims.
 
+use crate::IntoStatusMessage;
 use axum::{
     Json,
     body::Body,
@@ -9,10 +10,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use tempered_core::{
-    AuthValidator, AuthenticationScheme, HttpElevationScheme, SupportsElevation,
-};
-use crate::IntoStatusMessage;
+use tempered_core::{AuthValidator, AuthenticationScheme, HttpElevationScheme, SupportsElevation};
 
 /// Middleware that validates a regular token and extracts claims into the request extensions.
 ///

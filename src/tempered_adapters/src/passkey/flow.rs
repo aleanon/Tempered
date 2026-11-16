@@ -11,9 +11,9 @@
 
 use rand::RngCore;
 use tempered_core::{
-    ClassifyError, ErrorCategory,
-    ChallengeStore, ChallengeStoreError, CredentialId, Email, PasskeyCredential,
-    PasskeyCredentialStore, PasskeyStoreError, WebAuthnChallenge, WebAuthnError, WebAuthnVerifier,
+    ChallengeStore, ChallengeStoreError, ClassifyError, CredentialId, Email, ErrorCategory,
+    PasskeyCredential, PasskeyCredentialStore, PasskeyStoreError, WebAuthnChallenge, WebAuthnError,
+    WebAuthnVerifier,
 };
 use thiserror::Error;
 
@@ -96,7 +96,9 @@ where
 
         let challenge = random_challenge();
         let options = self.verifier.start_authentication(&allowed, &challenge);
-        self.challenge_store.store_challenge(challenge, email).await?;
+        self.challenge_store
+            .store_challenge(challenge, email)
+            .await?;
         Ok(options)
     }
 
@@ -179,16 +181,12 @@ impl ClassifyError for PasskeyFlowError {
                 ErrorCategory::Unauthorized,
                 "Unknown credential".to_string(),
             ),
-            PasskeyFlowError::Credential(e) => {
-                (ErrorCategory::Internal, e.to_string())
-            }
+            PasskeyFlowError::Credential(e) => (ErrorCategory::Internal, e.to_string()),
             PasskeyFlowError::Challenge(ChallengeStoreError::ChallengeNotFound) => (
                 ErrorCategory::BadRequest,
                 "Challenge not found or expired".to_string(),
             ),
-            PasskeyFlowError::Challenge(e) => {
-                (ErrorCategory::Internal, e.to_string())
-            }
+            PasskeyFlowError::Challenge(e) => (ErrorCategory::Internal, e.to_string()),
         }
     }
 }
@@ -303,14 +301,20 @@ mod tests {
 
         // First assertion advances the counter to 5.
         let opts = f.start_authentication(Some(email())).await.unwrap();
-        f.finish_authentication(challenge_of(&opts), json!({ "id": "cred-abc", "sign_count": 5 }))
-            .await
-            .unwrap();
+        f.finish_authentication(
+            challenge_of(&opts),
+            json!({ "id": "cred-abc", "sign_count": 5 }),
+        )
+        .await
+        .unwrap();
 
         // A later assertion reporting a lower counter signals a clone.
         let opts = f.start_authentication(Some(email())).await.unwrap();
         let result = f
-            .finish_authentication(challenge_of(&opts), json!({ "id": "cred-abc", "sign_count": 3 }))
+            .finish_authentication(
+                challenge_of(&opts),
+                json!({ "id": "cred-abc", "sign_count": 3 }),
+            )
             .await;
         assert!(matches!(result, Err(PasskeyFlowError::SignCountRegression)));
     }

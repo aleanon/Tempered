@@ -152,7 +152,11 @@ async fn should_return_429_after_too_many_wrong_codes() {
         .await;
 
     let right_code = verify_2fa_body["2FACode"].as_str().unwrap();
-    let wrong_code = if right_code == "000000" { "000001" } else { "000000" };
+    let wrong_code = if right_code == "000000" {
+        "000001"
+    } else {
+        "000000"
+    };
     let wrong_body = serde_json::json!({
         "email": verify_2fa_body["email"],
         "loginAttemptId": verify_2fa_body["loginAttemptId"],

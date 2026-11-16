@@ -1,5 +1,6 @@
 //! Axum-specific signup route.
 
+use crate::IntoStatusMessage;
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
@@ -8,7 +9,6 @@ use tempered_adapters::{
     http::HttpResponseBuilder,
 };
 use tempered_core::{Email, Password, SupportsRegistration};
-use crate::IntoStatusMessage;
 
 use crate::adapters::into_axum_response;
 

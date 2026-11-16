@@ -15,9 +15,8 @@ use std::collections::HashMap;
 use rand::RngCore;
 use secrecy::Secret;
 use tempered_core::{
-    ClassifyError, ErrorCategory,
-    Email, OAuthHttpClient, OAuthIdentityStore, OAuthIdentityStoreError, OAuthProviderConfig,
-    OAuthStateStore, UserError, constant_time_eq,
+    ClassifyError, Email, ErrorCategory, OAuthHttpClient, OAuthIdentityStore,
+    OAuthIdentityStoreError, OAuthProviderConfig, OAuthStateStore, UserError, constant_time_eq,
 };
 use thiserror::Error;
 
@@ -101,7 +100,10 @@ where
             .map_err(|_| OAuthFlowError::InvalidState)?;
 
         let access_token = self.http_client.exchange_code(config, code).await?;
-        let info = self.http_client.fetch_user_info(config, &access_token).await?;
+        let info = self
+            .http_client
+            .fetch_user_info(config, &access_token)
+            .await?;
 
         // Never derive identity from an unverified provider email: an attacker
         // could register a victim's address (unverified) at the provider and
@@ -148,8 +150,7 @@ fn random_state() -> String {
 }
 
 fn build_authorize_url(config: &OAuthProviderConfig, state: &str) -> String {
-    let mut url =
-        url::Url::parse(&config.auth_url).expect("provider auth_url must be a valid URL");
+    let mut url = url::Url::parse(&config.auth_url).expect("provider auth_url must be a valid URL");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", &config.client_id)
@@ -262,8 +263,9 @@ mod tests {
         }
     }
 
-    fn flow(email: &str) -> OAuthFlow<HashMapOAuthStateStore, HashMapOAuthIdentityStore, MockClient>
-    {
+    fn flow(
+        email: &str,
+    ) -> OAuthFlow<HashMapOAuthStateStore, HashMapOAuthIdentityStore, MockClient> {
         OAuthFlow::new(
             HashMapOAuthStateStore::new(),
             HashMapOAuthIdentityStore::new(),

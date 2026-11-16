@@ -96,15 +96,19 @@ impl TestApp {
             banned_token_store.clone(),
             token_epoch_store,
         )
-            .supports_registration()
-            .supports_2fa(two_fa_code_store.clone(), email_client.clone())
-            .supports_elevation(banned_token_store.clone(), elevated_jwt_config, |elevated| {
+        .supports_registration()
+        .supports_2fa(two_fa_code_store.clone(), email_client.clone())
+        .supports_elevation(
+            banned_token_store.clone(),
+            elevated_jwt_config,
+            |elevated| {
                 elevated
                     .supports_password_change()
                     .supports_account_deletion()
-            })
-            .supports_password_reset(password_reset_token_store, email_client)
-            .build();
+            },
+        )
+        .supports_password_reset(password_reset_token_store, email_client)
+        .build();
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -170,9 +174,7 @@ impl TestApp {
             .split(';')
             .map(|c| c.trim())
             .find(|c| c.starts_with(cookie_name))
-            .and_then(|c| {
-                c.split_once('=').map(|(_, token)| token.to_owned())
-            })
+            .and_then(|c| c.split_once('=').map(|(_, token)| token.to_owned()))
     }
 
     pub async fn get_root(&self) -> reqwest::Response {
@@ -274,7 +276,8 @@ impl TestApp {
             .email_server
             .received_requests()
             .await
-            .expect("Request recording disabled").first()
+            .expect("Request recording disabled")
+            .first()
             .expect("No email received")
             .body
             .clone();

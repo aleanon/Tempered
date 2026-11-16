@@ -57,9 +57,10 @@ impl UserStore for PostgresUserStore {
 
         query.execute(&self.pool).await.map_err(|e| {
             if let Some(db_err) = e.as_database_error()
-                && db_err.constraint().is_some() {
-                    return UserStoreError::UserAlreadyExists;
-                }
+                && db_err.constraint().is_some()
+            {
+                return UserStoreError::UserAlreadyExists;
+            }
             UserStoreError::UnexpectedError(e.to_string())
         })?;
 
@@ -88,9 +89,10 @@ impl UserStore for PostgresUserStore {
 
         query.execute(&self.pool).await.map_err(|e| {
             if let Some(db_err) = e.as_database_error()
-                && db_err.constraint().is_some() {
-                    return UserStoreError::UserAlreadyExists;
-                }
+                && db_err.constraint().is_some()
+            {
+                return UserStoreError::UserAlreadyExists;
+            }
             UserStoreError::UnexpectedError(e.to_string())
         })?;
 
@@ -193,7 +195,6 @@ async fn verify_password_hash(
     password_candidate: Password,
 ) -> Result<(), String> {
     let current_span: tracing::Span = tracing::Span::current();
-    
 
     tokio::task::spawn_blocking(move || {
         current_span.in_scope(|| {
@@ -241,8 +242,6 @@ async fn dummy_password_hash() -> Secret<String> {
 #[tracing::instrument(name = "Computing password hash", skip_all)]
 async fn compute_password_hash(password: Password) -> Result<Secret<String>, String> {
     let current_span: tracing::Span = tracing::Span::current();
-
-    
 
     tokio::task::spawn_blocking(move || {
         current_span.in_scope(move || {

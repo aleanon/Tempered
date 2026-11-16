@@ -8,6 +8,7 @@
 //! capabilities (registration, password change, account deletion) are wired from
 //! the scheme's runtime `RouteFlags` in [`WireCore`]. [`AutoWire`] drives them all.
 
+use crate::IntoStatusMessage;
 use axum::{
     Router,
     routing::{delete, get, post},
@@ -19,11 +20,10 @@ use tempered_adapters::authentication::credential_scheme::{
 use tempered_adapters::authentication::token_strategy::TokenStrategy;
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    HttpOAuth2Scheme, RequiresEmailVerification, SupportsAccountDeletion,
-    SupportsElevation, SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange,
-    SupportsPasswordReset, SupportsRegistration, SupportsTwoFactor,
+    HttpOAuth2Scheme, RequiresEmailVerification, SupportsAccountDeletion, SupportsElevation,
+    SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset,
+    SupportsRegistration, SupportsTwoFactor,
 };
-use crate::IntoStatusMessage;
 
 use crate::route_config::{Routers, apply_elevated_validation, register_logout_with_elevation};
 
@@ -204,12 +204,10 @@ where
     }
 }
 
-impl<U, T, F, TE, R, M, O, K> WireElevation
-    for CredentialScheme<U, T, F, Elevation<TE>, R, M, O, K>
+impl<U, T, F, TE, R, M, O, K> WireElevation for CredentialScheme<U, T, F, Elevation<TE>, R, M, O, K>
 where
     Self: HttpElevationScheme,
-    <Self as AuthenticationScheme>::Validator:
-        AuthValidator<RequestParts = http::request::Parts>,
+    <Self as AuthenticationScheme>::Validator: AuthValidator<RequestParts = http::request::Parts>,
     <<Self as AuthenticationScheme>::Validator as AuthValidator>::Error: IntoStatusMessage,
     <Self as SupportsElevation>::ElevatedValidator:
         AuthValidator<RequestParts = http::request::Parts>,

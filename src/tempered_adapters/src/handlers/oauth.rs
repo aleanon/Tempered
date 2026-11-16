@@ -17,7 +17,10 @@ where
     S: HttpOAuth2Scheme,
     B: ResponseBuilder,
 {
-    let authorization = scheme.begin_oauth(provider).await.map_err(HandlerError::Auth)?;
+    let authorization = scheme
+        .begin_oauth(provider)
+        .await
+        .map_err(HandlerError::Auth)?;
     Ok(scheme.create_oauth_start_response(builder, authorization)?)
 }
 

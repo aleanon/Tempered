@@ -51,12 +51,9 @@ async fn main() {
         .unwrap();
     println!("Seeded demo key (id={id}): {plaintext}");
 
-    let protected = Router::new()
-        .route("/protected", get(protected))
-        .layer(axum::middleware::from_fn_with_state(
-            scheme.clone(),
-            validate_token::<Scheme>,
-        ));
+    let protected = Router::new().route("/protected", get(protected)).layer(
+        axum::middleware::from_fn_with_state(scheme.clone(), validate_token::<Scheme>),
+    );
 
     let app = Router::new()
         .route("/api-keys", post(issue_key))

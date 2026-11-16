@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tempered_core::{
-    AuthRequest, AuthValidator, BannedTokenStore, BannedTokenStoreError, ClassifyError, Email, ErrorCategory,
-    TokenEpochStore,
+    AuthRequest, AuthValidator, BannedTokenStore, BannedTokenStoreError, ClassifyError, Email,
+    ErrorCategory, TokenEpochStore,
 };
 use thiserror::Error;
 
@@ -177,12 +177,7 @@ where
 
     fn auth_cookie(&self, token: &JwtToken) -> String {
         let max_age = time::Duration::seconds(self.config.token_ttl_in_seconds as i64);
-        create_auth_cookie(
-            token.0.clone(),
-            &self.config.jwt_cookie_name,
-            Some(max_age),
-        )
-        .to_string()
+        create_auth_cookie(token.0.clone(), &self.config.jwt_cookie_name, Some(max_age)).to_string()
     }
 
     fn extract<R: AuthRequest>(&self, req: &R) -> Option<JwtToken> {
@@ -208,16 +203,12 @@ impl ClassifyError for JwtTokenError {
             // Preserve the previous mapping: a token (signing/decoding) error uses
             // its own status; a ban-store failure is a 500.
             JwtTokenError::Generate(e) => e.classify(),
-            JwtTokenError::Revoke(e) => (
-                ErrorCategory::Internal,
-                format!("Token store error: {}", e),
-            ),
+            JwtTokenError::Revoke(e) => {
+                (ErrorCategory::Internal, format!("Token store error: {}", e))
+            }
             JwtTokenError::RevokeAll(e) => {
                 tracing::error!(error = %e, "failed to record revocation cutoff");
-                (
-                    ErrorCategory::Internal,
-                    "Internal error".to_string(),
-                )
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
         }
     }
@@ -252,10 +243,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_all_records_a_cutoff_the_validator_reads() {
         let tokens = strategy();
-        assert_eq!(
-            tokens.epoch().min_valid_iat(&email()).await.unwrap(),
-            None
-        );
+        assert_eq!(tokens.epoch().min_valid_iat(&email()).await.unwrap(), None);
 
         let before = chrono::Utc::now().timestamp();
         tokens.revoke_all_for_user(&email()).await.unwrap();

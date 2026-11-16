@@ -92,8 +92,7 @@ pub trait TokenEpochStore: Send + Sync {
     /// Invalidate every token issued *strictly before* `cutoff` (unix
     /// seconds). Implementations MUST keep the highest cutoff seen, never
     /// lower it.
-    async fn revoke_before(&self, email: &Email, cutoff: i64)
-    -> Result<(), TokenEpochStoreError>;
+    async fn revoke_before(&self, email: &Email, cutoff: i64) -> Result<(), TokenEpochStoreError>;
 }
 
 // TwoFaCodeStore port trait and errors
@@ -358,8 +357,7 @@ pub enum SessionStoreError {
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     /// Create a new session for the given user.
-    async fn create_session(&self, id: SessionId, email: Email)
-    -> Result<(), SessionStoreError>;
+    async fn create_session(&self, id: SessionId, email: Email) -> Result<(), SessionStoreError>;
 
     /// Look up the user associated with a session id.
     async fn get_session(&self, id: &SessionId) -> Result<Email, SessionStoreError>;

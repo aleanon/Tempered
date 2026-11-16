@@ -45,7 +45,7 @@ use tempered::core::{
 };
 use tempered::{
     ExposeSecret, HashMapChallengeStore, HashMapPasskeyCredentialStore, HashMapTokenEpochStore,
-    HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, Passkeys, PasskeyFlow,
+    HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, PasskeyFlow, Passkeys,
     Secret, auth_service,
 };
 
@@ -96,9 +96,7 @@ async fn main() {
 
     // `/me` reads the JWT the login ceremony issued, so it needs the scheme as
     // state and lives in a sibling router merged into the auth service.
-    let extra: Router = Router::new()
-        .route("/me", get(me))
-        .with_state(scheme);
+    let extra: Router = Router::new().route("/me", get(me)).with_state(scheme);
 
     let app = auth_router.merge(extra);
 

@@ -62,7 +62,9 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
         new_count: u32,
     ) -> Result<(), PasskeyStoreError> {
         let mut map = self.credentials.write().await;
-        let cred = map.get_mut(id).ok_or(PasskeyStoreError::CredentialNotFound)?;
+        let cred = map
+            .get_mut(id)
+            .ok_or(PasskeyStoreError::CredentialNotFound)?;
         cred.sign_count = new_count;
         Ok(())
     }

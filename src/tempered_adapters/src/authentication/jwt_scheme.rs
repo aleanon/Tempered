@@ -238,8 +238,8 @@ mod passkey_tests {
     use serde_json::json;
     use tempered_core::{
         AuthValidator, AuthenticationScheme, CredentialId, Email, PasskeyCredential,
-        SupportsPasskeys, VerifiedAssertion, VerifiedRegistration, WebAuthnChallenge, WebAuthnError,
-        WebAuthnVerifier,
+        SupportsPasskeys, VerifiedAssertion, VerifiedRegistration, WebAuthnChallenge,
+        WebAuthnError, WebAuthnVerifier,
     };
 
     #[derive(Clone)]
