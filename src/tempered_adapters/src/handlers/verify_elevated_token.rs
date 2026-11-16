@@ -24,8 +24,8 @@ where
 {
     // If we reached this handler, the middleware already validated the elevated token
     // Just return success
-    Ok(builder
+    builder
         .status(200)
         .json_body(serde_json::json!({"status": "valid"}))
-        .build().map_err(|e| e.message)?)
+        .build().map_err(|e| e.message)
 }

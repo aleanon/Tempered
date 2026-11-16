@@ -56,11 +56,10 @@ impl UserStore for PostgresUserStore {
         );
 
         query.execute(&self.pool).await.map_err(|e| {
-            if let Some(db_err) = e.as_database_error() {
-                if db_err.constraint().is_some() {
+            if let Some(db_err) = e.as_database_error()
+                && db_err.constraint().is_some() {
                     return UserStoreError::UserAlreadyExists;
                 }
-            }
             UserStoreError::UnexpectedError(e.to_string())
         })?;
 
@@ -88,11 +87,10 @@ impl UserStore for PostgresUserStore {
         );
 
         query.execute(&self.pool).await.map_err(|e| {
-            if let Some(db_err) = e.as_database_error() {
-                if db_err.constraint().is_some() {
+            if let Some(db_err) = e.as_database_error()
+                && db_err.constraint().is_some() {
                     return UserStoreError::UserAlreadyExists;
                 }
-            }
             UserStoreError::UnexpectedError(e.to_string())
         })?;
 
@@ -195,7 +193,9 @@ async fn verify_password_hash(
     password_candidate: Password,
 ) -> Result<(), String> {
     let current_span: tracing::Span = tracing::Span::current();
-    let result = tokio::task::spawn_blocking(move || {
+    
+
+    tokio::task::spawn_blocking(move || {
         current_span.in_scope(|| {
             let expected_password_hash: PasswordHash<'_> =
                 PasswordHash::new(expected_password_hash.expose_secret())
@@ -215,9 +215,7 @@ async fn verify_password_hash(
         })
     })
     .await
-    .map_err(|e| e.to_string())?;
-
-    result
+    .map_err(|e| e.to_string())?
 }
 
 /// A throwaway Argon2id hash (of a fixed dummy password), computed once and
@@ -244,7 +242,9 @@ async fn dummy_password_hash() -> Secret<String> {
 async fn compute_password_hash(password: Password) -> Result<Secret<String>, String> {
     let current_span: tracing::Span = tracing::Span::current();
 
-    let result = tokio::task::spawn_blocking(move || {
+    
+
+    tokio::task::spawn_blocking(move || {
         current_span.in_scope(move || {
             let salt: SaltString = SaltString::generate(rand_core::OsRng);
             let hasher = Argon2::new(
@@ -260,9 +260,7 @@ async fn compute_password_hash(password: Password) -> Result<Secret<String>, Str
         })
     })
     .await
-    .map_err(|e| e.to_string())?;
-
-    result
+    .map_err(|e| e.to_string())?
 }
 
 /// Create a PostgreSQL connection pool

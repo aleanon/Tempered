@@ -77,9 +77,9 @@ where
 
     // Create the 2FA success response; a builder error is a scheme bug,
     // surfaced through the error type instead of panicking.
-    Ok(scheme
+    scheme
         .create_2fa_response(builder, token)
-        .map_err(Verify2FaError::ResponseBuild)?)
+        .map_err(Verify2FaError::ResponseBuild)
 }
 
 /// Errors that can occur during 2FA verification

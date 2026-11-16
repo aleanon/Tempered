@@ -40,9 +40,9 @@ where
         .map_err(|e| format!("Logout failed: {}", e))?;
 
     // Create the logout response
-    Ok(scheme
+    scheme
         .create_logout_response(builder, Some(cookie_name))
-        .map_err(|e| e.message)?)
+        .map_err(|e| e.message)
 }
 
 /// Handle logout request with elevation support - framework agnostic.

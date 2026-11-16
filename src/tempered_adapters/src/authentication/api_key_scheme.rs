@@ -157,11 +157,10 @@ async fn validate_presented_key<S: ApiKeyStore>(
 }
 
 fn extract_from_headers(headers: &http::HeaderMap, header_name: &str) -> Option<String> {
-    if let Some(v) = headers.get(header_name).and_then(|v| v.to_str().ok()) {
-        if !v.is_empty() {
+    if let Some(v) = headers.get(header_name).and_then(|v| v.to_str().ok())
+        && !v.is_empty() {
             return Some(v.to_string());
         }
-    }
     let auth = headers
         .get(http::header::AUTHORIZATION)?
         .to_str()
@@ -244,11 +243,10 @@ where
     }
 
     fn extract_token_from_request<Req: AuthRequest>(&self, req: &Req) -> Option<Self::Token> {
-        if let Some(v) = req.header(&self.header_name) {
-            if !v.is_empty() {
+        if let Some(v) = req.header(&self.header_name)
+            && !v.is_empty() {
                 return Some(ApiKeyToken(v.to_string()));
             }
-        }
         let auth = req.header("authorization")?;
         auth.strip_prefix("Bearer ")
             .or_else(|| auth.strip_prefix("bearer "))

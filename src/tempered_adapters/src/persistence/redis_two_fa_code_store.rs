@@ -95,7 +95,7 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
         &self,
         user_id: &Email,
     ) -> Result<(TwoFaAttemptId, TwoFaCode), TwoFaCodeStoreError> {
-        let key = get_key(&user_id);
+        let key = get_key(user_id);
 
         let json_value: String = self
             .client
@@ -112,7 +112,7 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
     }
 
     async fn delete(&self, user_id: &Email) -> Result<(), TwoFaCodeStoreError> {
-        let key = get_key(&user_id);
+        let key = get_key(user_id);
 
         self.client
             .write()

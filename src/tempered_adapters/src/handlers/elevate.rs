@@ -39,5 +39,5 @@ where
         .map_err(|e| format!("Elevation failed: {}", e))?;
 
     // Create HTTP response with elevated token
-    Ok(scheme.create_elevation_response(builder, elevated_token).map_err(|e| e.message)?)
+    scheme.create_elevation_response(builder, elevated_token).map_err(|e| e.message)
 }

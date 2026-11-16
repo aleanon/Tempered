@@ -169,14 +169,13 @@ impl TestApp {
             .map(|c| c.trim())
             .find(|c| c.starts_with(cookie_name))
             .and_then(|c| {
-                c.split_once('=')
-                    .and_then(|(_, token)| Some(token.to_owned()))
+                c.split_once('=').map(|(_, token)| token.to_owned())
             })
     }
 
     pub async fn get_root(&self) -> reqwest::Response {
         self.http_client
-            .get(&format!("{}/", &self.address))
+            .get(format!("{}/", &self.address))
             .send()
             .await
             .expect("Failed to execute request")
@@ -187,7 +186,7 @@ impl TestApp {
         Body: serde::Serialize,
     {
         self.http_client
-            .post(&format!("{}/signup", &self.address))
+            .post(format!("{}/signup", &self.address))
             .json(body)
             .send()
             .await
@@ -196,7 +195,7 @@ impl TestApp {
 
     pub async fn login<Body: Serialize>(&self, body: &Body) -> reqwest::Response {
         self.http_client
-            .post(&format!("{}/login", &self.address))
+            .post(format!("{}/login", &self.address))
             .json(body)
             .send()
             .await
@@ -205,7 +204,7 @@ impl TestApp {
 
     pub async fn logout(&self) -> reqwest::Response {
         self.http_client
-            .post(&format!("{}/logout", &self.address))
+            .post(format!("{}/logout", &self.address))
             .send()
             .await
             .expect("Failed to execute request")
@@ -213,7 +212,7 @@ impl TestApp {
 
     pub async fn verify_2fa<Body: Serialize>(&self, body: &Body) -> reqwest::Response {
         self.http_client
-            .post(&format!("{}/verify-2fa", &self.address))
+            .post(format!("{}/verify-2fa", &self.address))
             .json(body)
             .send()
             .await
@@ -222,7 +221,7 @@ impl TestApp {
 
     pub async fn verify_token(&self, token: &str) -> reqwest::Response {
         self.http_client
-            .post(&format!("{}/verify-token", &self.address))
+            .post(format!("{}/verify-token", &self.address))
             .header("Cookie", format!("jwt={}", token))
             .send()
             .await
@@ -231,7 +230,7 @@ impl TestApp {
 
     pub async fn verify_elevated_token(&self, token: &str) -> reqwest::Response {
         self.http_client
-            .post(&format!("{}/verify-elevated-token", &self.address))
+            .post(format!("{}/verify-elevated-token", &self.address))
             .header("Cookie", format!("elevated_jwt={}", token))
             .send()
             .await
@@ -240,7 +239,7 @@ impl TestApp {
 
     pub async fn delete_account(&self) -> reqwest::Response {
         self.http_client
-            .delete(&format!("{}/delete-account", &self.address))
+            .delete(format!("{}/delete-account", &self.address))
             .send()
             .await
             .expect("Failed to execute request")
@@ -248,7 +247,7 @@ impl TestApp {
 
     pub async fn post_elevate<Body: Serialize>(&self, body: &Body) -> reqwest::Response {
         self.http_client
-            .post(&format!("{}/elevate", &self.address))
+            .post(format!("{}/elevate", &self.address))
             .json(body)
             .send()
             .await
@@ -257,7 +256,7 @@ impl TestApp {
 
     pub async fn post_change_password<Body: Serialize>(&self, body: &Body) -> reqwest::Response {
         self.http_client
-            .post(&format!("{}/change-password", &self.address))
+            .post(format!("{}/change-password", &self.address))
             .json(body)
             .send()
             .await
@@ -273,8 +272,7 @@ impl TestApp {
             .email_server
             .received_requests()
             .await
-            .expect("Request recording disabled")
-            .get(0)
+            .expect("Request recording disabled").first()
             .expect("No email received")
             .body
             .clone();

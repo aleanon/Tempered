@@ -99,8 +99,7 @@ impl ResponseBuilder for HttpResponseBuilder {
 
     fn metadata(mut self, key: &str, value: &str) -> Self {
         // Convention: "cookie:" prefix for cookies, otherwise treat as header
-        if key.starts_with("cookie:") {
-            let cookie_name = &key[7..];
+        if let Some(cookie_name) = key.strip_prefix("cookie:") {
             if value.is_empty() {
                 // Clear cookie by setting Max-Age=0
                 self.cookies.push(format!(

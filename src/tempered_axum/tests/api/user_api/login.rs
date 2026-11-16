@@ -106,8 +106,7 @@ async fn should_return_200_if_valid_credentials_and_2fa_enabled() {
         .email_server
         .received_requests()
         .await
-        .expect("Request recording disabled")
-        .get(0)
+        .expect("Request recording disabled").first()
         .expect("No email received")
         .body
         .clone();

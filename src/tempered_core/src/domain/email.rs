@@ -15,7 +15,7 @@ impl TryFrom<Secret<String>> for Email {
     type Error = UserError;
 
     fn try_from(email: Secret<String>) -> Result<Self, Self::Error> {
-        if !EMAIL_REGEX.is_match(&email.expose_secret()) {
+        if !EMAIL_REGEX.is_match(email.expose_secret()) {
             return Err(UserError::InvalidEmail);
         }
         Ok(Email(email))

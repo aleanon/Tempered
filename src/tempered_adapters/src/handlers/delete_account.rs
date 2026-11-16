@@ -36,11 +36,11 @@ where
         .map_err(|e| format!("Failed to delete account: {}", e))?;
 
     // Return success response
-    Ok(builder
+    builder
         .status(200)
         .json_body(serde_json::json!({
             "status": "success",
             "message": "Account deleted successfully"
         }))
-        .build().map_err(|e| e.message)?)
+        .build().map_err(|e| e.message)
 }
