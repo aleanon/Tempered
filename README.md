@@ -18,11 +18,10 @@ adapter ships today.
 
 ```rust
 use axum::{Extension, Router, routing::get};
-use tempered::adapters::auth::local_jwt_validator::Claims;
 use tempered::{
-    HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, Secret,
+    Claims, ExposeSecret, HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore,
+    JwtAuthConfig, JwtScheme, Secret, auth_service,
 };
-use tempered_axum::auth_service::auth_service;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,15 +30,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Load this from the environment in real code; keep it >= 32 random bytes.
         jwt_secret: Secret::new(std::env::var("JWT_SECRET")?),
         token_ttl_in_seconds: 3600,
+        // When set, tokens carry these claims and validation requires them, so a
+        // token signed with the same secret for another service is rejected.
+        audience: Some("my-app".to_string()),
+        issuer: Some("my-app".to_string()),
     };
 
     // Declare the scheme and the capabilities you want. Each `supports_*` call
     // auto-wires its route(s) in `auth_service` below — there are no route
     // opt-ins to remember.
     let scheme = JwtScheme::new(
-        HashMapUserStore::new(),          // swap for PostgresUserStore in production
+        HashMapUserStore::new(),        // swap for PostgresUserStore in production
         jwt_config,
-        HashSetBannedTokenStore::new(),   // swap for RedisBannedTokenStore in production
+        HashSetBannedTokenStore::new(), // swap for RedisBannedTokenStore in production
+        HashMapTokenEpochStore::new(),  // swap for RedisTokenEpochStore in production
     )
     .supports_registration()
     .build();
@@ -60,10 +64,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // injects `Claims` into the request extensions, so your handler just extracts it
 // — you never name the scheme's generic type.
 async fn whoami(Extension(claims): Extension<Claims>) -> String {
-    use tempered::ExposeSecret;
     format!("logged in as {}", claims.sub.expose_secret())
 }
 ```
+
+This is [`examples/quickstart.rs`](examples/quickstart.rs), which is compiled with
+the workspace: `JWT_SECRET=... cargo run --example quickstart`.
 
 ## Adding your own protected routes
 
@@ -102,8 +108,13 @@ Every moving part is a trait, so you choose the backend:
 
 - **User store:** `HashMapUserStore` (dev) or `PostgresUserStore` (Argon2id).
 - **Banned-token store:** `HashSetBannedTokenStore` (dev) or `RedisBannedTokenStore`.
-- **Capability stores** (2FA codes, reset tokens, OAuth state/identity, passkey
-  challenges/credentials): in-memory `HashMap*` for dev, Redis/Postgres for prod.
+- **Token-epoch store** (revoke-all on password change / account deletion):
+  `HashMapTokenEpochStore` (dev) or `RedisTokenEpochStore`.
+- **Capability stores:** 2FA codes and password-reset tokens have in-memory
+  `HashMap*` (dev) and Redis (prod) implementations. Sessions, API keys,
+  email-verification tokens, OAuth state/identity, and passkey
+  challenges/credentials currently ship in-memory only — implement the port
+  trait for production (see [`docs/FOLLOWUP_PLAN.md`](docs/FOLLOWUP_PLAN.md)).
 - **Email client:** `MockEmailClient`, `PostmarkEmailClient`, or your own `EmailClient`.
 - **Token strategy:** JWT and session are both `CredentialScheme`s over a
   `TokenStrategy`; implement the trait to add a new token type.
