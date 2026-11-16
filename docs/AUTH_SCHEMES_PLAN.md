@@ -1,7 +1,10 @@
 # Plan: OAuth2 + Session + API Key + Passkeys alongside JWT
 
-> Status: proposed. Target schemes alongside the existing `JwtScheme`:
-> **OAuth2/OIDC, server-side Sessions, API keys, Passkeys (WebAuthn)**.
+> Status: **implemented** (2026-06..07). Sessions, API keys, OAuth2 and passkeys
+> all ship alongside JWT. The sections below "Implementation status" are the
+> original proposal, kept for the reasoning; where they disagree with the status
+> section or the code, the code wins. Remaining work is tracked in
+> [`FOLLOWUP_PLAN.md`](FOLLOWUP_PLAN.md).
 >
 > **Coexistence decision:** `auth_service<S>` keeps taking exactly **one** scheme.
 > Running several methods in one app is a *user* concern: they implement
@@ -10,19 +13,26 @@
 > scheme. See [Phase 5](#phase-5--composition-is-a-user-concern) and
 > `examples/composed_scheme.rs`.
 
-## Implementation status (updated)
+## Implementation status (updated 2026-11-16)
 
-Framework-agnostic cores for all four schemes are **implemented, compiling, and
-unit-tested** (47 adapter unit tests pass). Per the project's "composition is a
-user concern" decision, OAuth and Passkeys are exposed as `*Flow` orchestrators
-that **yield a verified `Email`** rather than issuing tokens themselves.
+How the result differs from the proposal below:
 
-| Phase | Implemented | Deferred |
+- **JWT and Session are one scheme.** Both are aliases of `CredentialScheme`
+  over a `TokenStrategy`, so Session has every capability JWT has.
+- **OAuth and passkeys are capabilities, not schemes.** `.supports_oauth(flow)` /
+  `.supports_passkeys(flow)` on the credential scheme; a successful OAuth or
+  passkey login mints the scheme's primary token. Their routes auto-wire.
+- **API keys:** `ApiKeyScheme` with opt-in issuance (`.supports_issuance()`),
+  SHA-256 hashed keys, served by `auth_service`. Issuance routes are the
+  caller's (they need an owner and scopes).
+
+| Area | Shipped | Still open (see `FOLLOWUP_PLAN.md`) |
 |---|---|---|
-| 2 Session | `SessionScheme` + `SessionValidator` + `SessionStore` port + `HashMapSessionStore`; drops into `auth_service`. 3 tests. | `RedisSessionStore`; logout-everywhere route. |
-| 3 API key | `ApiKeyScheme` + `ApiKeyValidator` (header/Bearer) + `ApiKeyStore` + `HashMapApiKeyStore` + `SupportsApiKeyIssuance` (SHA-256, constant-time). 5 tests. | HTTP issuance routes; Postgres store. |
-| 1 OAuth2 | `OAuthFlow` (authorize-URL, CSRF state **bound to the browser via cookie**, code exchange, userinfo, identity link) + `OAuthHttpClient`/state/identity ports + `ReqwestOAuthHttpClient` + HashMap stores. 5 tests. | **PKCE** (`code_verifier`/`code_challenge`); authorize/callback axum routes; Redis/Postgres stores. |
-| 4 Passkeys | `PasskeyFlow` (register + authenticate ceremonies, sign-count anti-clone) + `PasskeyCredentialStore`/`ChallengeStore`/`WebAuthnVerifier` ports + HashMap stores. 4 tests. | `webauthn-rs` adapter for `WebAuthnVerifier`; ceremony routes; client JS. |
+| Session | `SessionScheme`, `SessionStore` port, `HashMapSessionStore`, revoke-all on password change/reset/deletion | Redis store (Phase 3); `session_axum` example (5.2) |
+| API key | `ApiKeyScheme`, validator (header/Bearer), `ApiKeyStore` port, in-memory store, `api_key_axum` example | Postgres store (Phase 3) |
+| OAuth2 | `OAuthFlow` (authorize URL, browser-bound CSRF state, code exchange, userinfo, identity link), `ReqwestOAuthHttpClient`, auto-wired routes, `oauth_axum` example | **PKCE** (3.0); Redis state store and Postgres identity store (Phase 3) |
+| Passkeys | `PasskeyFlow` (both ceremonies, sign-count anti-clone), ports, in-memory stores, auto-wired routes, simulated `passkey_axum` example | real `webauthn-rs` verifier + browser JS (Phase 4); Redis/Postgres stores (Phase 3) |
+| Composition | decision recorded; `examples/composed_scheme.rs` skeleton | working example (5.1) |
 
 Key design note: OAuth's provider HTTP and Passkeys' WebAuthn crypto are both
 behind **ports** (`OAuthHttpClient`, `WebAuthnVerifier`), so the orchestration is
