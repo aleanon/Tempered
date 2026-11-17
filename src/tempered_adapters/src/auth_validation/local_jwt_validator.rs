@@ -194,6 +194,7 @@ pub fn generate_auth_token(
         sub,
         exp,
         iat: Some(Utc::now().timestamp()),
+        jti: Some(uuid::Uuid::new_v4().to_string()),
         aud: config.audience.clone(),
         iss: config.issuer.clone(),
     };
@@ -286,6 +287,11 @@ pub struct Claims {
     /// so tokens minted before this claim existed still deserialize (they are
     /// rejected once the user has a revocation cutoff).
     pub iat: Option<i64>,
+    /// Unique token id. Makes every issued token distinct, so two logins by
+    /// the same user in the same second do not produce the same token string —
+    /// which would let banning one (logout) silently kill the other. `Option`
+    /// only so tokens minted before this claim existed still deserialize.
+    pub jti: Option<String>,
     /// Audience binding; present only when the issuing config sets one.
     pub aud: Option<String>,
     /// Issuer binding; present only when the issuing config sets one.
@@ -307,6 +313,7 @@ impl Serialize for Claims {
         // as no audience to JWT validators.
         let len = 2
             + usize::from(self.iat.is_some())
+            + usize::from(self.jti.is_some())
             + usize::from(self.aud.is_some())
             + usize::from(self.iss.is_some());
         let mut state = serializer.serialize_struct("Claims", len)?;
@@ -314,6 +321,9 @@ impl Serialize for Claims {
         state.serialize_field("exp", &self.exp)?;
         if let Some(iat) = &self.iat {
             state.serialize_field("iat", iat)?;
+        }
+        if let Some(jti) = &self.jti {
+            state.serialize_field("jti", jti)?;
         }
         if let Some(aud) = &self.aud {
             state.serialize_field("aud", aud)?;
@@ -528,5 +538,38 @@ mod tests {
         let result =
             validate_auth_token(&token, &banned_token_store, &epoch_store(), &config).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn tokens_issued_in_the_same_second_are_distinct() {
+        let email = Email::try_from(Secret::new("test@example.com".to_owned())).unwrap();
+        let config = jwt_auth_config();
+
+        let first = generate_auth_token(&email, &config).unwrap();
+        let second = generate_auth_token(&email, &config).unwrap();
+        assert_ne!(first, second);
+    }
+
+    #[tokio::test]
+    async fn banning_one_token_does_not_kill_a_login_from_the_same_second() {
+        // Log in, log out (ban), log straight back in: the new session must work.
+        let email = Email::try_from(Secret::new("test@example.com".to_owned())).unwrap();
+        let config = jwt_auth_config();
+        let banned = HashSetBannedTokenStore::new();
+        let epochs = epoch_store();
+
+        let first = generate_auth_token(&email, &config).unwrap();
+        banned.ban_token(first.clone()).await.unwrap();
+        let second = generate_auth_token(&email, &config).unwrap();
+
+        assert!(matches!(
+            validate_auth_token(&first, &banned, &epochs, &config).await,
+            Err(TokenAuthError::TokenIsBanned)
+        ));
+        assert!(
+            validate_auth_token(&second, &banned, &epochs, &config)
+                .await
+                .is_ok()
+        );
     }
 }
