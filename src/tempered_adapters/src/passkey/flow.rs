@@ -167,6 +167,13 @@ where
         Ok(stored.owner)
     }
 
+    /// Remove every passkey enrolled for `email`. Call when the account is
+    /// deleted, so its credentials cannot outlive it or be inherited by a later
+    /// account that reuses the address.
+    pub async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError> {
+        Ok(self.credential_store.delete_all_for_user(email).await?)
+    }
+
     /// Keep a started ceremony's state server-side under a fresh id, and return
     /// what the client needs: the id and the browser options.
     async fn park(
@@ -567,6 +574,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stored.owner, email());
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_user_removes_only_their_credentials() {
+        let f = flow();
+        register(&f, "cred-a").await;
+        register(&f, "cred-b").await;
+        register_for(&f, other_email(), "cred-other").await;
+
+        f.forget_user(&email()).await.unwrap();
+        // Idempotent.
+        f.forget_user(&email()).await.unwrap();
+
+        assert!(
+            f.credential_store
+                .list_for_user(&email())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let ceremony = f.start_authentication(None).await.unwrap();
+        let response = reply(&ceremony, "cred-a");
+        assert!(matches!(
+            f.finish_authentication(ceremony.ceremony_id, response)
+                .await,
+            Err(PasskeyFlowError::Credential(
+                PasskeyStoreError::CredentialNotFound
+            ))
+        ));
+
+        // The other user's passkey is untouched.
+        assert_eq!(
+            f.credential_store
+                .list_for_user(&other_email())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

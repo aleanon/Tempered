@@ -227,6 +227,15 @@ pub trait PasskeyCredentialStore: Send + Sync {
         new_sign_count: u32,
         credential_data: Option<Vec<u8>>,
     ) -> Result<(), PasskeyStoreError>;
+
+    /// Remove every credential owned by `owner` (account deletion).
+    ///
+    /// Idempotent: succeeds when the user has none. After it returns `Ok`, no
+    /// credential previously enrolled for `owner` may be returned by
+    /// [`get_credential`](Self::get_credential) or
+    /// [`list_for_user`](Self::list_for_user) — otherwise a later account
+    /// created with the same email would inherit the old owner's passkeys.
+    async fn delete_all_for_user(&self, owner: &Email) -> Result<(), PasskeyStoreError>;
 }
 
 #[derive(Debug, Error)]

@@ -137,6 +137,32 @@ pub struct Passkeys<CS, ChS, V> {
 // Internal slot traits (keep the core paths generic over the slots)
 // ============================================================================
 
+/// Removes a deleted user's passkeys during `delete_account`. `()` (passkeys
+/// not configured) has nothing to remove.
+#[async_trait]
+trait PasskeyCleanup {
+    async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError>;
+}
+
+#[async_trait]
+impl PasskeyCleanup for () {
+    async fn forget_user(&self, _email: &Email) -> Result<(), PasskeyFlowError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<CS, ChS, V> PasskeyCleanup for Passkeys<CS, ChS, V>
+where
+    CS: PasskeyCredentialStore + Send + Sync,
+    ChS: ChallengeStore + Send + Sync,
+    V: WebAuthnVerifier + Send + Sync,
+{
+    async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError> {
+        self.flow.forget_user(email).await
+    }
+}
+
 /// Issues the 2FA challenge during `login`. `()` rejects (2FA not configured).
 #[async_trait]
 trait TwoFaChallenge {
@@ -702,7 +728,7 @@ where
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
     O: Clone + Send + Sync + 'static,
-    K: Clone + Send + Sync + 'static,
+    K: PasskeyCleanup + Clone + Send + Sync + 'static,
 {
     type AccountDeletionError = CredentialError<T::Error>;
 
@@ -715,6 +741,10 @@ where
             .revoke_all_for_user(&email)
             .await
             .map_err(CredentialError::Token)?;
+        // Passkeys are a login credential for this account: remove them with
+        // it, so they cannot outlive it or be inherited by a later account
+        // that reuses the address.
+        self.passkeys.forget_user(&email).await?;
         Ok(())
     }
 }

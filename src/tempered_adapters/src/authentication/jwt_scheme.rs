@@ -230,8 +230,8 @@ mod passkey_tests {
     use super::{JwtScheme, Passkeys};
     use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
     use crate::authentication::credential_scheme::CredentialError;
-    use crate::passkey::PasskeyFlow;
     use crate::passkey::flow::test_support::{MockVerifier, reply_with_count};
+    use crate::passkey::{PasskeyFlow, PasskeyFlowError};
     use crate::persistence::{
         HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore,
         hashmap_challenge_store::HashMapChallengeStore,
@@ -239,8 +239,8 @@ mod passkey_tests {
     };
     use secrecy::Secret;
     use tempered_core::{
-        AuthValidator, AuthenticationScheme, Email, Password, SupportsPasskeys, User, UserStore,
-        UserStoreError,
+        AuthValidator, AuthenticationScheme, Email, PasskeyStoreError, Password,
+        SupportsAccountDeletion, SupportsPasskeys, User, UserStore, UserStoreError,
     };
 
     type TestScheme = JwtScheme<
@@ -355,6 +355,39 @@ mod passkey_tests {
             Err(CredentialError::UserStoreError(
                 UserStoreError::UserNotFound
             ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn deleting_the_account_removes_its_passkeys() {
+        let (scheme, users) = scheme_with_passkeys().await;
+        enroll(&scheme, "cred-abc").await;
+
+        scheme.delete_account(email()).await.unwrap();
+
+        // Someone later registers the same address: a brand-new account.
+        let password = Password::try_from(Secret::new("another-password".to_string())).unwrap();
+        users
+            .add_user(User::new(email(), password, false))
+            .await
+            .unwrap();
+
+        // The previous owner's passkey must not log in to it.
+        let ceremony = scheme
+            .start_passkey_authentication(Some(email()))
+            .await
+            .unwrap();
+        let result = scheme
+            .finish_passkey_authentication(
+                ceremony.ceremony_id.clone(),
+                reply_with_count(&ceremony, "cred-abc", 1),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(CredentialError::Passkey(PasskeyFlowError::Credential(
+                PasskeyStoreError::CredentialNotFound
+            )))
         ));
     }
 

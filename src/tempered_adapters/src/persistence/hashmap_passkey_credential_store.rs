@@ -81,4 +81,12 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
         }
         Ok(())
     }
+
+    async fn delete_all_for_user(&self, owner: &Email) -> Result<(), PasskeyStoreError> {
+        self.credentials
+            .write()
+            .await
+            .retain(|_, cred| &cred.owner != owner);
+        Ok(())
+    }
 }
