@@ -441,8 +441,9 @@ mod passkey_tests {
     };
     use secrecy::Secret;
     use tempered_core::{
-        AuthValidator, AuthenticationScheme, Email, PasskeyStoreError, Password,
-        SupportsAccountDeletion, SupportsPasskeys, User, UserStore, UserStoreError,
+        AuthValidator, AuthenticationScheme, CredentialId, Email, PasskeyCredential,
+        PasskeyCredentialStore, PasskeyStoreError, Password, SupportsAccountDeletion,
+        SupportsPasskeys, User, UserStore, UserStoreError,
     };
 
     type TestScheme = JwtScheme<
@@ -622,5 +623,65 @@ mod passkey_tests {
             )
             .await;
         assert!(result.is_err());
+    }
+
+    /// A credential store that is down: every call fails.
+    #[derive(Clone)]
+    struct UnavailableCredentialStore;
+
+    #[async_trait::async_trait]
+    impl PasskeyCredentialStore for UnavailableCredentialStore {
+        async fn add_credential(&self, _: PasskeyCredential) -> Result<(), PasskeyStoreError> {
+            Err(PasskeyStoreError::UnexpectedError("down".into()))
+        }
+        async fn get_credential(
+            &self,
+            _: &CredentialId,
+        ) -> Result<PasskeyCredential, PasskeyStoreError> {
+            Err(PasskeyStoreError::UnexpectedError("down".into()))
+        }
+        async fn list_for_user(
+            &self,
+            _: &Email,
+        ) -> Result<Vec<PasskeyCredential>, PasskeyStoreError> {
+            Err(PasskeyStoreError::UnexpectedError("down".into()))
+        }
+        async fn update_after_authentication(
+            &self,
+            _: &CredentialId,
+            _: u32,
+            _: Option<Vec<u8>>,
+        ) -> Result<(), PasskeyStoreError> {
+            Err(PasskeyStoreError::UnexpectedError("down".into()))
+        }
+        async fn delete_all_for_user(&self, _: &Email) -> Result<(), PasskeyStoreError> {
+            Err(PasskeyStoreError::UnexpectedError("down".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn account_is_not_deleted_if_its_passkeys_cannot_be_removed() {
+        let users = HashMapUserStore::new();
+        let password = Password::try_from(Secret::new("a-long-password".to_string())).unwrap();
+        users
+            .add_user(User::new(email(), password, false))
+            .await
+            .unwrap();
+        let scheme = JwtScheme::new(
+            users.clone(),
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_passkeys(PasskeyFlow::new(
+            UnavailableCredentialStore,
+            HashMapChallengeStore::new(),
+            MockVerifier,
+        ));
+
+        // Deletion fails as a whole, leaving the account in place to retry —
+        // not a deleted account whose passkeys are still in the store.
+        assert!(scheme.delete_account(email()).await.is_err());
+        assert!(users.get_user(&email()).await.is_ok());
     }
 }

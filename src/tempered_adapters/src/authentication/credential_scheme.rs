@@ -749,17 +749,21 @@ where
 
     #[tracing::instrument(name = "CredentialScheme::delete_account", skip(self))]
     async fn delete_account(&self, email: Email) -> Result<(), Self::AccountDeletionError> {
-        self.user_store.delete_user(&email).await?;
-        // Without this, a deleted user's token keeps validating until it
+        // Order matters: everything that can log in as this user goes first,
+        // the account last. If a step fails, what remains is an account with
+        // fewer credentials — never credentials or sessions without an account.
+
+        // Passkeys are a login credential for this account: remove them, so
+        // they cannot outlive it or be inherited by a later account that
+        // reuses the address.
+        self.passkeys.forget_user(&email).await?;
+        // A deleted user's token would otherwise keep validating until it
         // expires (JWT validation is signature-based, not a user-store read).
         self.tokens
             .revoke_all_for_user(&email)
             .await
             .map_err(CredentialError::Token)?;
-        // Passkeys are a login credential for this account: remove them with
-        // it, so they cannot outlive it or be inherited by a later account
-        // that reuses the address.
-        self.passkeys.forget_user(&email).await?;
+        self.user_store.delete_user(&email).await?;
         Ok(())
     }
 }
