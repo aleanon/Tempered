@@ -55,13 +55,10 @@ edition = "2024"
 [workspace.dependencies]
 # Internal crates
 tempered_core = { path = "src/tempered_core" }
-tempered_adapters = { path = "src/tempered_adapters" }
 tempered_axum = { path = "src/tempered_axum" }
 
 # Web framework
 axum = "0.8"
-axum-extra = { version = "0.12", features = ["cookie"] }
-axum-server = { version = "0.8", features = ["tls-rustls"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs", "cors", "trace", "tower"] }
 http = "*"
@@ -92,8 +89,6 @@ rand = "0.9.2"
 regex = "1.12"
 thiserror = "2.0"
 secrecy = { version = "0.8", features = ["serde"] }
-dashmap = { version = "6.1.0", features = ["serde"] }
-arc-swap = { version = "1.7", features = ["serde"] }
 
 # Authentication & Security
 jsonwebtoken = { version = "10.2", default-features = false, features = [
@@ -103,7 +98,6 @@ argon2 = { version = "0.5.3", features = ["std"] }
 sha2 = "0.10"
 
 # Configuration
-config = { version = "0.15.19", features = ["json"] }
 dotenvy = "0.15.7"
 
 # Observability
@@ -113,7 +107,6 @@ tracing-subscriber = { version = "0.3.22", features = [
     "env-filter",
 ] }
 tracing-error = "0.2.1"
-color-eyre = "0.6.5"
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = [
@@ -122,18 +115,12 @@ reqwest = { version = "0.12", default-features = false, features = [
     "cookies",
 ] }
 
-# Templates
-askama = "0.14"
-
 # Testing dependencies
 testcontainers-modules = { version = "0.14", features = [
     "postgres",
     "blocking",
     "redis",
 ] }
-libtest-mimic = "0.8"
-libtest-mimic-collect = "0.3"
-rustest = "0.3"
 wiremock = "0.6"
 fake = "4.4"
 quickcheck = "1.0"

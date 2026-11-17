@@ -41,8 +41,6 @@ chrono.workspace = true
 time.workspace = true
 thiserror.workspace = true
 secrecy.workspace = true
-dashmap.workspace = true
-arc-swap.workspace = true
 rand.workspace = true
 http.workspace = true
 
@@ -52,12 +50,10 @@ argon2.workspace = true
 sha2.workspace = true
 
 # Configuration
-config.workspace = true
 dotenvy.workspace = true
 
 # Observability
 tracing.workspace = true
-color-eyre.workspace = true
 
 # HTTP client (feature-gated)
 reqwest = { workspace = true, optional = true }

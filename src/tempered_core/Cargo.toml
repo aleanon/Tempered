@@ -12,7 +12,6 @@ serde_json.workspace = true
 secrecy.workspace = true
 regex.workspace = true
 uuid.workspace = true
-chrono.workspace = true
 rand.workspace = true
 
 [dev-dependencies]

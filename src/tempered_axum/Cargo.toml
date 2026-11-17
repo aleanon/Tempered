@@ -17,7 +17,6 @@ tempered_adapters = { path = "../tempered_adapters", default-features = false }
 
 # Axum framework
 axum.workspace = true
-axum-extra.workspace = true
 
 http.workspace = true
 tower-http.workspace = true
