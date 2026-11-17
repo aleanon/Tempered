@@ -1154,12 +1154,13 @@ where
     )]
     async fn finish_passkey_registration(
         &self,
+        email: Email,
         challenge: WebAuthnChallenge,
         response: serde_json::Value,
     ) -> Result<(), Self::PasskeyError> {
         self.passkeys
             .flow
-            .finish_registration(challenge, response)
+            .finish_registration(&email, challenge, response)
             .await?;
         Ok(())
     }
@@ -1186,6 +1187,9 @@ where
             .flow
             .finish_authentication(challenge, response)
             .await?;
+        // A passkey outlives nothing: if the account it was enrolled for is gone
+        // (deleted since enrollment), the credential must not mint a session.
+        self.user_store.get_user(&email).await?;
         Ok(self
             .tokens
             .issue(&email)

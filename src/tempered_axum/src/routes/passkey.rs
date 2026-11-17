@@ -4,21 +4,25 @@
 //! split into a `start` (returns ceremony options) and a `finish` (verifies the
 //! authenticator response). A successful `login/finish` sets the scheme's auth
 //! cookie, exactly like a password login.
+//!
+//! The two **registration** routes sit behind the login-validation middleware
+//! and enroll a passkey for the *logged-in* user, read from the session's
+//! claims. They never accept an email from the request: a route that did would
+//! let anyone attach their own authenticator to any account. The two **login**
+//! routes are public.
 
 use crate::IntoStatusMessage;
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
 use serde_json::json;
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
-use tempered_core::{Email, HttpAuthenticationScheme, SupportsPasskeys, WebAuthnChallenge};
+use tempered_core::{
+    AuthValidator, Email, HttpAuthenticationScheme, IdentityClaims, SupportsPasskeys,
+    WebAuthnChallenge,
+};
 
 use crate::adapters::into_axum_response;
-
-#[derive(Debug, Deserialize)]
-pub struct RegisterStartRequest {
-    pub email: Secret<String>,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct LoginStartRequest {
@@ -37,19 +41,35 @@ fn bad_request(message: String) -> axum::response::Response {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
 }
 
-/// Registration leg 1: issue creation options for an enrolling user.
-#[tracing::instrument(name = "PasskeyRegisterStart", skip(scheme, req))]
+/// The logged-in user, from the claims the login middleware validated.
+/// `None` only if the validated subject is somehow not an email.
+fn session_email<C: IdentityClaims>(claims: &C) -> Option<Email> {
+    Email::try_from(claims.subject().clone()).ok()
+}
+
+fn invalid_session() -> axum::response::Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({ "error": "Invalid session" })),
+    )
+        .into_response()
+}
+
+/// Registration leg 1: issue creation options for the logged-in user.
+///
+/// Takes no request body; the user is the session owner.
+#[tracing::instrument(name = "PasskeyRegisterStart", skip(scheme, claims))]
 pub async fn passkey_register_start<S>(
     State(scheme): State<S>,
-    Json(req): Json<RegisterStartRequest>,
+    Extension(claims): Extension<<S::Validator as AuthValidator>::Claims>,
 ) -> impl IntoResponse
 where
     S: SupportsPasskeys,
     S::PasskeyError: IntoStatusMessage,
+    <S::Validator as AuthValidator>::Claims: IdentityClaims,
 {
-    let email = match Email::try_from(req.email) {
-        Ok(email) => email,
-        Err(e) => return bad_request(e.to_string()),
+    let Some(email) = session_email(&claims) else {
+        return invalid_session();
     };
 
     let builder = HttpResponseBuilder::new();
@@ -62,19 +82,27 @@ where
     }
 }
 
-/// Registration leg 2: verify the attestation and enroll the credential.
-#[tracing::instrument(name = "PasskeyRegisterFinish", skip(scheme, req))]
+/// Registration leg 2: verify the attestation and enroll the credential for the
+/// logged-in user, who must be the one that started the ceremony.
+#[tracing::instrument(name = "PasskeyRegisterFinish", skip(scheme, claims, req))]
 pub async fn passkey_register_finish<S>(
     State(scheme): State<S>,
+    Extension(claims): Extension<<S::Validator as AuthValidator>::Claims>,
     Json(req): Json<FinishRequest>,
 ) -> impl IntoResponse
 where
     S: SupportsPasskeys,
     S::PasskeyError: IntoStatusMessage,
+    <S::Validator as AuthValidator>::Claims: IdentityClaims,
 {
+    let Some(email) = session_email(&claims) else {
+        return invalid_session();
+    };
+
     let builder = HttpResponseBuilder::new();
     match handlers::handle_passkey_register_finish(
         &scheme,
+        email,
         WebAuthnChallenge(req.challenge),
         req.response,
         builder,

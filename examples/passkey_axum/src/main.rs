@@ -16,6 +16,13 @@
 //! add (pass a path to `auth_service(...).passkeys(..)` only to override the
 //! prefix).
 //!
+//! Passkeys are enrolled **for an existing, logged-in account**: the two
+//! `register/*` routes sit behind the login middleware and enroll for the
+//! session's owner, so the demo first creates an account with a password, logs
+//! in, enrolls a passkey, logs out, and then signs back in with the passkey
+//! alone. (Enrolling must be authenticated — otherwise anyone could attach their
+//! own authenticator to someone else's account.)
+//!
 //! A successful authentication ceremony issues the scheme's **primary JWT** — the
 //! same session cookie a password or OAuth login would produce, which `/me`
 //! validates below.
@@ -49,7 +56,8 @@ use tempered::{
     Secret, auth_service,
 };
 
-/// The fully-applied scheme type: a JWT core with only the passkey slot enabled.
+/// The fully-applied scheme type: a JWT core with only the passkey slot enabled
+/// (password signup is a runtime flag, not a type-level slot).
 type Scheme = JwtScheme<
     HashMapUserStore,
     HashSetBannedTokenStore,
@@ -80,18 +88,20 @@ async fn main() {
         issuer: None,
     };
 
-    // Passkeys are the only capability this scheme opts into.
+    // Password signup creates the account a passkey is then enrolled for.
     let scheme: Scheme = JwtScheme::new(
         HashMapUserStore::new(),
         jwt_config,
         HashSetBannedTokenStore::new(),
         HashMapTokenEpochStore::new(),
     )
+    .supports_registration()
     .supports_passkeys(flow);
 
-    // The four passkey ceremony routes under `/passkey/*` (register/login ×
-    // start/finish) auto-wire from `supports_passkeys`; `/logout` and the frontend
-    // come for free.
+    // The four passkey ceremony routes under `/passkey/*` auto-wire from
+    // `supports_passkeys`: `register/{start,finish}` behind the login middleware,
+    // `login/{start,finish}` public. `/signup`, `/login`, `/logout` and the
+    // frontend come for free.
     let auth_router: Router = auth_service(scheme.clone(), ASSETS.to_string()).into();
 
     // `/me` reads the JWT the login ceremony issued, so it needs the scheme as

@@ -97,7 +97,7 @@ automatically:
 | Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes |
 | Email verification | `.supports_email_verification(...)` | `POST /verify-email` |
 | OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes |
-| Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey ceremony routes |
+| Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey login routes (public) + enrolment routes (logged-in user only) |
 
 Login, logout, and verify-token are always present. Every default path can be
 overridden on the service builder (e.g. `.login("/signin")`).

@@ -39,6 +39,11 @@ where
     }
 
     /// Registration step 1: issue creation options for an enrolling user.
+    ///
+    /// `email` must be the **already-authenticated** user. Enrolling a passkey
+    /// grants the ability to log in as that user, so the caller has to prove who
+    /// they are first (a logged-in session); never take this value from an
+    /// unauthenticated request.
     pub async fn start_registration(
         &self,
         email: Email,
@@ -52,16 +57,27 @@ where
     }
 
     /// Registration step 2: verify the attestation and store the credential.
+    ///
+    /// `email` is the authenticated user finishing the ceremony. It must be the
+    /// same user who started it: a ceremony begun in one account's session can
+    /// not be completed from another's.
     pub async fn finish_registration(
         &self,
+        email: &Email,
         challenge: WebAuthnChallenge,
         response: serde_json::Value,
     ) -> Result<Email, PasskeyFlowError> {
-        let email = self
+        let bound = self
             .challenge_store
             .consume_challenge(&challenge)
             .await?
             .ok_or(PasskeyFlowError::MissingUser)?;
+        // Reported exactly like an unknown challenge, so a caller learns nothing
+        // about ceremonies that belong to other users.
+        if &bound != email {
+            return Err(ChallengeStoreError::ChallengeNotFound.into());
+        }
+        let email = bound;
 
         let verified = self.verifier.verify_registration(&challenge, &response)?;
 
@@ -275,9 +291,33 @@ mod tests {
     async fn register(flow: &Flow, cred_id: &str) {
         let opts = flow.start_registration(email()).await.unwrap();
         let challenge = challenge_of(&opts);
-        flow.finish_registration(challenge, json!({ "id": cred_id }))
+        flow.finish_registration(&email(), challenge, json!({ "id": cred_id }))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn registration_cannot_be_finished_by_a_different_user() {
+        let f = flow();
+        let opts = f.start_registration(email()).await.unwrap();
+        let other = Email::try_from(Secret::new("attacker@example.com".to_string())).unwrap();
+
+        let result = f
+            .finish_registration(&other, challenge_of(&opts), json!({ "id": "cred-evil" }))
+            .await;
+        assert!(matches!(
+            result,
+            Err(PasskeyFlowError::Challenge(
+                ChallengeStoreError::ChallengeNotFound
+            ))
+        ));
+        // Nothing was enrolled for either user.
+        assert!(
+            f.credential_store
+                .get_credential(&CredentialId("cred-evil".into()))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

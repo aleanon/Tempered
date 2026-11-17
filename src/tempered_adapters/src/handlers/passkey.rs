@@ -1,5 +1,9 @@
 //! Framework-agnostic passkey (WebAuthn) handlers.
 //!
+//! Registration is for an **already authenticated** user: both registration
+//! handlers take the caller's `email`, which the delivery layer must read from
+//! the validated session (never from the request body).
+//!
 //! Each ceremony is JSON in / JSON out. The three non-login steps return their
 //! options/result directly; only `login_finish` delivers a token, which it does
 //! by reusing the scheme's `create_login_response` (so the passkey session
@@ -13,7 +17,7 @@ use tempered_core::{
 
 use crate::handlers::HandlerError;
 
-/// Registration leg 1: return creation options for an enrolling user.
+/// Registration leg 1: return creation options for the authenticated user.
 pub async fn handle_passkey_register_start<S, B>(
     scheme: &S,
     email: Email,
@@ -33,6 +37,7 @@ where
 /// Registration leg 2: verify the attestation and enroll the credential.
 pub async fn handle_passkey_register_finish<S, B>(
     scheme: &S,
+    email: Email,
     challenge: WebAuthnChallenge,
     response: serde_json::Value,
     builder: B,
@@ -42,7 +47,7 @@ where
     B: ResponseBuilder,
 {
     scheme
-        .finish_passkey_registration(challenge, response)
+        .finish_passkey_registration(email, challenge, response)
         .await
         .map_err(HandlerError::Auth)?;
     Ok(builder

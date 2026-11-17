@@ -229,6 +229,7 @@ mod oauth_tests {
 mod passkey_tests {
     use super::{JwtScheme, Passkeys};
     use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
+    use crate::authentication::credential_scheme::CredentialError;
     use crate::passkey::PasskeyFlow;
     use crate::persistence::{
         HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore,
@@ -238,9 +239,9 @@ mod passkey_tests {
     use secrecy::Secret;
     use serde_json::json;
     use tempered_core::{
-        AuthValidator, AuthenticationScheme, CredentialId, Email, PasskeyCredential,
-        SupportsPasskeys, VerifiedAssertion, VerifiedRegistration, WebAuthnChallenge,
-        WebAuthnError, WebAuthnVerifier,
+        AuthValidator, AuthenticationScheme, CredentialId, Email, PasskeyCredential, Password,
+        SupportsPasskeys, User, UserStore, UserStoreError, VerifiedAssertion, VerifiedRegistration,
+        WebAuthnChallenge, WebAuthnError, WebAuthnVerifier,
     };
 
     #[derive(Clone)]
@@ -308,20 +309,31 @@ mod passkey_tests {
         Passkeys<HashMapPasskeyCredentialStore, HashMapChallengeStore, MockVerifier>,
     >;
 
-    fn scheme_with_passkeys() -> TestScheme {
+    /// A passkey scheme whose user store already holds [`email`]'s account
+    /// (passkeys are enrolled for, and log in to, existing accounts). The store
+    /// handle is returned so a test can remove the account.
+    async fn scheme_with_passkeys() -> (TestScheme, HashMapUserStore) {
+        let user_store = HashMapUserStore::new();
+        let password = Password::try_from(Secret::new("a-long-password".to_string())).unwrap();
+        user_store
+            .add_user(User::new(email(), password, false))
+            .await
+            .unwrap();
+
         let flow = PasskeyFlow::new(
             HashMapPasskeyCredentialStore::new(),
             HashMapChallengeStore::new(),
             MockVerifier,
         );
 
-        JwtScheme::new(
-            HashMapUserStore::new(),
+        let scheme = JwtScheme::new(
+            user_store.clone(),
             jwt_config(),
             HashSetBannedTokenStore::new(),
             HashMapTokenEpochStore::new(),
         )
-        .supports_passkeys(flow)
+        .supports_passkeys(flow);
+        (scheme, user_store)
     }
 
     fn jwt_config() -> JwtAuthConfig {
@@ -344,11 +356,11 @@ mod passkey_tests {
 
     #[tokio::test]
     async fn register_then_authenticate_issues_a_jwt_that_validates() {
-        let scheme = scheme_with_passkeys();
+        let (scheme, _users) = scheme_with_passkeys().await;
 
         let opts = scheme.start_passkey_registration(email()).await.unwrap();
         scheme
-            .finish_passkey_registration(challenge_of(&opts), json!({ "id": "cred-abc" }))
+            .finish_passkey_registration(email(), challenge_of(&opts), json!({ "id": "cred-abc" }))
             .await
             .unwrap();
 
@@ -374,12 +386,43 @@ mod passkey_tests {
     }
 
     #[tokio::test]
-    async fn cloned_authenticator_is_rejected() {
-        let scheme = scheme_with_passkeys();
+    async fn passkey_of_a_deleted_account_cannot_log_in() {
+        let (scheme, users) = scheme_with_passkeys().await;
 
         let opts = scheme.start_passkey_registration(email()).await.unwrap();
         scheme
-            .finish_passkey_registration(challenge_of(&opts), json!({ "id": "cred-abc" }))
+            .finish_passkey_registration(email(), challenge_of(&opts), json!({ "id": "cred-abc" }))
+            .await
+            .unwrap();
+
+        // The account is removed, but the credential is still in the passkey store.
+        users.delete_user(&email()).await.unwrap();
+
+        let opts = scheme
+            .start_passkey_authentication(Some(email()))
+            .await
+            .unwrap();
+        let result = scheme
+            .finish_passkey_authentication(
+                challenge_of(&opts),
+                json!({ "id": "cred-abc", "sign_count": 1 }),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(CredentialError::UserStoreError(
+                UserStoreError::UserNotFound
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn cloned_authenticator_is_rejected() {
+        let (scheme, _users) = scheme_with_passkeys().await;
+
+        let opts = scheme.start_passkey_registration(email()).await.unwrap();
+        scheme
+            .finish_passkey_registration(email(), challenge_of(&opts), json!({ "id": "cred-abc" }))
             .await
             .unwrap();
 

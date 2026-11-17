@@ -343,11 +343,15 @@ impl<U, T, F, L, R, M, O, CS, ChS, V> WirePasskeys
 where
     Self: HttpAuthenticationScheme + SupportsPasskeys,
     <Self as SupportsPasskeys>::PasskeyError: IntoStatusMessage,
+    // Registration enrolls a passkey for the logged-in user, whatever the claims type.
+    <<Self as AuthenticationScheme>::Validator as AuthValidator>::Claims: IdentityClaims,
 {
     fn wire_passkeys(&self, mut routers: Routers<Self>, o: &PathOverrides) -> Routers<Self> {
         let prefix = or(&o.passkey_prefix, "/passkey");
-        routers.main_router = routers
-            .main_router
+        // Enrolling a passkey grants login as that user, so registration needs
+        // a normal session → validated bucket. Never move these to `main_router`.
+        routers.validated_router = routers
+            .validated_router
             .route(
                 &format!("{prefix}/register/start"),
                 post(crate::routes::passkey_register_start::<Self>),
@@ -355,7 +359,10 @@ where
             .route(
                 &format!("{prefix}/register/finish"),
                 post(crate::routes::passkey_register_finish::<Self>),
-            )
+            );
+        // Logging in with a passkey is, by definition, unauthenticated.
+        routers.main_router = routers
+            .main_router
             .route(
                 &format!("{prefix}/login/start"),
                 post(crate::routes::passkey_login_start::<Self>),

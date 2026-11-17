@@ -189,8 +189,11 @@ pub trait SupportsOAuth2: AuthenticationScheme {
 ///
 /// Each ceremony is two legs of JSON: a `start_*` that returns the options the
 /// browser passes to `navigator.credentials`, and a `finish_*` that verifies the
-/// authenticator's response. Registration *enrolls* a credential for an already
-/// identified user; authentication verifies an assertion and — like
+/// authenticator's response. Registration *enrolls* a credential for an
+/// **already authenticated** user: both registration legs take the email of the
+/// logged-in caller, and a delivery layer must source it from the validated
+/// session, never from the request body — otherwise anyone could enroll their
+/// own authenticator on someone else's account. Authentication verifies an assertion and — like
 /// [`SupportsOAuth2::complete_oauth`] — issues this scheme's **primary
 /// [`Token`](AuthenticationScheme::Token)**, so a passkey login yields the same
 /// session as any other.
@@ -202,15 +205,20 @@ pub trait SupportsPasskeys: AuthenticationScheme {
     /// Errors that can occur during a passkey ceremony.
     type PasskeyError: std::error::Error + Send + Sync + 'static;
 
-    /// Registration leg 1: issue creation options for an enrolling user.
+    /// Registration leg 1: issue creation options for the authenticated user
+    /// `email`.
     async fn start_passkey_registration(
         &self,
         email: Email,
     ) -> Result<serde_json::Value, Self::PasskeyError>;
 
     /// Registration leg 2: verify the attestation and enroll the credential.
+    ///
+    /// `email` is the authenticated user; it must match the user who started
+    /// the ceremony identified by `challenge`.
     async fn finish_passkey_registration(
         &self,
+        email: Email,
         challenge: WebAuthnChallenge,
         response: serde_json::Value,
     ) -> Result<(), Self::PasskeyError>;

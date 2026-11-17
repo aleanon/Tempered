@@ -40,30 +40,42 @@
       fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
     // A real ceremony's credential id comes from the authenticator; here we
-    // mint one per email at registration and remember it for login.
+    // mint one per email at enrolment and remember it for login.
     const credKey = (email) => `passkey_cred:${email}`;
+    const fail = (status, msg) => status.replaceChildren(el("span", { className: "err" }, msg));
 
-    async function registerThenLogin(email, status) {
-      // --- Registration: start -> simulate authenticator -> finish ----------
-      const rs = await post("/passkey/register/start", { email });
-      if (!rs.ok) return status.replaceChildren(el("span", { className: "err" }, "register/start failed"));
+    // Passkeys are enrolled for an existing, logged-in account. So: create the
+    // account with a password, log in, enrol, then log out again so the passkey
+    // sign-in below is a real, from-scratch login.
+    async function createAccountAndEnrol(email, password, status) {
+      const creds = { email, password, requires2FA: false };
+      const su = await post("/signup", creds);
+      if (!su.ok && su.status !== 409) return fail(status, "signup failed");
+      const li = await post("/login", creds);
+      if (!li.ok) return fail(status, "password login failed");
+
+      // --- Enrolment: start -> simulate authenticator -> finish -------------
+      // No email is sent: the server enrols for the session's owner.
+      const rs = await post("/passkey/register/start", {});
+      if (!rs.ok) return fail(status, "register/start failed");
       const { challenge: rc } = await rs.json();
 
       const credId = crypto.randomUUID();
       const rf = await post("/passkey/register/finish", { challenge: rc, response: { id: credId } });
-      if (!rf.ok) return status.replaceChildren(el("span", { className: "err" }, "register/finish failed"));
+      if (!rf.ok) return fail(status, "register/finish failed");
       localStorage.setItem(credKey(email), credId);
 
-      await login(email, status);
+      await post("/logout", {});
+      status.replaceChildren(el("span", {}, "Passkey enrolled. Now sign in with it."));
     }
 
     async function login(email, status) {
       const credId = localStorage.getItem(credKey(email));
-      if (!credId) return status.replaceChildren(el("span", { className: "err" }, "no passkey registered for this email"));
+      if (!credId) return fail(status, "no passkey enrolled for this email");
 
       // --- Authentication: start -> simulate assertion -> finish ------------
       const ls = await post("/passkey/login/start", { email });
-      if (!ls.ok) return status.replaceChildren(el("span", { className: "err" }, "login/start failed"));
+      if (!ls.ok) return fail(status, "login/start failed");
       const { challenge: lc } = await ls.json();
 
       // Bump the sign counter each login (the flow rejects regressions).
@@ -73,7 +85,7 @@
       const lf = await post("/passkey/login/finish", { challenge: lc, response: { id: credId, sign_count: next } });
       if (!lf.ok) {
         const { error } = await lf.json().catch(() => ({ error: "login failed" }));
-        return status.replaceChildren(el("span", { className: "err" }, error || "login/finish failed"));
+        return fail(status, error || "login/finish failed");
       }
       render();
     }
@@ -91,14 +103,15 @@
       }
 
       const input = el("input", { type: "email", placeholder: "you@example.com", value: "demo@example.com" });
+      const pw = el("input", { type: "password", placeholder: "password (for account creation)", value: "demo-password-123" });
       const status = el("p", { className: "muted" });
-      const reg = el("button", {}, "Register passkey & sign in");
-      reg.onclick = () => registerThenLogin(input.value, status);
-      const signin = el("button", { className: "secondary" }, "Sign in");
+      const reg = el("button", {}, "Create account & enrol passkey");
+      reg.onclick = () => createAccountAndEnrol(input.value, pw.value, status);
+      const signin = el("button", { className: "secondary" }, "Sign in with passkey");
       signin.onclick = () => login(input.value, status);
 
-      card.append(el("p", {}, "Enrol a passkey, then sign in with it."), input,
-        el("div", {}, ""), reg, signin, status);
+      card.append(el("p", {}, "Create an account and enrol a passkey, then sign in with the passkey alone."),
+        input, el("div", {}, ""), pw, el("div", {}, ""), reg, signin, status);
     }
     render();
   </script>
