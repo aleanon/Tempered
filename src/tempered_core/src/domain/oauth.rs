@@ -31,3 +31,18 @@ pub struct OAuthUserInfo {
     /// Identity must never be derived from an unverified email.
     pub email_verified: bool,
 }
+
+/// An authorization request that has been sent to a provider and is awaiting
+/// its callback; held by an [`OAuthStateStore`](crate::OAuthStateStore) under
+/// the request's `state`.
+#[derive(Clone)]
+pub struct PendingAuthorization {
+    /// The provider the request was sent to. A callback is only accepted on
+    /// that same provider's callback route, so a `state` (and its PKCE
+    /// verifier) issued for one provider can never be redeemed at another's
+    /// token endpoint.
+    pub provider: String,
+    /// The PKCE verifier generated for this request (RFC 7636). Secret: it
+    /// leaves the server only in the back-channel token request.
+    pub code_verifier: Secret<String>,
+}

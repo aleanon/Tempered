@@ -20,7 +20,8 @@ use rand::RngCore;
 use secrecy::{ExposeSecret, Secret};
 use tempered_core::{
     ClassifyError, Email, ErrorCategory, OAuthHttpClient, OAuthIdentityStore,
-    OAuthIdentityStoreError, OAuthProviderConfig, OAuthStateStore, UserError, constant_time_eq,
+    OAuthIdentityStoreError, OAuthProviderConfig, OAuthStateStore, PendingAuthorization, UserError,
+    constant_time_eq,
 };
 use thiserror::Error;
 
@@ -74,7 +75,13 @@ where
         // Only the challenge travels through the browser; the verifier stays here.
         let code_challenge = pkce_challenge_s256(code_verifier.expose_secret());
         self.state_store
-            .store_state(state.clone(), code_verifier)
+            .store_state(
+                state.clone(),
+                PendingAuthorization {
+                    provider: config.name.clone(),
+                    code_verifier,
+                },
+            )
             .await
             .map_err(|e| OAuthFlowError::State(e.to_string()))?;
         Ok(AuthorizationRequest {
@@ -104,13 +111,23 @@ where
             return Err(OAuthFlowError::InvalidState);
         }
 
-        // Single-use: consuming the state also yields the PKCE verifier that
-        // was generated for this exact authorization request.
-        let code_verifier = self
+        // Single-use: consuming the state yields the authorization request it
+        // was issued for, including that request's PKCE verifier.
+        let pending = self
             .state_store
             .consume_state(query_state)
             .await
             .map_err(|_| OAuthFlowError::InvalidState)?;
+
+        // The callback must arrive on the route of the provider the request was
+        // sent to. Otherwise a state issued for provider A could be completed
+        // on provider B's callback, sending A's verifier (and the code) to B's
+        // token endpoint and taking the identity from B (provider mix-up).
+        // Checked before any outbound call; the state is spent either way.
+        if !constant_time_eq(&pending.provider, &config.name) {
+            return Err(OAuthFlowError::InvalidState);
+        }
+        let code_verifier = pending.code_verifier;
 
         let access_token = self
             .http_client
@@ -374,6 +391,26 @@ mod tests {
             pkce_challenge_s256(&seen[0]),
             query_param(&second.authorize_url, "code_challenge")
         );
+    }
+
+    #[tokio::test]
+    async fn a_state_issued_for_one_provider_is_rejected_on_another() {
+        let mut github = provider();
+        github.name = "github".to_string();
+        github.token_url = "https://github.example.com/token".to_string();
+        let f = flow("user@example.com").with_provider(github);
+
+        // Begun with google; the callback arrives on github's route.
+        let req = f.begin("google").await.unwrap();
+        let result = f.complete("github", "code", &req.state, &req.state).await;
+        assert!(matches!(result, Err(OAuthFlowError::InvalidState)));
+
+        // No verifier or code went to github's token endpoint, no identity was
+        // linked, and the state is spent: it cannot be retried on google either.
+        assert!(f.http_client.seen_verifiers.lock().unwrap().is_empty());
+        assert_eq!(f.linked_email("github", "sub-123").await.unwrap(), None);
+        let retry = f.complete("google", "code", &req.state, &req.state).await;
+        assert!(matches!(retry, Err(OAuthFlowError::InvalidState)));
     }
 
     #[tokio::test]

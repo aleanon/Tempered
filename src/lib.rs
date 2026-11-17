@@ -42,7 +42,8 @@ pub mod core {
 pub use tempered_core::{
     ApiKeyId, CeremonyId, CeremonyStart, CeremonyState, CredentialId, Email,
     EmailVerificationToken, IdentityClaims, OAuthProviderConfig, OAuthUserInfo, PasskeyCredential,
-    Password, SessionId, TwoFaAttemptId, TwoFaCode, TwoFaError, User, UserError, ValidatedUser,
+    Password, PendingAuthorization, SessionId, TwoFaAttemptId, TwoFaCode, TwoFaError, User,
+    UserError, ValidatedUser,
 };
 
 // ============================================================================

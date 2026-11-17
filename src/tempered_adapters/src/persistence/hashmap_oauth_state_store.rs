@@ -2,16 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use secrecy::Secret;
-use tempered_core::{OAuthStateStore, OAuthStateStoreError};
+use tempered_core::{OAuthStateStore, OAuthStateStoreError, PendingAuthorization};
 
 /// In-memory single-use OAuth `state` store for tests and local development.
 ///
 /// Dev/test only: entries never expire, so abandoned flows accumulate.
 #[derive(Default, Clone)]
 pub struct HashMapOAuthStateStore {
-    /// Pending `state` -> the PKCE verifier generated with it.
-    states: Arc<RwLock<HashMap<String, Secret<String>>>>,
+    /// `state` -> the authorization request awaiting its callback.
+    states: Arc<RwLock<HashMap<String, PendingAuthorization>>>,
 }
 
 impl HashMapOAuthStateStore {
@@ -25,13 +24,16 @@ impl OAuthStateStore for HashMapOAuthStateStore {
     async fn store_state(
         &self,
         state: String,
-        code_verifier: Secret<String>,
+        pending: PendingAuthorization,
     ) -> Result<(), OAuthStateStoreError> {
-        self.states.write().await.insert(state, code_verifier);
+        self.states.write().await.insert(state, pending);
         Ok(())
     }
 
-    async fn consume_state(&self, state: &str) -> Result<Secret<String>, OAuthStateStoreError> {
+    async fn consume_state(
+        &self,
+        state: &str,
+    ) -> Result<PendingAuthorization, OAuthStateStoreError> {
         self.states
             .write()
             .await
@@ -43,18 +45,26 @@ impl OAuthStateStore for HashMapOAuthStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secrecy::ExposeSecret;
+    use secrecy::{ExposeSecret, Secret};
+
+    fn pending(provider: &str, verifier: &str) -> PendingAuthorization {
+        PendingAuthorization {
+            provider: provider.to_string(),
+            code_verifier: Secret::new(verifier.to_string()),
+        }
+    }
 
     #[tokio::test]
-    async fn consume_returns_the_verifier_exactly_once() {
+    async fn consume_returns_the_pending_request_exactly_once() {
         let store = HashMapOAuthStateStore::new();
         store
-            .store_state("s1".to_string(), Secret::new("verifier-1".to_string()))
+            .store_state("s1".to_string(), pending("google", "verifier-1"))
             .await
             .unwrap();
 
-        let verifier = store.consume_state("s1").await.unwrap();
-        assert_eq!(verifier.expose_secret(), "verifier-1");
+        let found = store.consume_state("s1").await.unwrap();
+        assert_eq!(found.provider, "google");
+        assert_eq!(found.code_verifier.expose_secret(), "verifier-1");
         assert!(matches!(
             store.consume_state("s1").await,
             Err(OAuthStateStoreError::UnknownState)

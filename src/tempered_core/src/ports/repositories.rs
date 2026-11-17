@@ -1,11 +1,11 @@
 use async_trait::async_trait;
-use secrecy::Secret;
 use thiserror::Error;
 
 use crate::domain::{
     api_key::ApiKeyId,
     email::Email,
     email_verification_token::EmailVerificationToken,
+    oauth::PendingAuthorization,
     passkey::{CeremonyId, CredentialId, PasskeyCredential, PendingCeremony},
     password::Password,
     password_reset_token::PasswordResetToken,
@@ -277,27 +277,29 @@ pub enum OAuthStateStoreError {
     UnexpectedError(String),
 }
 
-/// Stores the single-use anti-CSRF `state` value, together with the PKCE
-/// `code_verifier` generated for the same authorization request, between the
-/// authorize redirect and the callback.
+/// Stores each in-flight authorization request — the provider it was sent to
+/// and its PKCE `code_verifier` — under its single-use anti-CSRF `state`,
+/// between the authorize redirect and the callback.
 ///
-/// The verifier is a secret: it never leaves the server except in the
-/// back-channel token request. Production implementations should apply a short
-/// TTL (minutes) and consume atomically.
+/// Production implementations should apply a short TTL (minutes) and consume
+/// atomically.
 #[async_trait]
 pub trait OAuthStateStore: Send + Sync {
-    /// Persist a pending `state` and the PKCE verifier bound to it.
+    /// Persist a pending authorization request under its `state`.
     async fn store_state(
         &self,
         state: String,
-        code_verifier: Secret<String>,
+        pending: PendingAuthorization,
     ) -> Result<(), OAuthStateStoreError>;
 
-    /// Consume a `state` value, returning the PKCE verifier stored with it.
+    /// Consume a `state` value, returning the request stored with it.
     ///
     /// Succeeds at most once per stored state: a second call (a replayed
     /// callback) must fail with [`OAuthStateStoreError::UnknownState`].
-    async fn consume_state(&self, state: &str) -> Result<Secret<String>, OAuthStateStoreError>;
+    async fn consume_state(
+        &self,
+        state: &str,
+    ) -> Result<PendingAuthorization, OAuthStateStoreError>;
 }
 
 #[derive(Debug, Error)]
