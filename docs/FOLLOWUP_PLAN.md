@@ -223,6 +223,53 @@ the example's `DemoVerifier`.
 
 ---
 
+## Port changes as executed (2026-11-17, branch `feat/pkce-and-webauthn-port`)
+
+Both port changes that had to precede the stores are done (3.0 PKCE, 4.1
+verifier shape). Reading the passkey and elevation code for them surfaced
+defects the earlier analysis had missed; each is fixed in its own commit:
+
+- **Passkey enrolment was unauthenticated** (account takeover): the
+  `register/*` routes were public and took the email from the body. Now behind
+  the login middleware, enrolling for the session owner only; a ceremony can
+  only be finished by the user who started it.
+- **`/elevate` returned 500 for every `SessionScheme`**: the route named the JWT
+  claims type. Routes now read the user through `IdentityClaims`.
+- **Credential ids could be overwritten** by re-registering them
+  (`add_credential` is now insert-only), and a login ceremony started for one
+  user accepted another user's credential.
+- **Passkeys outlived the account**: login now requires the account to exist,
+  and `delete_account` removes the user's passkeys.
+- **Two JWTs issued in the same second were identical**, so logout + immediate
+  re-login gave a banned session. Tokens now carry a random `jti`.
+
+CI also turned out to run a newer Rust (1.100) than local development (1.94);
+main was fixed for it (`6404c50`, `815b10d`). Run `rustup update stable`, or
+lint with `cargo +1.100.0`, before pushing.
+
+Consequences for Phase 3: `OAuthStateStore` holds a verifier per state;
+`ChallengeStore` holds a `PendingCeremony` (user + opaque bytes) per
+`CeremonyId`; `PasskeyCredentialStore` needs insert-only `add_credential`
+(primary key), `update_after_authentication` (counter + optional data) and
+`delete_all_for_user`.
+
+## Open decisions (raised 2026-11-17)
+
+1. **Step-up for passkey enrolment.** Enrolment needs a login session, but not
+   an elevated one. A stolen session cookie can therefore add a passkey and keep
+   access after the cookie expires. Password change and account deletion can
+   already be placed behind elevation; enrolment could get the same option
+   (e.g. `|e| e.supports_passkey_enrollment()` in the elevation closure). Needs
+   elevated-bucket variants of the two routes.
+2. **What an OAuth login is allowed to do.** `complete_oauth` mints the primary
+   token for whatever verified email the provider returns. That means (a) an
+   OAuth login creates a session for an email with no local account, (b) it
+   logs in to an existing local account by email match alone, and (c) it skips
+   that account's 2FA. Each is a defensible product choice, but none is
+   currently stated or configurable.
+3. **OAuth identity links on account deletion.** Not removed today; same
+   inheritance concern as passkeys had, if (2b) stays.
+
 ## Decisions (settled 2026-11-16)
 
 1. **History rewrite (0.4)** — no. Rotate the secrets instead.
