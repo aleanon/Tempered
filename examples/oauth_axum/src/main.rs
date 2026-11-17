@@ -16,6 +16,11 @@
 //! to `/mock/authorize` and only redeems the code at `/mock/token` when the
 //! presented `code_verifier` hashes to it.
 //!
+//! An OAuth login follows the same rules as a password login: the first login
+//! for an email creates the local account (here: `demo@example.com` in the
+//! in-memory user store), later ones log in to it, and an account that requires
+//! 2FA would still be asked for its code.
+//!
 //! Unlike the low-level `OAuthFlow` (which only yields a verified `Email`), here
 //! the flow is attached to a `JwtScheme` via `.supports_oauth(flow)`, so a
 //! successful provider callback issues the scheme's **primary JWT** — the exact

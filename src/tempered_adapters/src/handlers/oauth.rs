@@ -24,7 +24,9 @@ where
     Ok(scheme.create_oauth_start_response(builder, authorization)?)
 }
 
-/// Complete an OAuth callback: issue the primary token and redirect into the app.
+/// Complete an OAuth callback: log the user in (creating the account on a first
+/// visit) and redirect into the app, or to its second-factor step when the
+/// account requires 2FA.
 pub async fn handle_oauth_callback<S, B>(
     scheme: &S,
     provider: &str,
@@ -37,9 +39,9 @@ where
     S: HttpOAuth2Scheme,
     B: ResponseBuilder,
 {
-    let token = scheme
+    let outcome = scheme
         .complete_oauth(provider, code, query_state, cookie_state)
         .await
         .map_err(HandlerError::Auth)?;
-    Ok(scheme.create_oauth_callback_response(builder, token)?)
+    Ok(scheme.create_oauth_callback_response(builder, outcome)?)
 }

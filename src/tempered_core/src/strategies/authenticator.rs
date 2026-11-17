@@ -151,11 +151,18 @@ pub struct AuthorizationRequest {
 /// OAuth2 / OIDC provider (Google, GitHub, …).
 ///
 /// Unlike credential login, OAuth is a two-leg redirect flow. The provider
-/// verifies the user's identity and yields a local [`Email`]; this scheme then
-/// issues its **own primary [`Token`](AuthenticationScheme::Token)** for that
-/// account — so an OAuth login is indistinguishable from any other once
-/// completed. Account provisioning/registration is the provider's concern, so
-/// OAuth-only schemes typically do not implement [`SupportsRegistration`].
+/// verifies the user's identity and yields a verified [`Email`]; from there an
+/// OAuth login follows the same rules as any other login:
+///
+/// - **No local account for that email:** one is created (the provider has
+///   verified the address), and the user is logged in.
+/// - **An account exists:** it is a normal login to that account. If the
+///   account requires two-factor authentication, the second factor is still
+///   required — the provider replaces the password, not the second factor.
+///
+/// On success the scheme issues its **own primary
+/// [`Token`](AuthenticationScheme::Token)**, so a completed OAuth login is
+/// indistinguishable from any other.
 #[async_trait]
 pub trait SupportsOAuth2: AuthenticationScheme {
     /// Errors that can occur during the OAuth flow.
@@ -167,10 +174,13 @@ pub trait SupportsOAuth2: AuthenticationScheme {
     /// layer must bind to the initiating browser (see [`AuthorizationRequest`]).
     async fn begin_oauth(&self, provider: &str) -> Result<AuthorizationRequest, Self::OAuth2Error>;
 
-    /// Leg 2: complete the callback and issue this scheme's primary token.
+    /// Leg 2: complete the callback and log the user in.
     ///
-    /// Validates `state`, exchanges `code`, verifies the provider identity, and
-    /// mints a [`Token`](AuthenticationScheme::Token) for the resulting account.
+    /// Validates `state`, exchanges `code`, verifies the provider identity,
+    /// creates the local account if there is none, and then returns the same
+    /// [`LoginOutcome`] a password login would: a
+    /// [`Token`](AuthenticationScheme::Token), or a pending 2FA challenge when
+    /// the account requires a second factor.
     ///
     /// `query_state` is the `state` the provider echoed on the callback;
     /// `cookie_state` is the value previously bound to the browser. The two must
@@ -181,7 +191,7 @@ pub trait SupportsOAuth2: AuthenticationScheme {
         code: &str,
         query_state: &str,
         cookie_state: &str,
-    ) -> Result<Self::Token, Self::OAuth2Error>;
+    ) -> Result<LoginOutcome<Self::Token>, Self::OAuth2Error>;
 }
 
 // ============================================================================

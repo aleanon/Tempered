@@ -225,10 +225,11 @@ pub trait HttpElevationScheme: HttpAuthenticationScheme + SupportsElevation {
 ///    which redirects to the provider while binding `state` to the browser via a
 ///    cookie named [`oauth_state_cookie_name`](HttpOAuth2Scheme::oauth_state_cookie_name).
 /// 2. **Callback** — the route reads `code` + `state` (query) and the state
-///    cookie, calls [`SupportsOAuth2::complete_oauth`] to obtain the primary
-///    token, then hands it to
+///    cookie, calls [`SupportsOAuth2::complete_oauth`] to obtain the
+///    [`LoginOutcome`], then hands it to
 ///    [`create_oauth_callback_response`](HttpOAuth2Scheme::create_oauth_callback_response),
-///    which delivers the token (e.g. sets the auth cookie) and redirects into the app.
+///    which either delivers the token (e.g. sets the auth cookie) and redirects
+///    into the app, or redirects to the app's second-factor step.
 pub trait HttpOAuth2Scheme: HttpAuthenticationScheme + SupportsOAuth2 {
     /// The cookie name used to bind the anti-CSRF `state` to the browser between
     /// the start redirect and the callback.
@@ -242,11 +243,17 @@ pub trait HttpOAuth2Scheme: HttpAuthenticationScheme + SupportsOAuth2 {
         authorization: AuthorizationRequest,
     ) -> Result<B::Response, crate::ResponseBuilderError>;
 
-    /// Build the post-callback response: deliver the issued token (e.g. set the
-    /// auth cookie), clear the state cookie, and redirect the browser into the app.
+    /// Build the post-callback response. The callback is a browser navigation,
+    /// so both outcomes are redirects, and both clear the state cookie:
+    ///
+    /// - [`LoginOutcome::Success`]: deliver the token (e.g. set the auth cookie)
+    ///   and redirect into the app.
+    /// - [`LoginOutcome::Requires2Fa`]: deliver **no** token; redirect to where
+    ///   the app collects the second factor, carrying what it needs to call the
+    ///   2FA verification endpoint.
     fn create_oauth_callback_response<B: ResponseBuilder>(
         &self,
         builder: B,
-        token: Self::Token,
+        outcome: LoginOutcome<Self::Token>,
     ) -> Result<B::Response, crate::ResponseBuilderError>;
 }

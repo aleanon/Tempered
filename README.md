@@ -99,6 +99,12 @@ automatically:
 | OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes |
 | Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey login routes (public) + enrolment routes (logged-in user only) |
 
+An OAuth login follows the same rules as a password login: the first login for
+an email creates the account, later ones log in to it, and an account that
+requires 2FA is still asked for its code (the callback redirects to
+`.oauth_two_fa_redirect(path)` with `loginAttemptId` and `email` instead of
+issuing a session).
+
 Login, logout, and verify-token are always present. Every default path can be
 overridden on the service builder (e.g. `.login("/signin")`).
 

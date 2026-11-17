@@ -94,17 +94,22 @@ where
 mod oauth_tests {
     use super::{JwtScheme, OAuth};
     use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
+    use crate::authentication::credential_scheme::CredentialError;
+    use crate::authentication::token_strategy::JwtToken;
+    use crate::email::MockEmailClient;
+    use crate::http::HttpResponseBuilder;
     use crate::oauth::OAuthFlow;
     use crate::persistence::{
-        HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore,
+        HashMapTokenEpochStore, HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
         hashmap_oauth_identity_store::HashMapOAuthIdentityStore,
         hashmap_oauth_state_store::HashMapOAuthStateStore,
     };
     use async_trait::async_trait;
-    use secrecy::Secret;
+    use secrecy::{ExposeSecret, Secret};
     use tempered_core::{
-        AuthValidator, AuthenticationScheme, OAuthHttpClient, OAuthHttpError, OAuthProviderConfig,
-        OAuthUserInfo, SupportsOAuth2,
+        AuthValidator, AuthenticationScheme, Email, HttpOAuth2Scheme, LoginOutcome,
+        OAuthHttpClient, OAuthHttpError, OAuthProviderConfig, OAuthUserInfo, Password,
+        SupportsOAuth2, SupportsTwoFactor, TwoFaCodeStore, User, UserStore,
     };
 
     #[derive(Clone)]
@@ -169,55 +174,252 @@ mod oauth_tests {
         OAuth<HashMapOAuthStateStore, HashMapOAuthIdentityStore, MockClient>,
     >;
 
-    fn scheme_with_oauth() -> TestScheme {
-        let flow = OAuthFlow::new(
+    fn email() -> Email {
+        Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
+    }
+
+    /// The provider vouches for `user@example.com`.
+    fn flow() -> OAuthFlow<HashMapOAuthStateStore, HashMapOAuthIdentityStore, MockClient> {
+        OAuthFlow::new(
             HashMapOAuthStateStore::new(),
             HashMapOAuthIdentityStore::new(),
             MockClient {
                 email: "user@example.com".to_string(),
             },
         )
-        .with_provider(provider());
+        .with_provider(provider())
+    }
 
-        JwtScheme::new(
-            HashMapUserStore::new(),
+    /// A scheme with OAuth and no 2FA, plus a handle on its user store.
+    fn scheme_with_oauth() -> (TestScheme, HashMapUserStore) {
+        let users = HashMapUserStore::new();
+        let scheme = JwtScheme::new(
+            users.clone(),
             jwt_config(),
             HashSetBannedTokenStore::new(),
             HashMapTokenEpochStore::new(),
         )
-        .supports_oauth(flow)
+        .supports_oauth(flow());
+        (scheme, users)
     }
 
-    #[tokio::test]
-    async fn completing_oauth_issues_a_jwt_that_validates() {
-        let scheme = scheme_with_oauth();
-
-        let auth = scheme.begin_oauth("google").await.unwrap();
-        assert!(auth.authorize_url.contains("client_id=cid"));
-
-        let token = scheme
-            .complete_oauth("google", "auth-code", &auth.state, &auth.state)
+    async fn add_account(users: &HashMapUserStore, password: &str, requires_2fa: bool) {
+        let password = Password::try_from(Secret::new(password.to_string())).unwrap();
+        users
+            .add_user(User::new(email(), password, requires_2fa))
             .await
             .unwrap();
+    }
 
+    /// Run both OAuth legs as the same browser.
+    async fn oauth_login<S: SupportsOAuth2>(
+        scheme: &S,
+    ) -> Result<LoginOutcome<S::Token>, S::OAuth2Error> {
+        let auth = scheme.begin_oauth("google").await.unwrap();
+        scheme
+            .complete_oauth("google", "auth-code", &auth.state, &auth.state)
+            .await
+    }
+
+    async fn validates<S>(scheme: &S, token: &JwtToken) -> bool
+    where
+        S: AuthenticationScheme,
+        S::Validator: AuthValidator<RequestParts = http::request::Parts>,
+    {
         let parts = http::Request::builder()
             .header("cookie", format!("jwt={}", token.as_str()))
             .body(())
             .unwrap()
             .into_parts()
             .0;
-        assert!(scheme.validator().validate(&parts).await.is_ok());
+        scheme.validator().validate(&parts).await.is_ok()
+    }
+
+    #[tokio::test]
+    async fn first_oauth_login_creates_the_account_and_logs_in() {
+        let (scheme, users) = scheme_with_oauth();
+        assert!(users.get_user(&email()).await.is_err());
+
+        let auth = scheme.begin_oauth("google").await.unwrap();
+        assert!(auth.authorize_url.contains("client_id=cid"));
+        let outcome = scheme
+            .complete_oauth("google", "auth-code", &auth.state, &auth.state)
+            .await
+            .unwrap();
+
+        let LoginOutcome::Success(token) = outcome else {
+            panic!("expected an immediate login");
+        };
+        assert!(validates(&scheme, &token).await);
+
+        // The account now exists, without 2FA, and with a password nobody knows.
+        let user = users.get_user(&email()).await.unwrap();
+        assert!(!user.requires_2fa);
+        for guess in ["", "password", "user@example.com"] {
+            if let Ok(guess) = Password::try_from(Secret::new(guess.to_string())) {
+                assert!(users.authenticate_user(&email(), &guess).await.is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn each_provider_created_account_gets_its_own_password() {
+        let (first, first_users) = scheme_with_oauth();
+        let (second, second_users) = scheme_with_oauth();
+        oauth_login(&first).await.unwrap();
+        oauth_login(&second).await.unwrap();
+
+        let a = first_users.get_user(&email()).await.unwrap().password;
+        let b = second_users.get_user(&email()).await.unwrap().password;
+        assert!(a != b);
+        assert_eq!(a.as_ref().expose_secret().len(), 43);
+    }
+
+    #[tokio::test]
+    async fn oauth_login_to_an_existing_account_leaves_it_untouched() {
+        let (scheme, users) = scheme_with_oauth();
+        add_account(&users, "the-users-own-password", false).await;
+
+        let outcome = oauth_login(&scheme).await.unwrap();
+        let LoginOutcome::Success(token) = outcome else {
+            panic!("expected an immediate login");
+        };
+        assert!(validates(&scheme, &token).await);
+
+        // Same account: its password still works, and it is the only account.
+        let password = Password::try_from(Secret::new("the-users-own-password".into())).unwrap();
+        assert!(users.authenticate_user(&email(), &password).await.is_ok());
+
+        // A second OAuth login is just another login.
+        assert!(matches!(
+            oauth_login(&scheme).await.unwrap(),
+            LoginOutcome::Success(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn oauth_login_does_not_skip_two_factor() {
+        let users = HashMapUserStore::new();
+        add_account(&users, "the-users-own-password", true).await;
+        let codes = HashMapTwoFaCodeStore::new();
+        let scheme = JwtScheme::new(
+            users.clone(),
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_2fa(codes.clone(), MockEmailClient::new())
+        .supports_oauth(flow());
+
+        // The provider login yields a pending challenge, not a token.
+        let outcome = oauth_login(&scheme).await.unwrap();
+        let LoginOutcome::Requires2Fa {
+            email: challenged,
+            attempt_id,
+        } = outcome
+        else {
+            panic!("a 2FA account must not be logged in by the provider alone");
+        };
+        assert_eq!(challenged, email());
+
+        // The challenge is a real one: a wrong code fails, the issued code
+        // completes the login.
+        let (stored_attempt, code) = codes
+            .get_login_attempt_id_and_two_fa_code(&email())
+            .await
+            .unwrap();
+        assert_eq!(stored_attempt, attempt_id);
+
+        let token = scheme.verify_2fa(email(), attempt_id, code).await.unwrap();
+        assert!(validates(&scheme, &token).await);
+    }
+
+    #[tokio::test]
+    async fn oauth_login_to_a_two_factor_account_fails_closed_without_two_factor_support() {
+        // The scheme has no 2FA capability, so it cannot challenge this account.
+        let (scheme, users) = scheme_with_oauth();
+        add_account(&users, "the-users-own-password", true).await;
+
+        let result = oauth_login(&scheme).await;
+        assert!(matches!(result, Err(CredentialError::TwoFaNotConfigured)));
+    }
+
+    fn header<'a>(response: &'a http::Response<String>, name: &str) -> Vec<&'a str> {
+        response
+            .headers()
+            .get_all(name)
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn successful_callback_sets_the_auth_cookie_and_enters_the_app() {
+        let (scheme, _users) = scheme_with_oauth();
+        let scheme = scheme.oauth_post_login_redirect("/app");
+        let outcome = oauth_login(&scheme).await.unwrap();
+
+        let response = scheme
+            .create_oauth_callback_response(HttpResponseBuilder::new(), outcome)
+            .unwrap();
+
+        assert_eq!(response.status(), 302);
+        assert_eq!(header(&response, "location"), ["/app"]);
+        let cookies = header(&response, "set-cookie");
+        assert!(cookies.iter().any(|c| c.starts_with("jwt=ey")));
+        assert!(cookies.iter().any(|c| c.starts_with("oauth_state=;")));
+    }
+
+    #[tokio::test]
+    async fn two_factor_callback_issues_no_cookie_and_redirects_to_the_code_step() {
+        let users = HashMapUserStore::new();
+        add_account(&users, "the-users-own-password", true).await;
+        let scheme = JwtScheme::new(
+            users,
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_2fa(HashMapTwoFaCodeStore::new(), MockEmailClient::new())
+        .supports_oauth(flow())
+        .oauth_two_fa_redirect("/login?step=2fa#code");
+
+        let outcome = oauth_login(&scheme).await.unwrap();
+        let LoginOutcome::Requires2Fa { attempt_id, .. } = &outcome else {
+            panic!("expected a 2FA challenge");
+        };
+        let attempt_id = attempt_id.to_string();
+
+        let response = scheme
+            .create_oauth_callback_response(HttpResponseBuilder::new(), outcome)
+            .unwrap();
+
+        assert_eq!(response.status(), 302);
+        // No session: the only cookie is the cleared state cookie.
+        assert_eq!(header(&response, "set-cookie").len(), 1);
+        assert!(header(&response, "set-cookie")[0].starts_with("oauth_state=;"));
+
+        let location = header(&response, "location")[0];
+        assert!(location.starts_with("/login?step=2fa&"));
+        assert!(location.ends_with("#code"));
+        let url = url::Url::parse(&format!("https://app.example{location}")).unwrap();
+        let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(params["oauth_2fa"], "required");
+        assert_eq!(params["loginAttemptId"], attempt_id);
+        assert_eq!(params["email"], "user@example.com");
     }
 
     #[tokio::test]
     async fn mismatched_cookie_state_is_rejected() {
-        let scheme = scheme_with_oauth();
+        let (scheme, users) = scheme_with_oauth();
         let auth = scheme.begin_oauth("google").await.unwrap();
 
         let result = scheme
             .complete_oauth("google", "code", &auth.state, "attacker-cookie")
             .await;
         assert!(result.is_err());
+        // A rejected callback creates nothing.
+        assert!(users.get_user(&email()).await.is_err());
     }
 }
 

@@ -14,7 +14,7 @@
 //! not exist at the type level.
 
 use async_trait::async_trait;
-use secrecy::Secret;
+use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
 use tempered_core::{
     AuthRequest, AuthorizationRequest, CeremonyId, ChallengeStore, ClassifyError, Email,
@@ -125,6 +125,7 @@ pub struct OAuth<ST, ID, HC> {
     flow: OAuthFlow<ST, ID, HC>,
     state_cookie_name: String,
     post_login_redirect: String,
+    two_fa_redirect: String,
 }
 
 /// Enabled passkey (WebAuthn) slot: the credential ceremony flow.
@@ -399,6 +400,7 @@ impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
                 flow,
                 state_cookie_name: "oauth_state".to_string(),
                 post_login_redirect: "/".to_string(),
+                two_fa_redirect: "/".to_string(),
             },
             passkeys: self.passkeys,
             routes: self.routes,
@@ -441,6 +443,19 @@ impl<U, T, F, L, R, M, ST, ID, HC, K> CredentialScheme<U, T, F, L, R, M, OAuth<S
     /// (default `/`).
     pub fn oauth_post_login_redirect(mut self, path: impl Into<String>) -> Self {
         self.oauth.post_login_redirect = path.into();
+        self
+    }
+
+    /// Override where the browser is redirected when an OAuth login reaches an
+    /// account that requires two-factor authentication (default `/`).
+    ///
+    /// No session is issued on that redirect. It carries three query
+    /// parameters — `oauth_2fa=required`, `loginAttemptId` and `email` — which
+    /// are exactly what the page needs to prompt for the code and call the
+    /// 2FA verification route, as after a password login that returns
+    /// `requires_2fa`.
+    pub fn oauth_two_fa_redirect(mut self, path: impl Into<String>) -> Self {
+        self.oauth.two_fa_redirect = path.into();
         self
     }
 }
@@ -1074,20 +1089,79 @@ where
         code: &str,
         query_state: &str,
         cookie_state: &str,
-    ) -> Result<Self::Token, Self::OAuth2Error> {
-        // The flow verifies the provider identity and yields a local email; we
-        // then mint *this scheme's* primary token.
+    ) -> Result<LoginOutcome<Self::Token>, Self::OAuth2Error> {
+        // The flow verifies the provider identity and yields a verified email.
         let email = self
             .oauth
             .flow
             .complete(provider, code, query_state, cookie_state)
             .await?;
-        Ok(self
+
+        // From here it is an ordinary login to that email's account, creating
+        // the account first if this is the user's first visit.
+        let requires_2fa = match self.user_store.get_user(&email).await {
+            Ok(user) => user.requires_2fa,
+            Err(UserStoreError::UserNotFound) => {
+                self.create_account_for_provider_login(&email).await?
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        if requires_2fa {
+            // The provider stands in for the password, not for the second
+            // factor. Same path as password login: issue + deliver the
+            // challenge, or error if the scheme was built without 2FA.
+            let attempt_id = self.two_fa.issue_challenge(&email).await?;
+            return Ok(LoginOutcome::Requires2Fa { email, attempt_id });
+        }
+
+        let token = self
             .tokens
             .issue(&email)
             .await
-            .map_err(CredentialError::Token)?)
+            .map_err(CredentialError::Token)?;
+        Ok(LoginOutcome::Success(token))
     }
+}
+
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore,
+{
+    /// Create the local account for a first-time provider login, returning
+    /// whether the account that now exists requires 2FA.
+    ///
+    /// The provider has verified the address, so no email verification is
+    /// needed. The user store requires a password, so the account gets a random
+    /// one that nobody knows: the user keeps signing in through the provider,
+    /// and can set a real password through password reset if the scheme
+    /// offers it.
+    async fn create_account_for_provider_login(
+        &self,
+        email: &Email,
+    ) -> Result<bool, UserStoreError> {
+        let user = User::new(email.clone(), unknowable_password(), false);
+        match self.user_store.add_user(user).await {
+            Ok(()) => Ok(false),
+            // Lost a race with another request creating the same account (a
+            // signup, or a second callback): log in to the one that exists.
+            Err(UserStoreError::UserAlreadyExists) => {
+                Ok(self.user_store.get_user(email).await?.requires_2fa)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// A password no one can know or guess: 32 random bytes, base64url-encoded.
+fn unknowable_password() -> Password {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use rand::RngCore;
+
+    let mut buf = [0u8; 32];
+    rand::rng().fill_bytes(&mut buf);
+    Password::try_from(Secret::new(URL_SAFE_NO_PAD.encode(buf)))
+        .expect("a 43-character password satisfies the length rule")
 }
 
 impl<U, T, F, L, R, M, ST, ID, HC, K> HttpOAuth2Scheme
@@ -1130,22 +1204,57 @@ where
     fn create_oauth_callback_response<RB: ResponseBuilder>(
         &self,
         builder: RB,
-        token: Self::Token,
+        outcome: LoginOutcome<Self::Token>,
     ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
-        // Deliver the issued token exactly as login does, clear the spent state
-        // cookie, and redirect into the app.
+        // Either way the state cookie is spent.
         let clear_state = format!(
             "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
             self.oauth.state_cookie_name
         );
+        let builder = builder.status(302).cookie(&clear_state);
 
-        builder
-            .status(302)
-            .cookie(&self.tokens.auth_cookie(&token))
-            .cookie(&clear_state)
-            .header("location", &self.oauth.post_login_redirect)
-            .build()
+        match outcome {
+            // Deliver the issued token exactly as login does and enter the app.
+            LoginOutcome::Success(token) => builder
+                .cookie(&self.tokens.auth_cookie(&token))
+                .header("location", &self.oauth.post_login_redirect)
+                .build(),
+            // No token yet: send the browser to the app's second-factor step
+            // with what it needs to call the 2FA verification route.
+            LoginOutcome::Requires2Fa { email, attempt_id } => builder
+                .header(
+                    "location",
+                    &two_fa_redirect_location(&self.oauth.two_fa_redirect, &email, &attempt_id),
+                )
+                .build(),
+        }
     }
+}
+
+/// `base` plus the query parameters a page needs to finish a 2FA login:
+/// `oauth_2fa=required`, `loginAttemptId`, `email`. Keeps any query string or
+/// fragment `base` already has.
+fn two_fa_redirect_location(base: &str, email: &Email, attempt_id: &TwoFaAttemptId) -> String {
+    let (path_and_query, fragment) = match base.split_once('#') {
+        Some((before, after)) => (before, Some(after)),
+        None => (base, None),
+    };
+    let params = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("oauth_2fa", "required")
+        .append_pair("loginAttemptId", &attempt_id.to_string())
+        .append_pair("email", email.as_ref().expose_secret())
+        .finish();
+    let separator = if path_and_query.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+    let mut location = format!("{path_and_query}{separator}{params}");
+    if let Some(fragment) = fragment {
+        location.push('#');
+        location.push_str(fragment);
+    }
+    location
 }
 
 // ============================================================================
