@@ -21,6 +21,10 @@ use tempered_core::{AuthValidator, AuthenticationScheme, HttpElevationScheme, Su
 /// 4. Inserts claims into request extensions for downstream handlers
 ///
 /// If validation fails, returns 401 Unauthorized.
+// `Result<Response, Response>` is the shape `axum::middleware::from_fn_with_state`
+// expects from a rejecting middleware; boxing the error would only add an
+// allocation on the rejection path.
+#[allow(clippy::result_large_err)]
 pub async fn validate_token<S>(
     State(scheme): State<S>,
     req: Request<Body>,
@@ -60,6 +64,10 @@ where
 ///
 /// Elevated tokens are required for sensitive operations like password changes and account deletion.
 /// If validation fails, returns the appropriate error status.
+// `Result<Response, Response>` is the shape `axum::middleware::from_fn_with_state`
+// expects from a rejecting middleware; boxing the error would only add an
+// allocation on the rejection path.
+#[allow(clippy::result_large_err)]
 pub async fn validate_elevated_token<S>(
     State(scheme): State<S>,
     req: Request<Body>,

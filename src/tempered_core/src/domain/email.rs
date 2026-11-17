@@ -34,11 +34,8 @@ impl AsRef<Secret<String>> for Email {
     }
 }
 
-impl Eq for Email {
-    fn assert_receiver_is_total_eq(&self) {
-        self.0.expose_secret().assert_receiver_is_total_eq();
-    }
-}
+// `Eq` is a marker: the `PartialEq` above compares `String`s, which is total.
+impl Eq for Email {}
 
 impl Hash for Email {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
