@@ -292,6 +292,12 @@ pub struct Claims {
     pub iss: Option<String>,
 }
 
+impl tempered_core::IdentityClaims for Claims {
+    fn subject(&self) -> &Secret<String> {
+        &self.sub
+    }
+}
+
 impl Serialize for Claims {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

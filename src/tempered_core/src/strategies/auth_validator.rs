@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use secrecy::Secret;
 
 /// Trait for validating authentication tokens in middleware.
 ///
@@ -53,4 +54,16 @@ pub trait AuthValidator: Clone + Send + Sync + 'static {
     /// - The token has been revoked
     /// - Database/external validation fails
     async fn validate(&self, parts: &Self::RequestParts) -> Result<Self::Claims, Self::Error>;
+}
+
+/// Claims that name the authenticated user.
+///
+/// Every credential validator produces its own claims type (JWT claims, session
+/// claims, …). Routes that must act on *the logged-in user* — binding elevation
+/// to the session owner, enrolling a passkey for the current account — read the
+/// user through this trait instead of naming one concrete claims type, so they
+/// work for every scheme.
+pub trait IdentityClaims {
+    /// The authenticated user's email, as carried by the validated token.
+    fn subject(&self) -> &Secret<String>;
 }

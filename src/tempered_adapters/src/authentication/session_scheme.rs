@@ -183,6 +183,12 @@ pub struct SessionClaims {
     pub email: Email,
 }
 
+impl tempered_core::IdentityClaims for SessionClaims {
+    fn subject(&self) -> &secrecy::Secret<String> {
+        self.email.as_ref()
+    }
+}
+
 #[derive(Clone)]
 pub struct SessionValidator<S> {
     session_store: S,

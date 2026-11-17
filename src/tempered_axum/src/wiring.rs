@@ -20,9 +20,9 @@ use tempered_adapters::authentication::credential_scheme::{
 use tempered_adapters::authentication::token_strategy::TokenStrategy;
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    HttpOAuth2Scheme, RequiresEmailVerification, SupportsAccountDeletion, SupportsElevation,
-    SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset,
-    SupportsRegistration, SupportsTwoFactor,
+    HttpOAuth2Scheme, IdentityClaims, RequiresEmailVerification, SupportsAccountDeletion,
+    SupportsElevation, SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange,
+    SupportsPasswordReset, SupportsRegistration, SupportsTwoFactor,
 };
 
 use crate::route_config::{Routers, apply_elevated_validation, register_logout_with_elevation};
@@ -209,6 +209,8 @@ where
     Self: HttpElevationScheme,
     <Self as AuthenticationScheme>::Validator: AuthValidator<RequestParts = http::request::Parts>,
     <<Self as AuthenticationScheme>::Validator as AuthValidator>::Error: IntoStatusMessage,
+    // `/elevate` binds elevation to the logged-in user, whatever the claims type.
+    <<Self as AuthenticationScheme>::Validator as AuthValidator>::Claims: IdentityClaims,
     <Self as SupportsElevation>::ElevatedValidator:
         AuthValidator<RequestParts = http::request::Parts>,
     <<Self as SupportsElevation>::ElevatedValidator as AuthValidator>::Error: IntoStatusMessage,

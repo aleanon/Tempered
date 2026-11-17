@@ -3,9 +3,10 @@
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
-use tempered_adapters::auth_validation::local_jwt_validator::Claims;
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
-use tempered_core::{Email, HttpElevationScheme, Password, constant_time_eq};
+use tempered_core::{
+    AuthValidator, Email, HttpElevationScheme, IdentityClaims, Password, constant_time_eq,
+};
 use thiserror::Error;
 
 use crate::adapters::into_axum_response;
@@ -16,17 +17,19 @@ use crate::adapters::into_axum_response;
 /// The actual elevation logic is in the framework-agnostic handler.
 ///
 /// This route sits behind the login-validation middleware, which inserts the
-/// session's [`Claims`] into the request extensions. Elevation is bound to that
+/// scheme's validated claims into the request extensions. They are read through
+/// [`IdentityClaims`], so the route works for any token strategy (JWT, session). Elevation is bound to that
 /// session: the body's credentials must belong to the logged-in user, otherwise
 /// knowing another user's password would yield an elevated token for *them*.
 #[tracing::instrument(name = "Elevate privileges", skip(scheme, claims, request))]
 pub async fn elevate<S>(
     State(scheme): State<S>,
-    Extension(claims): Extension<Claims>,
+    Extension(claims): Extension<<S::Validator as AuthValidator>::Claims>,
     Json(request): Json<ElevateRequest>,
 ) -> Result<impl IntoResponse, ElevateError>
 where
     S: HttpElevationScheme,
+    <S::Validator as AuthValidator>::Claims: IdentityClaims,
 {
     // Parse domain entities
     let email =
@@ -36,7 +39,10 @@ where
 
     // The body email is attacker-controlled and the session subject is secret,
     // so compare in constant time.
-    if !constant_time_eq(claims.sub.expose_secret(), email.as_ref().expose_secret()) {
+    if !constant_time_eq(
+        claims.subject().expose_secret(),
+        email.as_ref().expose_secret(),
+    ) {
         return Err(ElevateError::NotSessionOwner);
     }
 

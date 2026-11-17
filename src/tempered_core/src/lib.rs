@@ -38,7 +38,7 @@ pub use ports::{
 };
 
 pub use strategies::{
-    auth_validator::AuthValidator,
+    auth_validator::{AuthValidator, IdentityClaims},
     authenticator::{
         AuthenticationScheme, AuthorizationRequest, LoginOutcome, RequiresEmailVerification,
         SupportsAccountDeletion, SupportsApiKeyIssuance, SupportsElevation, SupportsOAuth2,
