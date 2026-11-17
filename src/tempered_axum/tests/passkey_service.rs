@@ -355,3 +355,170 @@ async fn another_accounts_credential_id_cannot_be_claimed() {
     assert_eq!(login.status(), StatusCode::OK);
     assert_eq!(whoami_of(&app, &auth_cookie(&login)).await, VICTIM);
 }
+
+// ---- Step-up: enrollment behind elevation ----------------------------------
+
+/// No route handled the request: it fell through to the static-asset service,
+/// which answers a `POST` with 405 (or 404).
+fn is_unrouted(response: &Response) -> bool {
+    matches!(
+        response.status(),
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    )
+}
+
+fn jwt_config(cookie: &str) -> JwtAuthConfig {
+    JwtAuthConfig {
+        jwt_cookie_name: cookie.to_string(),
+        jwt_secret: Secret::new(format!("a-test-secret-that-is-long-enough-{cookie}")),
+        token_ttl_in_seconds: 3600,
+        audience: None,
+        issuer: None,
+    }
+}
+
+fn passkey_flow() -> PasskeyFlow<HashMapPasskeyCredentialStore, HashMapChallengeStore, MockVerifier>
+{
+    PasskeyFlow::new(
+        HashMapPasskeyCredentialStore::new(),
+        HashMapChallengeStore::new(),
+        MockVerifier,
+    )
+}
+
+/// A scheme where enrolling a passkey requires an elevated token. `passkeys_first`
+/// picks the builder call order, which must not matter.
+fn step_up_app(passkeys_first: bool) -> Router {
+    let base = JwtScheme::new(
+        HashMapUserStore::new(),
+        jwt_config("jwt"),
+        HashSetBannedTokenStore::new(),
+        HashMapTokenEpochStore::new(),
+    )
+    .supports_registration();
+
+    if passkeys_first {
+        let scheme = base
+            .supports_passkeys(passkey_flow())
+            .supports_elevation(
+                HashSetBannedTokenStore::new(),
+                jwt_config("elevated_jwt"),
+                |elevated| elevated.supports_passkey_enrollment(),
+            )
+            .build();
+        auth_service(scheme, ".".to_string())
+            .validated_router(Router::new().route("/whoami", get(whoami)))
+            .into()
+    } else {
+        let scheme = base
+            .supports_elevation(
+                HashSetBannedTokenStore::new(),
+                jwt_config("elevated_jwt"),
+                |elevated| elevated.supports_passkey_enrollment(),
+            )
+            .supports_passkeys(passkey_flow())
+            .build();
+        auth_service(scheme, ".".to_string())
+            .validated_router(Router::new().route("/whoami", get(whoami)))
+            .into()
+    }
+}
+
+/// Re-authenticate, returning a `Cookie` header value with both tokens.
+async fn elevate(app: &Router, session: &str, email: &str) -> String {
+    let response = post(
+        app,
+        "/elevate",
+        Some(session),
+        json!({ "email": email, "password": PASSWORD }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    format!("{session}; {}", auth_cookie(&response))
+}
+
+#[tokio::test]
+async fn step_up_enrollment_requires_an_elevated_token() {
+    for passkeys_first in [true, false] {
+        let app = step_up_app(passkeys_first);
+        let session = signed_in(&app, VICTIM).await;
+
+        // A (possibly stolen) login session alone cannot enroll a passkey:
+        // the login-level routes do not exist...
+        let start = post(&app, "/passkey/register/start", Some(&session), json!({})).await;
+        assert!(is_unrouted(&start), "got {}", start.status());
+        // ...and the elevated ones refuse a plain session.
+        let start = post(
+            &app,
+            "/elevated/passkey/register/start",
+            Some(&session),
+            json!({}),
+        )
+        .await;
+        assert_eq!(start.status(), StatusCode::UNAUTHORIZED);
+
+        // After re-authenticating, enrollment works and the passkey logs in.
+        let cookies = elevate(&app, &session, VICTIM).await;
+        let start = post(
+            &app,
+            "/elevated/passkey/register/start",
+            Some(&cookies),
+            json!({}),
+        )
+        .await;
+        assert_eq!(start.status(), StatusCode::OK);
+        let finish = post(
+            &app,
+            "/elevated/passkey/register/finish",
+            Some(&cookies),
+            finish_body(json_body(start).await, "cred-victim"),
+        )
+        .await;
+        assert_eq!(finish.status(), StatusCode::OK);
+
+        let login = passkey_login(&app, Some(VICTIM), "cred-victim").await;
+        assert_eq!(login.status(), StatusCode::OK);
+        assert_eq!(whoami_of(&app, &auth_cookie(&login)).await, VICTIM);
+    }
+}
+
+#[tokio::test]
+async fn step_up_enrollment_is_for_the_elevated_user() {
+    let app = step_up_app(true);
+    let victim_session = signed_in(&app, VICTIM).await;
+    let attacker_session = signed_in(&app, ATTACKER).await;
+    let victim = elevate(&app, &victim_session, VICTIM).await;
+    let attacker = elevate(&app, &attacker_session, ATTACKER).await;
+
+    // The victim starts; the attacker (elevated as themselves) cannot finish.
+    let start = post(
+        &app,
+        "/elevated/passkey/register/start",
+        Some(&victim),
+        json!({}),
+    )
+    .await;
+    let finish = post(
+        &app,
+        "/elevated/passkey/register/finish",
+        Some(&attacker),
+        finish_body(json_body(start).await, "cred-evil"),
+    )
+    .await;
+    assert_eq!(finish.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn without_step_up_the_elevated_enrollment_routes_do_not_exist() {
+    // `app()` has passkeys but no elevation: enrollment is login-gated.
+    let app = app();
+    let session = signed_in(&app, VICTIM).await;
+    let start = post(
+        &app,
+        "/elevated/passkey/register/start",
+        Some(&session),
+        json!({}),
+    )
+    .await;
+    assert!(is_unrouted(&start), "got {}", start.status());
+}

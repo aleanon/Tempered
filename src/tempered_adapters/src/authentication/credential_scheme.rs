@@ -59,9 +59,10 @@ pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()
 }
 
 /// Authorization level a route requires.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Authz {
     /// A valid login session.
+    #[default]
     Login,
     /// A valid elevated ("sudo") token.
     Elevated,
@@ -77,6 +78,10 @@ pub struct RouteFlags {
     pub registration: bool,
     pub password_change: Option<Authz>,
     pub account_deletion: Option<Authz>,
+    /// What enrolling a passkey requires. The enrollment routes exist only
+    /// when the scheme has passkeys (`supports_passkeys`); this decides which
+    /// bucket they go in. Defaults to [`Authz::Login`].
+    pub passkey_enrollment: Authz,
 }
 
 // ============================================================================
@@ -320,6 +325,9 @@ impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
         if caps.account_deletion {
             self.routes.account_deletion = Some(Authz::Elevated);
         }
+        if caps.passkey_enrollment {
+            self.routes.passkey_enrollment = Authz::Elevated;
+        }
 
         CredentialScheme {
             user_store: self.user_store,
@@ -507,6 +515,7 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
 pub struct ElevatedCapabilities {
     password_change: bool,
     account_deletion: bool,
+    passkey_enrollment: bool,
 }
 
 impl ElevatedCapabilities {
@@ -519,6 +528,20 @@ impl ElevatedCapabilities {
     /// Require elevation for account deletion (`/elevated/delete-account`).
     pub fn supports_account_deletion(mut self) -> Self {
         self.account_deletion = true;
+        self
+    }
+
+    /// Require elevation to enroll a passkey
+    /// (`/elevated/passkey/register/{start,finish}`).
+    ///
+    /// A passkey is a durable login credential. With only a login session
+    /// required, whoever holds a stolen session cookie could add their own
+    /// passkey and keep access after the session ends; requiring a fresh
+    /// re-authentication closes that. Takes effect when the scheme also has
+    /// `supports_passkeys`, in either call order; logging in *with* a passkey
+    /// is unaffected.
+    pub fn supports_passkey_enrollment(mut self) -> Self {
+        self.passkey_enrollment = true;
         self
     }
 }

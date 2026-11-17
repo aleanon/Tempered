@@ -61,16 +61,53 @@ pub trait WireCore: Sized {
     fn wire_core(&self, routers: Routers<Self>, o: &PathOverrides) -> Routers<Self>;
 }
 
+/// The claims the login middleware inserts for scheme `S`.
+type LoginClaims<S> = <<S as AuthenticationScheme>::Validator as AuthValidator>::Claims;
+
+/// Names the claims type the **elevated** middleware inserts for a scheme.
+///
+/// A route that acts on "the authenticated user" extracts that user from the
+/// claims its bucket's middleware validated. The login bucket's claims type is
+/// nameable for any scheme ([`LoginClaims`]); the elevated bucket's depends on
+/// the elevation slot, so — like the `Wire*` traits — this has one impl per
+/// slot state. Routes that can live in either bucket are generic over the
+/// claims type and get the right one from the wiring.
+pub trait ElevatedBucketClaims {
+    type Claims: IdentityClaims + Clone + Send + Sync + 'static;
+}
+
+/// No elevation: there is no elevated bucket, so nothing is ever mounted with
+/// these claims; the login claims keep the type well-formed.
+impl<U, T, F, R, M, O, K> ElevatedBucketClaims for CredentialScheme<U, T, F, (), R, M, O, K>
+where
+    T: TokenStrategy,
+    <T::Validator as AuthValidator>::Claims: IdentityClaims,
+{
+    type Claims = <T::Validator as AuthValidator>::Claims;
+}
+
+impl<U, T, F, TE, R, M, O, K> ElevatedBucketClaims
+    for CredentialScheme<U, T, F, Elevation<TE>, R, M, O, K>
+where
+    TE: TokenStrategy,
+    <TE::Validator as AuthValidator>::Claims: IdentityClaims,
+{
+    type Claims = <TE::Validator as AuthValidator>::Claims;
+}
+
 impl<U, T, F, L, R, M, O, K> WireCore for CredentialScheme<U, T, F, L, R, M, O, K>
 where
     Self: HttpAuthenticationScheme<LogoutOutput = String>
         + SupportsRegistration
         + SupportsPasswordChange
-        + SupportsAccountDeletion,
+        + SupportsAccountDeletion
+        + ElevatedBucketClaims,
     <Self as AuthenticationScheme>::AuthError: IntoStatusMessage,
     <Self as SupportsRegistration>::RegistrationError: IntoStatusMessage,
     <Self as SupportsPasswordChange>::PasswordChangeError: IntoStatusMessage,
     <Self as SupportsAccountDeletion>::AccountDeletionError: IntoStatusMessage,
+    // Password change / account deletion act on the authenticated user.
+    LoginClaims<Self>: IdentityClaims,
     T: TokenStrategy,
 {
     fn wire_core(&self, mut routers: Routers<Self>, o: &PathOverrides) -> Routers<Self> {
@@ -100,14 +137,31 @@ where
             );
         }
 
-        // Password change / account deletion — login or elevation gated, or off.
+        // Password change / account deletion — login or elevation gated, or
+        // off. Each bucket's handler reads the user from that bucket's claims.
         routers = wire_sensitive(
             routers,
             self.route_flags().password_change,
             &o.change_password,
             "/change-password",
             "/elevated/change-password",
-            |r, path| r.route(path, post(crate::routes::change_password::<Self>)),
+            |r, path| {
+                r.route(
+                    path,
+                    post(crate::routes::change_password::<Self, LoginClaims<Self>>),
+                )
+            },
+            |r, path| {
+                r.route(
+                    path,
+                    post(
+                        crate::routes::change_password::<
+                            Self,
+                            <Self as ElevatedBucketClaims>::Claims,
+                        >,
+                    ),
+                )
+            },
         );
         routers = wire_sensitive(
             routers,
@@ -115,7 +169,23 @@ where
             &o.delete_account,
             "/delete-account",
             "/elevated/delete-account",
-            |r, path| r.route(path, delete(crate::routes::delete_account::<Self>)),
+            |r, path| {
+                r.route(
+                    path,
+                    delete(crate::routes::delete_account::<Self, LoginClaims<Self>>),
+                )
+            },
+            |r, path| {
+                r.route(
+                    path,
+                    delete(
+                        crate::routes::delete_account::<
+                            Self,
+                            <Self as ElevatedBucketClaims>::Claims,
+                        >,
+                    ),
+                )
+            },
         );
 
         routers
@@ -124,13 +194,15 @@ where
 
 /// Place a sensitive-op route on the validated or elevated bucket per its [`Authz`].
 /// The path override (if any) applies to whichever level the op is at.
+/// `add_login` / `add_elevated` mount the handler for the respective bucket.
 fn wire_sensitive<S>(
     mut routers: Routers<S>,
     authz: Option<Authz>,
     override_path: &Option<String>,
     login_default: &str,
     elevated_default: &str,
-    add: impl Fn(Router<S>, &str) -> Router<S>,
+    add_login: impl Fn(Router<S>, &str) -> Router<S>,
+    add_elevated: impl Fn(Router<S>, &str) -> Router<S>,
 ) -> Routers<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -139,11 +211,14 @@ where
         None => {}
         Some(Authz::Login) => {
             let path = or(override_path, login_default);
-            routers.validated_router = add(routers.validated_router, path);
+            routers.validated_router = add_login(routers.validated_router, path);
         }
         Some(Authz::Elevated) => {
             let path = or(override_path, elevated_default);
-            routers.elevated_router = Some(add(routers.elevated_router.unwrap_or_default(), path));
+            routers.elevated_router = Some(add_elevated(
+                routers.elevated_router.unwrap_or_default(),
+                path,
+            ));
         }
     }
     routers
@@ -341,25 +416,58 @@ where
 impl<U, T, F, L, R, M, O, CS, ChS, V> WirePasskeys
     for CredentialScheme<U, T, F, L, R, M, O, Passkeys<CS, ChS, V>>
 where
-    Self: HttpAuthenticationScheme + SupportsPasskeys,
+    Self: HttpAuthenticationScheme + SupportsPasskeys + ElevatedBucketClaims,
     <Self as SupportsPasskeys>::PasskeyError: IntoStatusMessage,
-    // Registration enrolls a passkey for the logged-in user, whatever the claims type.
-    <<Self as AuthenticationScheme>::Validator as AuthValidator>::Claims: IdentityClaims,
+    // Enrollment is for the authenticated user, whatever the claims type.
+    LoginClaims<Self>: IdentityClaims,
+    T: TokenStrategy,
 {
     fn wire_passkeys(&self, mut routers: Routers<Self>, o: &PathOverrides) -> Routers<Self> {
         let prefix = or(&o.passkey_prefix, "/passkey");
-        // Enrolling a passkey grants login as that user, so registration needs
-        // a normal session → validated bucket. Never move these to `main_router`.
-        routers.validated_router = routers
-            .validated_router
-            .route(
-                &format!("{prefix}/register/start"),
-                post(crate::routes::passkey_register_start::<Self>),
-            )
-            .route(
-                &format!("{prefix}/register/finish"),
-                post(crate::routes::passkey_register_finish::<Self>),
-            );
+
+        // Enrolling a passkey grants login as that user, so it always needs an
+        // authenticated caller: a login session by default, an elevated token
+        // if the scheme asked for step-up. Never mount these on `main_router`.
+        match self.route_flags().passkey_enrollment {
+            Authz::Login => {
+                routers.validated_router = routers
+                    .validated_router
+                    .route(
+                        &format!("{prefix}/register/start"),
+                        post(crate::routes::passkey_register_start::<Self, LoginClaims<Self>>),
+                    )
+                    .route(
+                        &format!("{prefix}/register/finish"),
+                        post(crate::routes::passkey_register_finish::<Self, LoginClaims<Self>>),
+                    );
+            }
+            Authz::Elevated => {
+                routers.elevated_router = Some(
+                    routers
+                        .elevated_router
+                        .unwrap_or_default()
+                        .route(
+                            &format!("/elevated{prefix}/register/start"),
+                            post(
+                                crate::routes::passkey_register_start::<
+                                    Self,
+                                    <Self as ElevatedBucketClaims>::Claims,
+                                >,
+                            ),
+                        )
+                        .route(
+                            &format!("/elevated{prefix}/register/finish"),
+                            post(
+                                crate::routes::passkey_register_finish::<
+                                    Self,
+                                    <Self as ElevatedBucketClaims>::Claims,
+                                >,
+                            ),
+                        ),
+                );
+            }
+        }
+
         // Logging in with a passkey is, by definition, unauthenticated.
         routers.main_router = routers
             .main_router

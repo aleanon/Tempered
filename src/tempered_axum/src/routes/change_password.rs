@@ -5,8 +5,9 @@
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
-use tempered_adapters::auth_validation::local_jwt_validator::Claims;
-use tempered_core::{Email, HttpAuthenticationScheme, Password, SupportsPasswordChange};
+use tempered_core::{
+    Email, HttpAuthenticationScheme, IdentityClaims, Password, SupportsPasswordChange,
+};
 use thiserror::Error;
 
 /// Axum password change route.
@@ -14,19 +15,22 @@ use thiserror::Error;
 /// This route is Axum-specific - it uses Axum's extractors and error handling.
 /// The actual password change logic is in the framework-agnostic handler.
 ///
-/// Note: This route expects an elevated token to be verified by middleware,
-/// with the claims extracted and provided via Extension.
+/// The route sits behind the login or the elevated middleware, depending on how
+/// the scheme was configured. `C` is the claims type that middleware inserts;
+/// the user is read through [`IdentityClaims`], so the route works for any
+/// token strategy (JWT, session) at either level.
 #[tracing::instrument(name = "Change Password", skip(scheme, claims, request))]
-pub async fn change_password<S>(
+pub async fn change_password<S, C>(
     State(scheme): State<S>,
-    Extension(claims): Extension<Claims>,
+    Extension(claims): Extension<C>,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, ChangePasswordError>
 where
     S: HttpAuthenticationScheme + SupportsPasswordChange + Send + 'static + Clone,
+    C: IdentityClaims + Clone + Send + Sync + 'static,
 {
-    // Extract email from claims
-    let email = Email::try_from(claims.sub)
+    // The user is whoever the validated token belongs to.
+    let email = Email::try_from(claims.subject().clone())
         .map_err(|e| ChangePasswordError::InvalidEmail(e.to_string()))?;
 
     // Parse new password

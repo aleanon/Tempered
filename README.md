@@ -97,7 +97,7 @@ automatically:
 | Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes |
 | Email verification | `.supports_email_verification(...)` | `POST /verify-email` |
 | OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes |
-| Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey login routes (public) + enrolment routes (logged-in user only) |
+| Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey login routes (public) + enrolment routes (logged-in user only; add `e.supports_passkey_enrollment()` in the elevation closure to require a fresh re-authentication) |
 
 An OAuth login follows the same rules as a password login: the first login for
 an email creates the account, later ones log in to it, and an account that

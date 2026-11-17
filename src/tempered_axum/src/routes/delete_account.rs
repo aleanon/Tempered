@@ -3,8 +3,7 @@
 //! This route requires elevated authentication - users must re-authenticate before deleting their account.
 
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
-use tempered_adapters::auth_validation::local_jwt_validator::Claims;
-use tempered_core::{Email, HttpAuthenticationScheme, SupportsAccountDeletion};
+use tempered_core::{Email, HttpAuthenticationScheme, IdentityClaims, SupportsAccountDeletion};
 use thiserror::Error;
 
 /// Axum account deletion route.
@@ -12,19 +11,22 @@ use thiserror::Error;
 /// This route is Axum-specific - it uses Axum's extractors and error handling.
 /// The actual account deletion logic is in the framework-agnostic handler.
 ///
-/// Note: This route expects an elevated token to be verified by middleware,
-/// with the claims extracted and provided via Extension.
+/// The route sits behind the login or the elevated middleware, depending on how
+/// the scheme was configured. `C` is the claims type that middleware inserts;
+/// the user is read through [`IdentityClaims`], so the route works for any
+/// token strategy (JWT, session) at either level.
 #[tracing::instrument(name = "Delete Account", skip(scheme, claims))]
-pub async fn delete_account<S>(
+pub async fn delete_account<S, C>(
     State(scheme): State<S>,
-    Extension(claims): Extension<Claims>,
+    Extension(claims): Extension<C>,
 ) -> Result<impl IntoResponse, DeleteAccountError>
 where
     S: HttpAuthenticationScheme + SupportsAccountDeletion + Clone + 'static,
+    C: IdentityClaims + Clone + Send + Sync + 'static,
 {
-    // Extract email from claims
-    let email =
-        Email::try_from(claims.sub).map_err(|e| DeleteAccountError::InvalidEmail(e.to_string()))?;
+    // The user is whoever the validated token belongs to.
+    let email = Email::try_from(claims.subject().clone())
+        .map_err(|e| DeleteAccountError::InvalidEmail(e.to_string()))?;
 
     scheme
         .delete_account(email)

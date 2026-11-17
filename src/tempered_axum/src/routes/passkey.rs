@@ -5,9 +5,10 @@
 //! (takes `{ ceremony_id, response }` and verifies the authenticator response). A successful `login/finish` sets the scheme's auth
 //! cookie, exactly like a password login.
 //!
-//! The two **registration** routes sit behind the login-validation middleware
-//! and enroll a passkey for the *logged-in* user, read from the session's
-//! claims. They never accept an email from the request: a route that did would
+//! The two **registration** routes sit behind the login middleware — or, when
+//! the scheme asks for it, the elevated ("sudo") middleware — and enroll a
+//! passkey for the *authenticated* user, read from the claims that middleware
+//! validated (`C`). They never accept an email from the request: a route that did would
 //! let anyone attach their own authenticator to any account. The two **login**
 //! routes are public.
 
@@ -18,7 +19,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
 use tempered_core::{
-    AuthValidator, CeremonyId, Email, HttpAuthenticationScheme, IdentityClaims, SupportsPasskeys,
+    CeremonyId, Email, HttpAuthenticationScheme, IdentityClaims, SupportsPasskeys,
 };
 
 use crate::adapters::into_axum_response;
@@ -60,14 +61,14 @@ fn invalid_session() -> axum::response::Response {
 ///
 /// Takes no request body; the user is the session owner.
 #[tracing::instrument(name = "PasskeyRegisterStart", skip(scheme, claims))]
-pub async fn passkey_register_start<S>(
+pub async fn passkey_register_start<S, C>(
     State(scheme): State<S>,
-    Extension(claims): Extension<<S::Validator as AuthValidator>::Claims>,
+    Extension(claims): Extension<C>,
 ) -> impl IntoResponse
 where
     S: SupportsPasskeys,
     S::PasskeyError: IntoStatusMessage,
-    <S::Validator as AuthValidator>::Claims: IdentityClaims,
+    C: IdentityClaims + Clone + Send + Sync + 'static,
 {
     let Some(email) = session_email(&claims) else {
         return invalid_session();
@@ -86,15 +87,15 @@ where
 /// Registration leg 2: verify the attestation and enroll the credential for the
 /// logged-in user, who must be the one that started the ceremony.
 #[tracing::instrument(name = "PasskeyRegisterFinish", skip(scheme, claims, req))]
-pub async fn passkey_register_finish<S>(
+pub async fn passkey_register_finish<S, C>(
     State(scheme): State<S>,
-    Extension(claims): Extension<<S::Validator as AuthValidator>::Claims>,
+    Extension(claims): Extension<C>,
     Json(req): Json<FinishRequest>,
 ) -> impl IntoResponse
 where
     S: SupportsPasskeys,
     S::PasskeyError: IntoStatusMessage,
-    <S::Validator as AuthValidator>::Claims: IdentityClaims,
+    C: IdentityClaims + Clone + Send + Sync + 'static,
 {
     let Some(email) = session_email(&claims) else {
         return invalid_session();
