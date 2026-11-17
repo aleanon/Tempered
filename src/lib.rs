@@ -106,7 +106,7 @@ pub use tempered_adapters::{
     },
     authentication::token_strategy::{JwtToken, JwtTokens, TokenStrategy},
     email::MockEmailClient,
-    oauth::{OAuthFlow, OAuthFlowError},
+    oauth::{OAuthFlow, OAuthFlowError, pkce_challenge_s256},
     passkey::{PasskeyFlow, PasskeyFlowError},
     persistence::{
         HashMapApiKeyStore, HashMapChallengeStore, HashMapEmailVerificationTokenStore,

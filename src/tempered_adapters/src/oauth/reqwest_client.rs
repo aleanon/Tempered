@@ -4,7 +4,7 @@ use tempered_core::{OAuthHttpClient, OAuthHttpError, OAuthProviderConfig, OAuthU
 
 /// Production [`OAuthHttpClient`] backed by `reqwest`.
 ///
-/// Performs the standard authorization-code token exchange (form-encoded POST)
+/// Performs the standard authorization-code token exchange with PKCE (form-encoded POST)
 /// and an OIDC-style userinfo `GET` with a bearer token.
 #[derive(Clone, Default)]
 pub struct ReqwestOAuthHttpClient {
@@ -25,6 +25,7 @@ impl OAuthHttpClient for ReqwestOAuthHttpClient {
         &self,
         config: &OAuthProviderConfig,
         code: &str,
+        code_verifier: &str,
     ) -> Result<String, OAuthHttpError> {
         let secret = config.client_secret.expose_secret();
         let params = [
@@ -33,6 +34,9 @@ impl OAuthHttpClient for ReqwestOAuthHttpClient {
             ("redirect_uri", config.redirect_uri.as_str()),
             ("client_id", config.client_id.as_str()),
             ("client_secret", secret.as_str()),
+            // PKCE (RFC 7636 §4.5): proves this token request comes from the
+            // party that started the authorization request.
+            ("code_verifier", code_verifier),
         ];
 
         let resp = self

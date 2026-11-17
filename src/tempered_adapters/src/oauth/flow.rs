@@ -7,18 +7,24 @@
 //! session, …). This matches the library's "composition is a user concern"
 //! stance and keeps OAuth decoupled from token delivery.
 //!
+//! Every authorization request uses **PKCE** (RFC 7636, `S256`): a per-request
+//! verifier is stored server-side with the `state`, its challenge goes on the
+//! authorize redirect, and the verifier is revealed only on the token exchange.
+//!
 //! All outbound provider calls go through the [`OAuthHttpClient`] port, so the
 //! entire flow is unit-testable offline with a mock client.
 
 use std::collections::HashMap;
 
 use rand::RngCore;
-use secrecy::Secret;
+use secrecy::{ExposeSecret, Secret};
 use tempered_core::{
     ClassifyError, Email, ErrorCategory, OAuthHttpClient, OAuthIdentityStore,
     OAuthIdentityStoreError, OAuthProviderConfig, OAuthStateStore, UserError, constant_time_eq,
 };
 use thiserror::Error;
+
+use super::pkce::{CODE_CHALLENGE_METHOD, generate_verifier, pkce_challenge_s256};
 
 // The flow's [`begin`](OAuthFlow::begin) returns the framework-agnostic
 // [`AuthorizationRequest`] defined in `tempered_core` (so the `SupportsOAuth2`
@@ -55,7 +61,8 @@ where
         self
     }
 
-    /// Step 1: build the provider authorize URL and persist the anti-CSRF state.
+    /// Step 1: build the provider authorize URL and persist the anti-CSRF state
+    /// together with a fresh PKCE verifier.
     ///
     /// The returned [`AuthorizationRequest::state`] must be bound to the
     /// initiating browser (see that type's docs) and presented back to
@@ -63,12 +70,15 @@ where
     pub async fn begin(&self, provider: &str) -> Result<AuthorizationRequest, OAuthFlowError> {
         let config = self.provider(provider)?;
         let state = random_state();
+        let code_verifier = generate_verifier();
+        // Only the challenge travels through the browser; the verifier stays here.
+        let code_challenge = pkce_challenge_s256(code_verifier.expose_secret());
         self.state_store
-            .store_state(state.clone())
+            .store_state(state.clone(), code_verifier)
             .await
             .map_err(|e| OAuthFlowError::State(e.to_string()))?;
         Ok(AuthorizationRequest {
-            authorize_url: build_authorize_url(config, &state),
+            authorize_url: build_authorize_url(config, &state, &code_challenge),
             state,
         })
     }
@@ -94,12 +104,18 @@ where
             return Err(OAuthFlowError::InvalidState);
         }
 
-        self.state_store
+        // Single-use: consuming the state also yields the PKCE verifier that
+        // was generated for this exact authorization request.
+        let code_verifier = self
+            .state_store
             .consume_state(query_state)
             .await
             .map_err(|_| OAuthFlowError::InvalidState)?;
 
-        let access_token = self.http_client.exchange_code(config, code).await?;
+        let access_token = self
+            .http_client
+            .exchange_code(config, code, code_verifier.expose_secret())
+            .await?;
         let info = self
             .http_client
             .fetch_user_info(config, &access_token)
@@ -149,14 +165,16 @@ fn random_state() -> String {
     buf.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-fn build_authorize_url(config: &OAuthProviderConfig, state: &str) -> String {
+fn build_authorize_url(config: &OAuthProviderConfig, state: &str, code_challenge: &str) -> String {
     let mut url = url::Url::parse(&config.auth_url).expect("provider auth_url must be a valid URL");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", &config.client_id)
         .append_pair("redirect_uri", &config.redirect_uri)
         .append_pair("scope", &config.scopes.join(" "))
-        .append_pair("state", state);
+        .append_pair("state", state)
+        .append_pair("code_challenge", code_challenge)
+        .append_pair("code_challenge_method", CODE_CHALLENGE_METHOD);
     url.to_string()
 }
 
@@ -218,6 +236,7 @@ mod tests {
     use crate::persistence::hashmap_oauth_identity_store::HashMapOAuthIdentityStore;
     use crate::persistence::hashmap_oauth_state_store::HashMapOAuthStateStore;
     use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
     use tempered_core::{OAuthHttpError, OAuthUserInfo};
 
     #[derive(Clone)]
@@ -225,6 +244,19 @@ mod tests {
         subject: String,
         email: String,
         email_verified: bool,
+        /// The `code_verifier` presented on each token exchange, in order.
+        seen_verifiers: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockClient {
+        fn new(subject: &str, email: &str, email_verified: bool) -> Self {
+            Self {
+                subject: subject.to_string(),
+                email: email.to_string(),
+                email_verified,
+                seen_verifiers: Arc::default(),
+            }
+        }
     }
 
     #[async_trait]
@@ -233,7 +265,12 @@ mod tests {
             &self,
             _config: &OAuthProviderConfig,
             _code: &str,
+            code_verifier: &str,
         ) -> Result<String, OAuthHttpError> {
+            self.seen_verifiers
+                .lock()
+                .unwrap()
+                .push(code_verifier.to_string());
             Ok("access-token".to_string())
         }
 
@@ -269,23 +306,85 @@ mod tests {
         OAuthFlow::new(
             HashMapOAuthStateStore::new(),
             HashMapOAuthIdentityStore::new(),
-            MockClient {
-                subject: "sub-123".to_string(),
-                email: email.to_string(),
-                email_verified: true,
-            },
+            MockClient::new("sub-123", email, true),
         )
         .with_provider(provider())
     }
 
-    fn state_from_url(url: &str) -> String {
+    fn query_param(url: &str, name: &str) -> String {
         url::Url::parse(url)
             .unwrap()
             .query_pairs()
-            .find(|(k, _)| k == "state")
-            .unwrap()
+            .find(|(k, _)| k == name)
+            .unwrap_or_else(|| panic!("authorize URL has no `{name}` parameter"))
             .1
             .to_string()
+    }
+
+    fn state_from_url(url: &str) -> String {
+        query_param(url, "state")
+    }
+
+    #[tokio::test]
+    async fn begin_sends_an_s256_pkce_challenge() {
+        let f = flow("user@example.com");
+        let req = f.begin("google").await.unwrap();
+        assert_eq!(
+            query_param(&req.authorize_url, "code_challenge_method"),
+            "S256"
+        );
+        // 32-byte SHA-256 digest, base64url without padding.
+        assert_eq!(query_param(&req.authorize_url, "code_challenge").len(), 43);
+    }
+
+    #[tokio::test]
+    async fn token_exchange_presents_the_verifier_for_the_challenge_sent() {
+        let f = flow("user@example.com");
+        let req = f.begin("google").await.unwrap();
+        let challenge = query_param(&req.authorize_url, "code_challenge");
+
+        f.complete("google", "auth-code", &req.state, &req.state)
+            .await
+            .unwrap();
+
+        let seen = f.http_client.seen_verifiers.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        // What the provider checks: S256(verifier) == the challenge it was sent.
+        assert_eq!(pkce_challenge_s256(&seen[0]), challenge);
+        // The verifier itself must never appear on the front channel.
+        assert!(!req.authorize_url.contains(&seen[0]));
+    }
+
+    #[tokio::test]
+    async fn each_authorization_request_gets_its_own_verifier() {
+        let f = flow("user@example.com");
+        let first = f.begin("google").await.unwrap();
+        let second = f.begin("google").await.unwrap();
+        assert_ne!(
+            query_param(&first.authorize_url, "code_challenge"),
+            query_param(&second.authorize_url, "code_challenge")
+        );
+
+        // Completing the second request presents the second request's verifier.
+        f.complete("google", "code", &second.state, &second.state)
+            .await
+            .unwrap();
+        let seen = f.http_client.seen_verifiers.lock().unwrap().clone();
+        assert_eq!(
+            pkce_challenge_s256(&seen[0]),
+            query_param(&second.authorize_url, "code_challenge")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_callback_never_reaches_the_token_endpoint() {
+        let f = flow("user@example.com");
+        let req = f.begin("google").await.unwrap();
+        let result = f
+            .complete("google", "code", &req.state, "attacker-cookie")
+            .await;
+        assert!(matches!(result, Err(OAuthFlowError::InvalidState)));
+        assert!(f.http_client.seen_verifiers.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -355,11 +454,7 @@ mod tests {
         let f = OAuthFlow::new(
             HashMapOAuthStateStore::new(),
             HashMapOAuthIdentityStore::new(),
-            MockClient {
-                subject: "sub-1".to_string(),
-                email: "victim@example.com".to_string(),
-                email_verified: false,
-            },
+            MockClient::new("sub-1", "victim@example.com", false),
         )
         .with_provider(provider());
 
@@ -376,11 +471,7 @@ mod tests {
             OAuthFlow::new(
                 HashMapOAuthStateStore::new(),
                 identity_store.clone(),
-                MockClient {
-                    subject: "sub-123".to_string(),
-                    email: email.to_string(),
-                    email_verified: true,
-                },
+                MockClient::new("sub-123", email, true),
             )
             .with_provider(provider())
         };

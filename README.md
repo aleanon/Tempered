@@ -96,7 +96,7 @@ automatically:
 | Elevation ("sudo") | `.supports_elevation(ban_store, config, \|e\| ...)` | `POST /elevate`, elevated routes |
 | Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes |
 | Email verification | `.supports_email_verification(...)` | `POST /verify-email` |
-| OAuth2 / OIDC | `.supports_oauth(flow)` | provider start + callback routes |
+| OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes |
 | Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey ceremony routes |
 
 Login, logout, and verify-token are always present. Every default path can be

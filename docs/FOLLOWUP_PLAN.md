@@ -141,7 +141,7 @@ Seven ports have only a `HashMap*` implementation. Split by data lifetime:
 
 - **3.0 Settle the port shapes before writing stores.** Two ports are expected
   to change, and a store written first would be written twice:
-  - **OAuth PKCE is not implemented** (found while updating
+  - ✅ DONE (2026-11-17). **OAuth PKCE is not implemented** (found while updating
     `AUTH_SCHEMES_PLAN.md`; the port doc at `repositories.rs:269` already calls
     it out). Add `code_challenge` (S256) to the authorize URL and send
     `code_verifier` on the code exchange; the verifier is stored with the state,
@@ -149,6 +149,10 @@ Seven ports have only a `HashMap*` implementation. Split by data lifetime:
     `HashMapOAuthStateStore`, `OAuthHttpClient::exchange_code`, the mock
     provider in `oauth_axum`, and add a verifier-mismatch test.
     Commit: `feat(security): add PKCE (S256) to the OAuth flow`.
+    As built: `store_state(state, code_verifier: Secret<String>)` and
+    `consume_state(state) -> Secret<String>`, so the Redis store holds one
+    value per state key and `GETDEL` gives single-use for free. `pkce_challenge_s256`
+    is public (facade re-export) for mock/test providers. New dep: `base64`.
   - `ChallengeStore` — see 4.1.
 - Redis stores follow `redis_password_reset_token_store.rs`; Postgres stores
   follow `postgres_user_store.rs` and each ships an up/down migration in

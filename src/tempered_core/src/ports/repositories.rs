@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use secrecy::Secret;
 use thiserror::Error;
 
 use crate::domain::{
@@ -252,15 +253,27 @@ pub enum OAuthStateStoreError {
     UnexpectedError(String),
 }
 
-/// Stores the single-use anti-CSRF `state` value between the authorize redirect
-/// and the callback. (A production implementation should also bind the PKCE
-/// verifier here and apply a short TTL.)
+/// Stores the single-use anti-CSRF `state` value, together with the PKCE
+/// `code_verifier` generated for the same authorization request, between the
+/// authorize redirect and the callback.
+///
+/// The verifier is a secret: it never leaves the server except in the
+/// back-channel token request. Production implementations should apply a short
+/// TTL (minutes) and consume atomically.
 #[async_trait]
 pub trait OAuthStateStore: Send + Sync {
-    async fn store_state(&self, state: String) -> Result<(), OAuthStateStoreError>;
+    /// Persist a pending `state` and the PKCE verifier bound to it.
+    async fn store_state(
+        &self,
+        state: String,
+        code_verifier: Secret<String>,
+    ) -> Result<(), OAuthStateStoreError>;
 
-    /// Consume a `state` value, succeeding only if it was previously stored.
-    async fn consume_state(&self, state: &str) -> Result<(), OAuthStateStoreError>;
+    /// Consume a `state` value, returning the PKCE verifier stored with it.
+    ///
+    /// Succeeds at most once per stored state: a second call (a replayed
+    /// callback) must fail with [`OAuthStateStoreError::UnknownState`].
+    async fn consume_state(&self, state: &str) -> Result<Secret<String>, OAuthStateStoreError>;
 }
 
 #[derive(Debug, Error)]

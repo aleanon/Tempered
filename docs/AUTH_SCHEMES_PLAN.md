@@ -30,7 +30,7 @@ How the result differs from the proposal below:
 |---|---|---|
 | Session | `SessionScheme`, `SessionStore` port, `HashMapSessionStore`, revoke-all on password change/reset/deletion | Redis store (Phase 3); `session_axum` example (5.2) |
 | API key | `ApiKeyScheme`, validator (header/Bearer), `ApiKeyStore` port, in-memory store, `api_key_axum` example | Postgres store (Phase 3) |
-| OAuth2 | `OAuthFlow` (authorize URL, browser-bound CSRF state, code exchange, userinfo, identity link), `ReqwestOAuthHttpClient`, auto-wired routes, `oauth_axum` example | **PKCE** (3.0); Redis state store and Postgres identity store (Phase 3) |
+| OAuth2 | `OAuthFlow` (authorize URL, browser-bound CSRF state, code exchange, userinfo, identity link), `ReqwestOAuthHttpClient`, **PKCE (S256)**, auto-wired routes, `oauth_axum` example | Redis state store and Postgres identity store (Phase 3) |
 | Passkeys | `PasskeyFlow` (both ceremonies, sign-count anti-clone), ports, in-memory stores, auto-wired routes, simulated `passkey_axum` example | real `webauthn-rs` verifier + browser JS (Phase 4); Redis/Postgres stores (Phase 3) |
 | Composition | decision recorded; `examples/composed_scheme.rs` skeleton | working example (5.1) |
 

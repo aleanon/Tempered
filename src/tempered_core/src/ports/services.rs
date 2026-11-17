@@ -33,10 +33,16 @@ pub enum OAuthHttpError {
 #[async_trait]
 pub trait OAuthHttpClient: Send + Sync {
     /// Exchange an authorization `code` for an access token.
+    ///
+    /// `code_verifier` is the PKCE verifier (RFC 7636) whose S256 challenge was
+    /// sent on the authorize redirect; implementations must send it as the
+    /// `code_verifier` form field so the provider can bind the code to the
+    /// request that started the flow.
     async fn exchange_code(
         &self,
         config: &OAuthProviderConfig,
         code: &str,
+        code_verifier: &str,
     ) -> Result<String, OAuthHttpError>;
 
     /// Fetch the user's identity using the access token.

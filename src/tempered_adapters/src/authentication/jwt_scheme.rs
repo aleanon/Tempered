@@ -118,6 +118,7 @@ mod oauth_tests {
             &self,
             _config: &OAuthProviderConfig,
             _code: &str,
+            _code_verifier: &str,
         ) -> Result<String, OAuthHttpError> {
             Ok("access-token".to_string())
         }

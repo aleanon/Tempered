@@ -11,6 +11,11 @@
 //! (Google, GitHub, …), repoint the `OAuthProviderConfig` URLs and supply real
 //! client credentials + a registered redirect URI.
 //!
+//! The flow uses **PKCE** (S256) on every request, and the mock provider
+//! enforces it the way a real one does: it remembers the `code_challenge` sent
+//! to `/mock/authorize` and only redeems the code at `/mock/token` when the
+//! presented `code_verifier` hashes to it.
+//!
 //! Unlike the low-level `OAuthFlow` (which only yields a verified `Email`), here
 //! the flow is attached to a `JwtScheme` via `.supports_oauth(flow)`, so a
 //! successful provider callback issues the scheme's **primary JWT** — the exact
@@ -25,8 +30,12 @@
 //! that: hand a router to `auth_service(...).validated_router(...)` and read the
 //! identity with `Extension<Claims>` (see the `jwt_standalone` example).
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
+
 use axum::{
-    Json, Router,
+    Form, Json, Router,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
@@ -38,7 +47,7 @@ use tempered::core::{AuthValidator, AuthenticationScheme};
 use tempered::{
     ExposeSecret, HashMapOAuthIdentityStore, HashMapOAuthStateStore, HashMapTokenEpochStore,
     HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, OAuth, OAuthFlow,
-    OAuthProviderConfig, ReqwestOAuthHttpClient, Secret, auth_service,
+    OAuthProviderConfig, ReqwestOAuthHttpClient, Secret, auth_service, pkce_challenge_s256,
 };
 
 /// The fully-applied scheme type: a JWT core with only the OAuth slot enabled.
@@ -140,10 +149,18 @@ async fn me(State(scheme): State<Scheme>, headers: HeaderMap) -> Response {
 
 // ---- Mock provider endpoints (a stand-in identity provider) ---------------
 
+/// Authorization codes the mock has issued, each mapped to the PKCE
+/// `code_challenge` it was issued against. A real provider keeps the same
+/// association (plus client id, redirect URI and an expiry).
+static ISSUED_CODES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Mutex::default);
+static NEXT_CODE: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Deserialize)]
 struct AuthorizeParams {
     redirect_uri: String,
     state: String,
+    code_challenge: Option<String>,
+    code_challenge_method: Option<String>,
 }
 
 async fn mock_authorize(Query(p): Query<AuthorizeParams>) -> Response {
@@ -154,20 +171,54 @@ async fn mock_authorize(Query(p): Query<AuthorizeParams>) -> Response {
     if p.redirect_uri != expected {
         return (StatusCode::BAD_REQUEST, "Invalid redirect_uri").into_response();
     }
-    // A real provider shows a consent screen; the mock immediately approves.
+    // Require PKCE with S256; refuse `plain` and requests without a challenge.
+    let (Some(challenge), Some("S256")) = (p.code_challenge, p.code_challenge_method.as_deref())
+    else {
+        return (StatusCode::BAD_REQUEST, "PKCE with S256 is required").into_response();
+    };
+
+    // A real provider shows a consent screen; the mock immediately approves and
+    // binds the code it hands out to the challenge it was given.
+    let code = format!(
+        "demo-auth-code-{}",
+        NEXT_CODE.fetch_add(1, Ordering::Relaxed)
+    );
+    ISSUED_CODES.lock().unwrap().insert(code.clone(), challenge);
+
     Redirect::to(&format!(
-        "{}?code=demo-auth-code&state={}",
-        p.redirect_uri, p.state
+        "{}?code={}&state={}",
+        p.redirect_uri, code, p.state
     ))
     .into_response()
 }
 
-async fn mock_token() -> Json<serde_json::Value> {
+#[derive(Deserialize)]
+struct TokenParams {
+    code: String,
+    code_verifier: Option<String>,
+}
+
+async fn mock_token(Form(p): Form<TokenParams>) -> Response {
+    // Codes are single-use: remove it whether or not the verifier checks out.
+    let challenge = ISSUED_CODES.lock().unwrap().remove(&p.code);
+    let verified = match (challenge, p.code_verifier) {
+        (Some(challenge), Some(verifier)) => pkce_challenge_s256(&verifier) == challenge,
+        _ => false,
+    };
+    if !verified {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid_grant" })),
+        )
+            .into_response();
+    }
+
     Json(json!({
         "access_token": "demo-access-token",
         "token_type": "bearer",
         "expires_in": 3600
     }))
+    .into_response()
 }
 
 async fn mock_userinfo() -> Json<serde_json::Value> {
