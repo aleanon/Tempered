@@ -2,41 +2,41 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use tempered_core::{ChallengeStore, ChallengeStoreError, Email, WebAuthnChallenge};
+use tempered_core::{CeremonyId, ChallengeStore, ChallengeStoreError, PendingCeremony};
 
-/// In-memory single-use WebAuthn challenge store for tests.
+/// In-memory single-use store for in-flight WebAuthn ceremonies.
+///
+/// Dev/test only: entries never expire, so abandoned ceremonies accumulate.
 #[derive(Default, Clone)]
 pub struct HashMapChallengeStore {
-    challenges: Arc<RwLock<HashMap<WebAuthnChallenge, Option<Email>>>>,
+    ceremonies: Arc<RwLock<HashMap<CeremonyId, PendingCeremony>>>,
 }
 
 impl HashMapChallengeStore {
     pub fn new() -> Self {
-        Self {
-            challenges: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self::default()
     }
 }
 
 #[async_trait::async_trait]
 impl ChallengeStore for HashMapChallengeStore {
-    async fn store_challenge(
+    async fn store_ceremony(
         &self,
-        challenge: WebAuthnChallenge,
-        email: Option<Email>,
+        id: CeremonyId,
+        ceremony: PendingCeremony,
     ) -> Result<(), ChallengeStoreError> {
-        self.challenges.write().await.insert(challenge, email);
+        self.ceremonies.write().await.insert(id, ceremony);
         Ok(())
     }
 
-    async fn consume_challenge(
+    async fn consume_ceremony(
         &self,
-        challenge: &WebAuthnChallenge,
-    ) -> Result<Option<Email>, ChallengeStoreError> {
-        self.challenges
+        id: &CeremonyId,
+    ) -> Result<PendingCeremony, ChallengeStoreError> {
+        self.ceremonies
             .write()
             .await
-            .remove(challenge)
+            .remove(id)
             .ok_or(ChallengeStoreError::ChallengeNotFound)
     }
 }

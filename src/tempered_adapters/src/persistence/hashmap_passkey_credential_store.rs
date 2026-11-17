@@ -23,11 +23,20 @@ impl HashMapPasskeyCredentialStore {
 #[async_trait::async_trait]
 impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
     async fn add_credential(&self, cred: PasskeyCredential) -> Result<(), PasskeyStoreError> {
-        self.credentials
+        use std::collections::hash_map::Entry;
+        match self
+            .credentials
             .write()
             .await
-            .insert(cred.credential_id.clone(), cred);
-        Ok(())
+            .entry(cred.credential_id.clone())
+        {
+            // Never overwrite: that would hand the credential to a new owner.
+            Entry::Occupied(_) => Err(PasskeyStoreError::CredentialAlreadyExists),
+            Entry::Vacant(slot) => {
+                slot.insert(cred);
+                Ok(())
+            }
+        }
     }
 
     async fn get_credential(
@@ -56,16 +65,20 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
             .collect())
     }
 
-    async fn update_sign_count(
+    async fn update_after_authentication(
         &self,
         id: &CredentialId,
-        new_count: u32,
+        new_sign_count: u32,
+        credential_data: Option<Vec<u8>>,
     ) -> Result<(), PasskeyStoreError> {
         let mut map = self.credentials.write().await;
         let cred = map
             .get_mut(id)
             .ok_or(PasskeyStoreError::CredentialNotFound)?;
-        cred.sign_count = new_count;
+        cred.sign_count = new_sign_count;
+        if let Some(data) = credential_data {
+            cred.credential_data = data;
+        }
         Ok(())
     }
 }

@@ -12,7 +12,10 @@ pub use domain::{
     email::Email,
     email_verification_token::EmailVerificationToken,
     oauth::{OAuthProviderConfig, OAuthUserInfo},
-    passkey::{CredentialId, PasskeyCredential, WebAuthnChallenge},
+    passkey::{
+        CeremonyId, CeremonyStart, CeremonyState, CredentialId, PasskeyCeremony, PasskeyCredential,
+        PendingCeremony,
+    },
     password::Password,
     password_reset_token::PasswordResetToken,
     session_id::SessionId,

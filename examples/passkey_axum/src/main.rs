@@ -38,6 +38,8 @@
 //! `webauthn-rs`) into the exact same `PasskeyFlow` and uses real
 //! `navigator.credentials` in the browser — no server wiring changes.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use axum::{
     Json, Router,
     extract::State,
@@ -47,8 +49,8 @@ use axum::{
 };
 use serde_json::json;
 use tempered::core::{
-    AuthValidator, AuthenticationScheme, CredentialId, PasskeyCredential, VerifiedAssertion,
-    VerifiedRegistration, WebAuthnChallenge, WebAuthnError, WebAuthnVerifier,
+    AuthValidator, AuthenticationScheme, CeremonyStart, CeremonyState, CredentialId,
+    PasskeyCredential, VerifiedAssertion, VerifiedRegistration, WebAuthnError, WebAuthnVerifier,
 };
 use tempered::{
     ExposeSecret, HashMapChallengeStore, HashMapPasskeyCredentialStore, HashMapTokenEpochStore,
@@ -136,48 +138,83 @@ async fn me(State(scheme): State<Scheme>, headers: HeaderMap) -> Response {
 // It performs NO cryptography: registration trusts the client-supplied
 // credential id, and authentication trusts the asserted sign count. This is only
 // safe because the example simulates the authenticator; never ship this.
+//
+// What it does show is the shape of the port: the verifier issues the challenge
+// itself, hands back opaque state for the library to keep server-side between
+// the two legs, and gets that state back to finish the ceremony.
 
 #[derive(Clone)]
 struct DemoVerifier;
+
+static NEXT_CHALLENGE: AtomicU64 = AtomicU64::new(1);
+
+impl DemoVerifier {
+    /// A real verifier returns full `PublicKeyCredentialCreationOptions` /
+    /// `…RequestOptions` and serialized ceremony state; the simulated frontend
+    /// only needs a challenge to echo back.
+    fn start(&self) -> CeremonyStart {
+        let challenge = format!(
+            "demo-challenge-{}",
+            NEXT_CHALLENGE.fetch_add(1, Ordering::Relaxed)
+        );
+        CeremonyStart {
+            options: json!({ "challenge": challenge, "rp": { "id": "localhost" } }),
+            state: CeremonyState(challenge.into_bytes()),
+        }
+    }
+
+    /// The one check the demo does make: the response answers *this* ceremony.
+    fn check_challenge(
+        state: &CeremonyState,
+        response: &serde_json::Value,
+    ) -> Result<(), WebAuthnError> {
+        let echoed = response.get("challenge").and_then(|v| v.as_str());
+        if echoed.map(str::as_bytes) == Some(state.0.as_slice()) {
+            Ok(())
+        } else {
+            Err(WebAuthnError::Verification("challenge mismatch".into()))
+        }
+    }
+}
 
 impl WebAuthnVerifier for DemoVerifier {
     fn start_registration(
         &self,
         _email: &tempered::Email,
-        challenge: &WebAuthnChallenge,
-    ) -> serde_json::Value {
-        // A real verifier returns full `PublicKeyCredentialCreationOptions`; the
-        // simulated frontend only needs the challenge to echo back.
-        json!({ "challenge": challenge.as_str(), "rp": { "id": "localhost" } })
+        _existing: &[PasskeyCredential],
+    ) -> Result<CeremonyStart, WebAuthnError> {
+        Ok(self.start())
     }
 
-    fn verify_registration(
+    fn finish_registration(
         &self,
-        _challenge: &WebAuthnChallenge,
+        state: &CeremonyState,
         response: &serde_json::Value,
     ) -> Result<VerifiedRegistration, WebAuthnError> {
+        Self::check_challenge(state, response)?;
         let id = credential_id(response)?;
         Ok(VerifiedRegistration {
             credential_id: CredentialId(id),
-            public_key: vec![0xde, 0xad, 0xbe, 0xef],
+            // A real verifier stores the public key (or its whole credential).
+            credential_data: vec![0xde, 0xad, 0xbe, 0xef],
             sign_count: 0,
         })
     }
 
     fn start_authentication(
         &self,
-        _allowed: &[CredentialId],
-        challenge: &WebAuthnChallenge,
-    ) -> serde_json::Value {
-        json!({ "challenge": challenge.as_str() })
+        _allowed: &[PasskeyCredential],
+    ) -> Result<CeremonyStart, WebAuthnError> {
+        Ok(self.start())
     }
 
-    fn verify_authentication(
+    fn finish_authentication(
         &self,
-        _challenge: &WebAuthnChallenge,
+        state: &CeremonyState,
         response: &serde_json::Value,
         stored: &PasskeyCredential,
     ) -> Result<VerifiedAssertion, WebAuthnError> {
+        Self::check_challenge(state, response)?;
         // Trust the asserted counter; the flow still enforces monotonicity.
         let new_sign_count = response
             .get("sign_count")
@@ -187,6 +224,7 @@ impl WebAuthnVerifier for DemoVerifier {
         Ok(VerifiedAssertion {
             credential_id: stored.credential_id.clone(),
             new_sign_count,
+            updated_credential_data: None,
         })
     }
 }

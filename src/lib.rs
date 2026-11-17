@@ -40,9 +40,9 @@ pub mod core {
 
 // Re-export most commonly used core types at the root level
 pub use tempered_core::{
-    ApiKeyId, CredentialId, Email, EmailVerificationToken, IdentityClaims, OAuthProviderConfig,
-    OAuthUserInfo, PasskeyCredential, Password, SessionId, TwoFaAttemptId, TwoFaCode, TwoFaError,
-    User, UserError, ValidatedUser, WebAuthnChallenge,
+    ApiKeyId, CeremonyId, CeremonyStart, CeremonyState, CredentialId, Email,
+    EmailVerificationToken, IdentityClaims, OAuthProviderConfig, OAuthUserInfo, PasskeyCredential,
+    Password, SessionId, TwoFaAttemptId, TwoFaCode, TwoFaError, User, UserError, ValidatedUser,
 };
 
 // ============================================================================

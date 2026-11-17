@@ -175,7 +175,9 @@ Seven ports have only a `HashMap*` implementation. Split by data lifetime:
 No production `WebAuthnVerifier` exists; the only impls are two test mocks and
 the example's `DemoVerifier`.
 
-- **4.1 Port check first (design risk).** The port takes a challenge generated
+- **4.1 Port check first (design risk).** ✅ DONE (2026-11-17), confirmed against
+  the `webauthn-rs` 0.6.2 docs; see "Port changes as executed" below.
+  Original note: The port takes a challenge generated
   by `PasskeyFlow` and is synchronous and stateless. `webauthn-rs` generates its
   own challenge and returns an opaque state object (`PasskeyRegistration` /
   `PasskeyAuthentication`) that must be stored between start and finish. These
@@ -186,6 +188,19 @@ the example's `DemoVerifier`.
   and the Phase 3 `ChallengeStore` in the same commit.
   If 4.1 changes `ChallengeStore`, do it before the Redis `ChallengeStore` in
   Phase 3.
+  As built: the verifier owns the challenge. `start_*` returns
+  `CeremonyStart { options, state: CeremonyState }`; `PasskeyFlow` parks the
+  opaque state in `ChallengeStore` under a server-generated `CeremonyId` and
+  returns `PasskeyCeremony { ceremony_id, options }`; `finish_*` gets the state
+  back. `PasskeyCredential.public_key` became opaque `credential_data` (for
+  `webauthn-rs`: the serialized `Passkey`), and `VerifiedAssertion` can return
+  replacement data, persisted via
+  `PasskeyCredentialStore::update_after_authentication`. HTTP shape: start
+  returns `{ ceremony_id, options }`, finish takes `{ ceremony_id, response }`.
+  Notes for 4.2: serializing `webauthn-rs` ceremony state needs its
+  `danger-allow-state-serialisation` feature; `start_passkey_registration`
+  wants a `Uuid` user handle (derive one from the email, e.g. UUIDv5);
+  usernameless login needs its `conditional-ui` feature.
 - **4.2 `WebAuthnRsVerifier`** in `tempered_adapters/src/passkey/`, behind a new
   `passkeys-webauthn` cargo feature (default-off: it pulls OpenSSL-class
   dependencies). Tested with the `webauthn-authenticator-rs` software

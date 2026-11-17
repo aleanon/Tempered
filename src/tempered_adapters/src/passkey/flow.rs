@@ -4,16 +4,21 @@
 //! **yields a domain [`Email`]** rather than issuing a token itself — the app
 //! issues whatever token its primary scheme uses.
 //!
-//! The cryptographic work (attestation/assertion verification, COSE keys) is
-//! delegated to a [`WebAuthnVerifier`] port, so the challenge lifecycle, storage
-//! and sign-count anti-cloning logic here are all unit-testable offline. A real
-//! `webauthn-rs`-backed verifier plugs into that port without changing this code.
+//! The cryptographic work (challenge generation, attestation/assertion
+//! verification, COSE keys) is delegated to a [`WebAuthnVerifier`] port. Each
+//! `start_*` asks the verifier for the browser options and an opaque
+//! [`CeremonyState`](tempered_core::CeremonyState); the flow parks that state in
+//! the [`ChallengeStore`] under a fresh [`CeremonyId`] and hands the id to the
+//! client, which echoes it on `finish_*`. The ceremony lifecycle, ownership
+//! checks, storage and sign-count anti-cloning logic here are all unit-testable
+//! offline with a mock verifier; a `webauthn-rs`-backed one plugs into the same
+//! port.
 
 use rand::RngCore;
 use tempered_core::{
-    ChallengeStore, ChallengeStoreError, ClassifyError, CredentialId, Email, ErrorCategory,
-    PasskeyCredential, PasskeyCredentialStore, PasskeyStoreError, WebAuthnChallenge, WebAuthnError,
-    WebAuthnVerifier,
+    CeremonyId, ChallengeStore, ChallengeStoreError, ClassifyError, CredentialId, Email,
+    ErrorCategory, PasskeyCeremony, PasskeyCredential, PasskeyCredentialStore, PasskeyStoreError,
+    PendingCeremony, WebAuthnError, WebAuthnVerifier,
 };
 use thiserror::Error;
 
@@ -47,13 +52,12 @@ where
     pub async fn start_registration(
         &self,
         email: Email,
-    ) -> Result<serde_json::Value, PasskeyFlowError> {
-        let challenge = random_challenge();
-        let options = self.verifier.start_registration(&email, &challenge);
-        self.challenge_store
-            .store_challenge(challenge, Some(email))
-            .await?;
-        Ok(options)
+    ) -> Result<PasskeyCeremony, PasskeyFlowError> {
+        // Lets the verifier tell the browser which authenticators are already
+        // enrolled, so the same one is not registered twice.
+        let existing = self.credential_store.list_for_user(&email).await?;
+        let start = self.verifier.start_registration(&email, &existing)?;
+        self.park(Some(email), start).await
     }
 
     /// Registration step 2: verify the attestation and store the credential.
@@ -64,33 +68,37 @@ where
     pub async fn finish_registration(
         &self,
         email: &Email,
-        challenge: WebAuthnChallenge,
+        ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<Email, PasskeyFlowError> {
-        let bound = self
-            .challenge_store
-            .consume_challenge(&challenge)
-            .await?
-            .ok_or(PasskeyFlowError::MissingUser)?;
-        // Reported exactly like an unknown challenge, so a caller learns nothing
+        let pending = self.challenge_store.consume_ceremony(&ceremony_id).await?;
+        let bound = pending.user.ok_or(PasskeyFlowError::MissingUser)?;
+        // Reported exactly like an unknown ceremony, so a caller learns nothing
         // about ceremonies that belong to other users.
         if &bound != email {
             return Err(ChallengeStoreError::ChallengeNotFound.into());
         }
-        let email = bound;
 
-        let verified = self.verifier.verify_registration(&challenge, &response)?;
+        let verified = self
+            .verifier
+            .finish_registration(&pending.state, &response)?;
 
         self.credential_store
             .add_credential(PasskeyCredential {
                 credential_id: verified.credential_id,
-                public_key: verified.public_key,
+                credential_data: verified.credential_data,
                 sign_count: verified.sign_count,
-                owner: email.clone(),
+                owner: bound.clone(),
             })
-            .await?;
+            .await
+            .map_err(|e| match e {
+                PasskeyStoreError::CredentialAlreadyExists => {
+                    PasskeyFlowError::CredentialAlreadyRegistered
+                }
+                other => other.into(),
+            })?;
 
-        Ok(email)
+        Ok(bound)
     }
 
     /// Authentication step 1: issue request options. `email = None` for a
@@ -98,35 +106,24 @@ where
     pub async fn start_authentication(
         &self,
         email: Option<Email>,
-    ) -> Result<serde_json::Value, PasskeyFlowError> {
-        let allowed: Vec<CredentialId> = match &email {
-            Some(e) => self
-                .credential_store
-                .list_for_user(e)
-                .await?
-                .into_iter()
-                .map(|c| c.credential_id)
-                .collect(),
+    ) -> Result<PasskeyCeremony, PasskeyFlowError> {
+        let allowed = match &email {
+            Some(e) => self.credential_store.list_for_user(e).await?,
             None => Vec::new(),
         };
-
-        let challenge = random_challenge();
-        let options = self.verifier.start_authentication(&allowed, &challenge);
-        self.challenge_store
-            .store_challenge(challenge, email)
-            .await?;
-        Ok(options)
+        let start = self.verifier.start_authentication(&allowed)?;
+        self.park(email, start).await
     }
 
     /// Authentication step 2: verify the assertion, enforce the sign-count
     /// invariant, and return the owning user's email.
     pub async fn finish_authentication(
         &self,
-        challenge: WebAuthnChallenge,
+        ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<Email, PasskeyFlowError> {
-        // Consume the challenge regardless of the outcome (single use).
-        self.challenge_store.consume_challenge(&challenge).await?;
+        // Consume the ceremony regardless of the outcome (single use).
+        let pending = self.challenge_store.consume_ceremony(&ceremony_id).await?;
 
         let cred_id = response
             .get("id")
@@ -138,9 +135,18 @@ where
             .get_credential(&CredentialId(cred_id.to_string()))
             .await?;
 
+        // A ceremony started for one user can only be answered with one of that
+        // user's credentials. (Usernameless ceremonies carry no user; there the
+        // credential alone identifies the account.)
+        if let Some(expected) = &pending.user
+            && &stored.owner != expected
+        {
+            return Err(PasskeyFlowError::WrongCredential);
+        }
+
         let verified = self
             .verifier
-            .verify_authentication(&challenge, &response, &stored)?;
+            .finish_authentication(&pending.state, &response, &stored)?;
 
         // Detect cloned authenticators: the counter must advance, unless the
         // authenticator does not implement one (both sides remain 0).
@@ -151,23 +157,54 @@ where
         }
 
         self.credential_store
-            .update_sign_count(&stored.credential_id, verified.new_sign_count)
+            .update_after_authentication(
+                &stored.credential_id,
+                verified.new_sign_count,
+                verified.updated_credential_data,
+            )
             .await?;
 
         Ok(stored.owner)
     }
+
+    /// Keep a started ceremony's state server-side under a fresh id, and return
+    /// what the client needs: the id and the browser options.
+    async fn park(
+        &self,
+        user: Option<Email>,
+        start: tempered_core::CeremonyStart,
+    ) -> Result<PasskeyCeremony, PasskeyFlowError> {
+        let ceremony_id = random_ceremony_id();
+        self.challenge_store
+            .store_ceremony(
+                ceremony_id.clone(),
+                PendingCeremony {
+                    user,
+                    state: start.state,
+                },
+            )
+            .await?;
+        Ok(PasskeyCeremony {
+            ceremony_id,
+            options: start.options,
+        })
+    }
 }
 
-fn random_challenge() -> WebAuthnChallenge {
+fn random_ceremony_id() -> CeremonyId {
     let mut buf = [0u8; 32];
     rand::rng().fill_bytes(&mut buf);
-    WebAuthnChallenge(buf.iter().map(|b| format!("{:02x}", b)).collect())
+    CeremonyId(buf.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
 #[derive(Debug, Error)]
 pub enum PasskeyFlowError {
-    #[error("No user bound to challenge")]
+    #[error("No user bound to ceremony")]
     MissingUser,
+    #[error("Credential does not belong to the user the ceremony was started for")]
+    WrongCredential,
+    #[error("Credential id is already registered")]
+    CredentialAlreadyRegistered,
     #[error("Malformed WebAuthn response: {0}")]
     Malformed(String),
     #[error("Sign count regression (possible cloned authenticator)")]
@@ -185,7 +222,16 @@ impl ClassifyError for PasskeyFlowError {
         match self {
             PasskeyFlowError::MissingUser => (
                 ErrorCategory::BadRequest,
-                "No user bound to challenge".to_string(),
+                "No user bound to ceremony".to_string(),
+            ),
+            // Same answer as an unknown credential: do not reveal whose it is.
+            PasskeyFlowError::WrongCredential => (
+                ErrorCategory::Unauthorized,
+                "Unknown credential".to_string(),
+            ),
+            PasskeyFlowError::CredentialAlreadyRegistered => (
+                ErrorCategory::Conflict,
+                "Credential is already registered".to_string(),
             ),
             PasskeyFlowError::Malformed(m) => (ErrorCategory::BadRequest, m),
             PasskeyFlowError::SignCountRegression => (
@@ -208,56 +254,86 @@ impl ClassifyError for PasskeyFlowError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::persistence::hashmap_challenge_store::HashMapChallengeStore;
-    use crate::persistence::hashmap_passkey_credential_store::HashMapPasskeyCredentialStore;
-    use secrecy::Secret;
-    use serde_json::json;
-    use tempered_core::{VerifiedAssertion, VerifiedRegistration};
+pub(crate) mod test_support {
+    //! A deterministic stand-in for a real (`webauthn-rs`-backed) verifier,
+    //! shared by the flow and scheme tests.
 
-    /// Deterministic stand-in for a `webauthn-rs`-backed verifier.
-    struct MockVerifier;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use serde_json::{Value, json};
+    use tempered_core::{
+        CeremonyStart, CeremonyState, CredentialId, Email, PasskeyCredential, VerifiedAssertion,
+        VerifiedRegistration, WebAuthnError, WebAuthnVerifier,
+    };
+
+    /// Issues its own challenge per ceremony (as real verifiers do), keeps it as
+    /// the ceremony state, and only accepts a response that echoes it:
+    /// `{ "id": <credential id>, "challenge": <options.challenge>, "sign_count"?: n }`.
+    #[derive(Clone, Default)]
+    pub struct MockVerifier;
+
+    static NEXT_CHALLENGE: AtomicU64 = AtomicU64::new(1);
+
+    fn start() -> CeremonyStart {
+        let challenge = format!(
+            "challenge-{}",
+            NEXT_CHALLENGE.fetch_add(1, Ordering::Relaxed)
+        );
+        CeremonyStart {
+            options: json!({ "challenge": challenge }),
+            state: CeremonyState(challenge.into_bytes()),
+        }
+    }
+
+    fn check_challenge(state: &CeremonyState, response: &Value) -> Result<(), WebAuthnError> {
+        let echoed = response.get("challenge").and_then(|v| v.as_str());
+        if echoed.map(str::as_bytes) == Some(state.0.as_slice()) {
+            Ok(())
+        } else {
+            Err(WebAuthnError::Verification("challenge mismatch".into()))
+        }
+    }
 
     impl WebAuthnVerifier for MockVerifier {
         fn start_registration(
             &self,
             _email: &Email,
-            challenge: &WebAuthnChallenge,
-        ) -> serde_json::Value {
-            json!({ "challenge": challenge.as_str() })
+            _existing: &[PasskeyCredential],
+        ) -> Result<CeremonyStart, WebAuthnError> {
+            Ok(start())
         }
 
-        fn verify_registration(
+        fn finish_registration(
             &self,
-            _challenge: &WebAuthnChallenge,
-            response: &serde_json::Value,
+            state: &CeremonyState,
+            response: &Value,
         ) -> Result<VerifiedRegistration, WebAuthnError> {
+            check_challenge(state, response)?;
             let id = response
                 .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| WebAuthnError::Malformed("no id".into()))?;
             Ok(VerifiedRegistration {
                 credential_id: CredentialId(id.to_string()),
-                public_key: vec![1, 2, 3],
+                credential_data: vec![1, 2, 3],
                 sign_count: 0,
             })
         }
 
         fn start_authentication(
             &self,
-            _allowed: &[CredentialId],
-            challenge: &WebAuthnChallenge,
-        ) -> serde_json::Value {
-            json!({ "challenge": challenge.as_str() })
+            _allowed: &[PasskeyCredential],
+        ) -> Result<CeremonyStart, WebAuthnError> {
+            Ok(start())
         }
 
-        fn verify_authentication(
+        fn finish_authentication(
             &self,
-            _challenge: &WebAuthnChallenge,
-            response: &serde_json::Value,
+            state: &CeremonyState,
+            response: &Value,
             stored: &PasskeyCredential,
         ) -> Result<VerifiedAssertion, WebAuthnError> {
+            check_challenge(state, response)?;
             let new_sign_count = response
                 .get("sign_count")
                 .and_then(|v| v.as_u64())
@@ -266,9 +342,39 @@ mod tests {
             Ok(VerifiedAssertion {
                 credential_id: stored.credential_id.clone(),
                 new_sign_count,
+                // Exercise the "verifier rewrites its credential data" path.
+                updated_credential_data: Some(vec![9, new_sign_count as u8]),
             })
         }
     }
+
+    /// The authenticator's reply to a started ceremony, for the mock verifier.
+    pub fn reply(ceremony: &tempered_core::PasskeyCeremony, cred_id: &str) -> Value {
+        json!({ "id": cred_id, "challenge": ceremony.options["challenge"] })
+    }
+
+    /// Like [`reply`], asserting a specific signature counter.
+    pub fn reply_with_count(
+        ceremony: &tempered_core::PasskeyCeremony,
+        cred_id: &str,
+        sign_count: u32,
+    ) -> Value {
+        json!({
+            "id": cred_id,
+            "challenge": ceremony.options["challenge"],
+            "sign_count": sign_count
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{MockVerifier, reply, reply_with_count};
+    use super::*;
+    use crate::persistence::hashmap_challenge_store::HashMapChallengeStore;
+    use crate::persistence::hashmap_passkey_credential_store::HashMapPasskeyCredentialStore;
+    use secrecy::Secret;
+    use serde_json::json;
 
     type Flow = PasskeyFlow<HashMapPasskeyCredentialStore, HashMapChallengeStore, MockVerifier>;
 
@@ -284,26 +390,30 @@ mod tests {
         Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
     }
 
-    fn challenge_of(options: &serde_json::Value) -> WebAuthnChallenge {
-        WebAuthnChallenge(options["challenge"].as_str().unwrap().to_string())
+    fn other_email() -> Email {
+        Email::try_from(Secret::new("attacker@example.com".to_string())).unwrap()
+    }
+
+    async fn register_for(flow: &Flow, who: Email, cred_id: &str) {
+        let ceremony = flow.start_registration(who.clone()).await.unwrap();
+        let response = reply(&ceremony, cred_id);
+        flow.finish_registration(&who, ceremony.ceremony_id, response)
+            .await
+            .unwrap();
     }
 
     async fn register(flow: &Flow, cred_id: &str) {
-        let opts = flow.start_registration(email()).await.unwrap();
-        let challenge = challenge_of(&opts);
-        flow.finish_registration(&email(), challenge, json!({ "id": cred_id }))
-            .await
-            .unwrap();
+        register_for(flow, email(), cred_id).await;
     }
 
     #[tokio::test]
     async fn registration_cannot_be_finished_by_a_different_user() {
         let f = flow();
-        let opts = f.start_registration(email()).await.unwrap();
-        let other = Email::try_from(Secret::new("attacker@example.com".to_string())).unwrap();
+        let ceremony = f.start_registration(email()).await.unwrap();
+        let response = reply(&ceremony, "cred-evil");
 
         let result = f
-            .finish_registration(&other, challenge_of(&opts), json!({ "id": "cred-evil" }))
+            .finish_registration(&other_email(), ceremony.ceremony_id, response)
             .await;
         assert!(matches!(
             result,
@@ -325,13 +435,158 @@ mod tests {
         let f = flow();
         register(&f, "cred-abc").await;
 
-        let opts = f.start_authentication(Some(email())).await.unwrap();
-        let challenge = challenge_of(&opts);
+        let ceremony = f.start_authentication(Some(email())).await.unwrap();
+        let response = reply_with_count(&ceremony, "cred-abc", 1);
         let who = f
-            .finish_authentication(challenge, json!({ "id": "cred-abc", "sign_count": 1 }))
+            .finish_authentication(ceremony.ceremony_id, response)
             .await
             .unwrap();
         assert_eq!(who, email());
+    }
+
+    #[tokio::test]
+    async fn the_ceremony_id_is_not_the_verifiers_challenge() {
+        let f = flow();
+        let ceremony = f.start_registration(email()).await.unwrap();
+        // The verifier's challenge travels in the options; the id is only a
+        // server-side lookup handle.
+        assert_ne!(
+            ceremony.options["challenge"].as_str().unwrap(),
+            ceremony.ceremony_id.as_str()
+        );
+        assert_eq!(ceremony.ceremony_id.as_str().len(), 64);
+    }
+
+    #[tokio::test]
+    async fn a_response_to_a_different_ceremony_is_rejected() {
+        let f = flow();
+        register(&f, "cred-abc").await;
+
+        // Two concurrent login ceremonies; the reply to the first is presented
+        // against the second's id, so the verifier sees the wrong state.
+        let first = f.start_authentication(Some(email())).await.unwrap();
+        let second = f.start_authentication(Some(email())).await.unwrap();
+        let reply_to_first = reply(&first, "cred-abc");
+
+        let result = f
+            .finish_authentication(second.ceremony_id, reply_to_first)
+            .await;
+        assert!(matches!(result, Err(PasskeyFlowError::WebAuthn(_))));
+    }
+
+    #[tokio::test]
+    async fn a_ceremony_is_single_use() {
+        let f = flow();
+        register(&f, "cred-abc").await;
+
+        let ceremony = f.start_authentication(Some(email())).await.unwrap();
+        let response = reply_with_count(&ceremony, "cred-abc", 1);
+        f.finish_authentication(ceremony.ceremony_id.clone(), response.clone())
+            .await
+            .unwrap();
+
+        let replay = f
+            .finish_authentication(ceremony.ceremony_id, response)
+            .await;
+        assert!(matches!(
+            replay,
+            Err(PasskeyFlowError::Challenge(
+                ChallengeStoreError::ChallengeNotFound
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failed_attempt_still_consumes_the_ceremony() {
+        let f = flow();
+        register(&f, "cred-abc").await;
+
+        let ceremony = f.start_authentication(Some(email())).await.unwrap();
+        let bad = json!({ "id": "cred-abc", "challenge": "wrong" });
+        assert!(
+            f.finish_authentication(ceremony.ceremony_id.clone(), bad)
+                .await
+                .is_err()
+        );
+
+        // The correct reply can no longer be used with that ceremony.
+        let good = reply(&ceremony, "cred-abc");
+        let retry = f.finish_authentication(ceremony.ceremony_id, good).await;
+        assert!(matches!(retry, Err(PasskeyFlowError::Challenge(_))));
+    }
+
+    #[tokio::test]
+    async fn a_ceremony_for_one_user_rejects_another_users_credential() {
+        let f = flow();
+        register(&f, "cred-victim").await;
+        register_for(&f, other_email(), "cred-attacker").await;
+
+        // Started for the victim, answered with the attacker's own credential.
+        let ceremony = f.start_authentication(Some(email())).await.unwrap();
+        let response = reply(&ceremony, "cred-attacker");
+        let result = f
+            .finish_authentication(ceremony.ceremony_id, response)
+            .await;
+        assert!(matches!(result, Err(PasskeyFlowError::WrongCredential)));
+    }
+
+    #[tokio::test]
+    async fn usernameless_ceremony_identifies_the_user_by_credential() {
+        let f = flow();
+        register(&f, "cred-abc").await;
+
+        let ceremony = f.start_authentication(None).await.unwrap();
+        let response = reply(&ceremony, "cred-abc");
+        let who = f
+            .finish_authentication(ceremony.ceremony_id, response)
+            .await
+            .unwrap();
+        assert_eq!(who, email());
+    }
+
+    #[tokio::test]
+    async fn an_existing_credential_id_cannot_be_re_registered() {
+        let f = flow();
+        register(&f, "cred-abc").await;
+
+        // Another account tries to enroll the same credential id.
+        let ceremony = f.start_registration(other_email()).await.unwrap();
+        let response = reply(&ceremony, "cred-abc");
+        let result = f
+            .finish_registration(&other_email(), ceremony.ceremony_id, response)
+            .await;
+        assert!(matches!(
+            result,
+            Err(PasskeyFlowError::CredentialAlreadyRegistered)
+        ));
+
+        // The credential still belongs to its original owner.
+        let stored = f
+            .credential_store
+            .get_credential(&CredentialId("cred-abc".into()))
+            .await
+            .unwrap();
+        assert_eq!(stored.owner, email());
+    }
+
+    #[tokio::test]
+    async fn authentication_persists_counter_and_updated_credential_data() {
+        let f = flow();
+        register(&f, "cred-abc").await;
+
+        let ceremony = f.start_authentication(Some(email())).await.unwrap();
+        let response = reply_with_count(&ceremony, "cred-abc", 7);
+        f.finish_authentication(ceremony.ceremony_id, response)
+            .await
+            .unwrap();
+
+        let stored = f
+            .credential_store
+            .get_credential(&CredentialId("cred-abc".into()))
+            .await
+            .unwrap();
+        assert_eq!(stored.sign_count, 7);
+        assert_eq!(stored.credential_data, vec![9, 7]);
     }
 
     #[tokio::test]
@@ -340,21 +595,17 @@ mod tests {
         register(&f, "cred-abc").await;
 
         // First assertion advances the counter to 5.
-        let opts = f.start_authentication(Some(email())).await.unwrap();
-        f.finish_authentication(
-            challenge_of(&opts),
-            json!({ "id": "cred-abc", "sign_count": 5 }),
-        )
-        .await
-        .unwrap();
+        let ceremony = f.start_authentication(Some(email())).await.unwrap();
+        let response = reply_with_count(&ceremony, "cred-abc", 5);
+        f.finish_authentication(ceremony.ceremony_id, response)
+            .await
+            .unwrap();
 
         // A later assertion reporting a lower counter signals a clone.
-        let opts = f.start_authentication(Some(email())).await.unwrap();
+        let ceremony = f.start_authentication(Some(email())).await.unwrap();
+        let response = reply_with_count(&ceremony, "cred-abc", 3);
         let result = f
-            .finish_authentication(
-                challenge_of(&opts),
-                json!({ "id": "cred-abc", "sign_count": 3 }),
-            )
+            .finish_authentication(ceremony.ceremony_id, response)
             .await;
         assert!(matches!(result, Err(PasskeyFlowError::SignCountRegression)));
     }
@@ -364,9 +615,10 @@ mod tests {
         let f = flow();
         register(&f, "cred-abc").await;
 
-        let opts = f.start_authentication(Some(email())).await.unwrap();
+        let ceremony = f.start_authentication(Some(email())).await.unwrap();
+        let response = reply(&ceremony, "not-registered");
         let result = f
-            .finish_authentication(challenge_of(&opts), json!({ "id": "not-registered" }))
+            .finish_authentication(ceremony.ceremony_id, response)
             .await;
         assert!(matches!(
             result,
@@ -377,10 +629,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_challenge_is_rejected() {
+    async fn unknown_ceremony_is_rejected() {
         let f = flow();
         let result = f
-            .finish_authentication(WebAuthnChallenge("nope".into()), json!({ "id": "x" }))
+            .finish_authentication(CeremonyId("nope".into()), json!({ "id": "x" }))
             .await;
         assert!(matches!(result, Err(PasskeyFlowError::Challenge(_))));
     }

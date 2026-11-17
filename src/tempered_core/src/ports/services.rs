@@ -4,7 +4,7 @@ use thiserror::Error;
 use crate::domain::{
     email::Email,
     oauth::{OAuthProviderConfig, OAuthUserInfo},
-    passkey::{CredentialId, PasskeyCredential, WebAuthnChallenge},
+    passkey::{CeremonyStart, CeremonyState, CredentialId, PasskeyCredential},
 };
 
 /// Port trait for email sending service
@@ -64,7 +64,9 @@ pub enum WebAuthnError {
 /// Outcome of verifying a registration attestation.
 pub struct VerifiedRegistration {
     pub credential_id: CredentialId,
-    pub public_key: Vec<u8>,
+    /// Opaque data the verifier needs to check later assertions; stored as
+    /// [`PasskeyCredential::credential_data`].
+    pub credential_data: Vec<u8>,
     pub sign_count: u32,
 }
 
@@ -72,39 +74,61 @@ pub struct VerifiedRegistration {
 pub struct VerifiedAssertion {
     pub credential_id: CredentialId,
     pub new_sign_count: u32,
+    /// Replacement for the stored [`PasskeyCredential::credential_data`], when
+    /// the verifier keeps mutable state in it (e.g. its own copy of the counter
+    /// or backup flags). `None` leaves the stored data untouched.
+    pub updated_credential_data: Option<Vec<u8>>,
 }
 
-/// Port for the WebAuthn cryptographic ceremony (attestation / assertion
-/// verification, COSE key handling, signature checks).
+/// Port for the WebAuthn cryptographic ceremony (challenge generation,
+/// attestation / assertion verification, COSE key handling, signature checks).
 ///
 /// This is the boundary where a real implementation (e.g. backed by the
 /// `webauthn-rs` crate) plugs in. Keeping it a port lets the orchestration and
 /// storage logic be tested without the heavy crypto dependency, and keeps the
 /// core library free of WebAuthn internals.
+///
+/// The verifier **owns the challenge**: each `start_*` generates one, embeds it
+/// in the returned options, and returns whatever it must remember as an opaque
+/// [`CeremonyState`]. The caller stores that state server-side and passes it
+/// back to the matching `finish_*`. This is the shape WebAuthn libraries expose
+/// (they do not accept an externally generated challenge), and it keeps
+/// challenge generation next to the code that verifies it.
 pub trait WebAuthnVerifier: Send + Sync {
-    /// Build the `PublicKeyCredentialCreationOptions` to send to the browser.
-    fn start_registration(&self, email: &Email, challenge: &WebAuthnChallenge)
-    -> serde_json::Value;
-
-    /// Verify the attestation returned by the browser.
-    fn verify_registration(
+    /// Start enrolling a credential for `email`.
+    ///
+    /// `existing` are the user's current credentials, so the verifier can list
+    /// them as `excludeCredentials` and stop the same authenticator being
+    /// enrolled twice.
+    fn start_registration(
         &self,
-        challenge: &WebAuthnChallenge,
+        email: &Email,
+        existing: &[PasskeyCredential],
+    ) -> Result<CeremonyStart, WebAuthnError>;
+
+    /// Verify the attestation the browser returned for the ceremony `state`
+    /// was created for.
+    fn finish_registration(
+        &self,
+        state: &CeremonyState,
         response: &serde_json::Value,
     ) -> Result<VerifiedRegistration, WebAuthnError>;
 
-    /// Build the `PublicKeyCredentialRequestOptions` to send to the browser.
+    /// Start an authentication ceremony.
+    ///
+    /// `allowed` are the credentials that may answer it; an empty slice asks
+    /// for a usernameless (discoverable-credential) ceremony.
     fn start_authentication(
         &self,
-        allowed: &[CredentialId],
-        challenge: &WebAuthnChallenge,
-    ) -> serde_json::Value;
+        allowed: &[PasskeyCredential],
+    ) -> Result<CeremonyStart, WebAuthnError>;
 
-    /// Verify an assertion against the stored credential, returning the updated
-    /// signature counter (must be strictly greater than the stored value).
-    fn verify_authentication(
+    /// Verify an assertion against the stored credential, for the ceremony
+    /// `state` was created for, returning the authenticator's new signature
+    /// counter.
+    fn finish_authentication(
         &self,
-        challenge: &WebAuthnChallenge,
+        state: &CeremonyState,
         response: &serde_json::Value,
         stored: &PasskeyCredential,
     ) -> Result<VerifiedAssertion, WebAuthnError>;

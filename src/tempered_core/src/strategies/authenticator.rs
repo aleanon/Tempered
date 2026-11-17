@@ -3,8 +3,12 @@ use serde::Deserialize;
 
 use crate::{
     domain::{
-        api_key::ApiKeyId, email::Email, passkey::WebAuthnChallenge, password::Password,
-        two_fa_attempt_id::TwoFaAttemptId, two_fa_code::TwoFaCode,
+        api_key::ApiKeyId,
+        email::Email,
+        passkey::{CeremonyId, PasskeyCeremony},
+        password::Password,
+        two_fa_attempt_id::TwoFaAttemptId,
+        two_fa_code::TwoFaCode,
     },
     ports::repositories::ApiKeyMetadata,
     strategies::auth_validator::AuthValidator,
@@ -187,9 +191,10 @@ pub trait SupportsOAuth2: AuthenticationScheme {
 /// Optional trait for authentication schemes that can authenticate users with
 /// passkeys (WebAuthn).
 ///
-/// Each ceremony is two legs of JSON: a `start_*` that returns the options the
-/// browser passes to `navigator.credentials`, and a `finish_*` that verifies the
-/// authenticator's response. Registration *enrolls* a credential for an
+/// Each ceremony is two legs: a `start_*` that returns a [`PasskeyCeremony`] —
+/// the options the browser passes to `navigator.credentials` plus a
+/// [`CeremonyId`] — and a `finish_*` that takes that id back with the
+/// authenticator's response and verifies it. Registration *enrolls* a credential for an
 /// **already authenticated** user: both registration legs take the email of the
 /// logged-in caller, and a delivery layer must source it from the validated
 /// session, never from the request body — otherwise anyone could enroll their
@@ -210,16 +215,16 @@ pub trait SupportsPasskeys: AuthenticationScheme {
     async fn start_passkey_registration(
         &self,
         email: Email,
-    ) -> Result<serde_json::Value, Self::PasskeyError>;
+    ) -> Result<PasskeyCeremony, Self::PasskeyError>;
 
     /// Registration leg 2: verify the attestation and enroll the credential.
     ///
     /// `email` is the authenticated user; it must match the user who started
-    /// the ceremony identified by `challenge`.
+    /// the ceremony identified by `ceremony_id`.
     async fn finish_passkey_registration(
         &self,
         email: Email,
-        challenge: WebAuthnChallenge,
+        ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<(), Self::PasskeyError>;
 
@@ -228,12 +233,12 @@ pub trait SupportsPasskeys: AuthenticationScheme {
     async fn start_passkey_authentication(
         &self,
         email: Option<Email>,
-    ) -> Result<serde_json::Value, Self::PasskeyError>;
+    ) -> Result<PasskeyCeremony, Self::PasskeyError>;
 
     /// Authentication leg 2: verify the assertion and issue the primary token.
     async fn finish_passkey_authentication(
         &self,
-        challenge: WebAuthnChallenge,
+        ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<Self::Token, Self::PasskeyError>;
 }

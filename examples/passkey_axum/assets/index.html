@@ -58,10 +58,12 @@
       // No email is sent: the server enrols for the session's owner.
       const rs = await post("/passkey/register/start", {});
       if (!rs.ok) return fail(status, "register/start failed");
-      const { challenge: rc } = await rs.json();
+      // `ceremony_id` goes back verbatim on finish; `options` is what a real
+      // client hands to navigator.credentials.create().
+      const { ceremony_id: rid, options: ropts } = await rs.json();
 
       const credId = crypto.randomUUID();
-      const rf = await post("/passkey/register/finish", { challenge: rc, response: { id: credId } });
+      const rf = await post("/passkey/register/finish", { ceremony_id: rid, response: { id: credId, challenge: ropts.challenge } });
       if (!rf.ok) return fail(status, "register/finish failed");
       localStorage.setItem(credKey(email), credId);
 
@@ -76,13 +78,13 @@
       // --- Authentication: start -> simulate assertion -> finish ------------
       const ls = await post("/passkey/login/start", { email });
       if (!ls.ok) return fail(status, "login/start failed");
-      const { challenge: lc } = await ls.json();
+      const { ceremony_id: lid, options: lopts } = await ls.json();
 
       // Bump the sign counter each login (the flow rejects regressions).
       const next = (Number(localStorage.getItem("passkey_count") || "0") + 1);
       localStorage.setItem("passkey_count", String(next));
 
-      const lf = await post("/passkey/login/finish", { challenge: lc, response: { id: credId, sign_count: next } });
+      const lf = await post("/passkey/login/finish", { ceremony_id: lid, response: { id: credId, challenge: lopts.challenge, sign_count: next } });
       if (!lf.ok) {
         const { error } = await lf.json().catch(() => ({ error: "login failed" }));
         return fail(status, error || "login/finish failed");

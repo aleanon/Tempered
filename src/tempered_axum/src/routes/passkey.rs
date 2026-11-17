@@ -1,8 +1,8 @@
 //! Axum-specific passkey (WebAuthn) routes.
 //!
 //! Four `POST` routes, JSON in / JSON out: registration and authentication each
-//! split into a `start` (returns ceremony options) and a `finish` (verifies the
-//! authenticator response). A successful `login/finish` sets the scheme's auth
+//! split into a `start` (returns `{ ceremony_id, options }`) and a `finish`
+//! (takes `{ ceremony_id, response }` and verifies the authenticator response). A successful `login/finish` sets the scheme's auth
 //! cookie, exactly like a password login.
 //!
 //! The two **registration** routes sit behind the login-validation middleware
@@ -18,8 +18,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
 use tempered_core::{
-    AuthValidator, Email, HttpAuthenticationScheme, IdentityClaims, SupportsPasskeys,
-    WebAuthnChallenge,
+    AuthValidator, CeremonyId, Email, HttpAuthenticationScheme, IdentityClaims, SupportsPasskeys,
 };
 
 use crate::adapters::into_axum_response;
@@ -33,7 +32,9 @@ pub struct LoginStartRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct FinishRequest {
-    pub challenge: String,
+    /// The `ceremony_id` returned by the matching `start` route.
+    pub ceremony_id: String,
+    /// The credential `navigator.credentials` produced, as JSON.
     pub response: serde_json::Value,
 }
 
@@ -103,7 +104,7 @@ where
     match handlers::handle_passkey_register_finish(
         &scheme,
         email,
-        WebAuthnChallenge(req.challenge),
+        CeremonyId(req.ceremony_id),
         req.response,
         builder,
     )
@@ -155,7 +156,7 @@ where
     let builder = HttpResponseBuilder::new();
     match handlers::handle_passkey_login_finish(
         &scheme,
-        WebAuthnChallenge(req.challenge),
+        CeremonyId(req.ceremony_id),
         req.response,
         builder,
     )

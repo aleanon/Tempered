@@ -17,16 +17,15 @@ use async_trait::async_trait;
 use secrecy::Secret;
 use serde::Deserialize;
 use tempered_core::{
-    AuthRequest, AuthorizationRequest, ChallengeStore, ClassifyError, Email, EmailClient,
-    EmailVerificationStoreError, EmailVerificationToken, EmailVerificationTokenStore,
+    AuthRequest, AuthorizationRequest, CeremonyId, ChallengeStore, ClassifyError, Email,
+    EmailClient, EmailVerificationStoreError, EmailVerificationToken, EmailVerificationTokenStore,
     ErrorCategory, HttpAuthenticationScheme, HttpOAuth2Scheme, HttpResponseBuilderExt,
-    OAuthHttpClient, OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, Password,
-    PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
+    OAuthHttpClient, OAuthIdentityStore, OAuthStateStore, PasskeyCeremony, PasskeyCredentialStore,
+    Password, PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
     RequiresEmailVerification, ResponseBuilder, SupportsAccountDeletion, SupportsElevation,
     SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset,
     SupportsTokenRevocation, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError,
-    TwoFaError, User, UserError, UserStore, UserStoreError, ValidatedUser, WebAuthnChallenge,
-    WebAuthnVerifier,
+    TwoFaError, User, UserError, UserStore, UserStoreError, ValidatedUser, WebAuthnVerifier,
     strategies::authenticator::{
         AuthenticationScheme, LoginOutcome, SupportsRegistration, SupportsTwoFactor,
     },
@@ -1144,7 +1143,7 @@ where
     async fn start_passkey_registration(
         &self,
         email: Email,
-    ) -> Result<serde_json::Value, Self::PasskeyError> {
+    ) -> Result<PasskeyCeremony, Self::PasskeyError> {
         Ok(self.passkeys.flow.start_registration(email).await?)
     }
 
@@ -1155,12 +1154,12 @@ where
     async fn finish_passkey_registration(
         &self,
         email: Email,
-        challenge: WebAuthnChallenge,
+        ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<(), Self::PasskeyError> {
         self.passkeys
             .flow
-            .finish_registration(&email, challenge, response)
+            .finish_registration(&email, ceremony_id, response)
             .await?;
         Ok(())
     }
@@ -1169,7 +1168,7 @@ where
     async fn start_passkey_authentication(
         &self,
         email: Option<Email>,
-    ) -> Result<serde_json::Value, Self::PasskeyError> {
+    ) -> Result<PasskeyCeremony, Self::PasskeyError> {
         Ok(self.passkeys.flow.start_authentication(email).await?)
     }
 
@@ -1179,13 +1178,13 @@ where
     )]
     async fn finish_passkey_authentication(
         &self,
-        challenge: WebAuthnChallenge,
+        ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<Self::Token, Self::PasskeyError> {
         let email = self
             .passkeys
             .flow
-            .finish_authentication(challenge, response)
+            .finish_authentication(ceremony_id, response)
             .await?;
         // A passkey outlives nothing: if the account it was enrolled for is gone
         // (deleted since enrollment), the credential must not mint a session.

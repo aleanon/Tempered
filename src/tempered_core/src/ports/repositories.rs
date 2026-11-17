@@ -6,7 +6,7 @@ use crate::domain::{
     api_key::ApiKeyId,
     email::Email,
     email_verification_token::EmailVerificationToken,
-    passkey::{CredentialId, PasskeyCredential, WebAuthnChallenge},
+    passkey::{CeremonyId, CredentialId, PasskeyCredential, PendingCeremony},
     password::Password,
     password_reset_token::PasswordResetToken,
     session_id::SessionId,
@@ -196,12 +196,19 @@ pub trait EmailVerificationTokenStore: Send + Sync {
 pub enum PasskeyStoreError {
     #[error("Credential not found")]
     CredentialNotFound,
+    #[error("Credential id is already registered")]
+    CredentialAlreadyExists,
     #[error("Unexpected error: {0}")]
     UnexpectedError(String),
 }
 
 #[async_trait]
 pub trait PasskeyCredentialStore: Send + Sync {
+    /// Store a newly enrolled credential.
+    ///
+    /// Must fail with [`PasskeyStoreError::CredentialAlreadyExists`] if the
+    /// credential id is already present, for any owner. Overwriting would hand
+    /// an existing credential — and the account it logs in to — to a new owner.
     async fn add_credential(&self, cred: PasskeyCredential) -> Result<(), PasskeyStoreError>;
     async fn get_credential(
         &self,
@@ -211,10 +218,14 @@ pub trait PasskeyCredentialStore: Send + Sync {
         &self,
         owner: &Email,
     ) -> Result<Vec<PasskeyCredential>, PasskeyStoreError>;
-    async fn update_sign_count(
+
+    /// Record a successful authentication: set the signature counter and, when
+    /// `credential_data` is `Some`, replace the stored opaque credential data.
+    async fn update_after_authentication(
         &self,
         id: &CredentialId,
-        new_count: u32,
+        new_sign_count: u32,
+        credential_data: Option<Vec<u8>>,
     ) -> Result<(), PasskeyStoreError>;
 }
 
@@ -226,22 +237,26 @@ pub enum ChallengeStoreError {
     UnexpectedError(String),
 }
 
-/// Stores single-use WebAuthn challenges. A registration challenge is bound to
-/// the enrolling user's email; a usernameless authentication challenge carries
-/// `None`.
+/// Holds in-flight WebAuthn ceremonies between their `start` and `finish` legs:
+/// the verifier's opaque challenge state and the user the ceremony is for.
+///
+/// Entries are single-use and should expire after a short TTL (minutes). The
+/// state is server-side only; the client only ever sees the [`CeremonyId`].
 #[async_trait]
 pub trait ChallengeStore: Send + Sync {
-    async fn store_challenge(
+    async fn store_ceremony(
         &self,
-        challenge: WebAuthnChallenge,
-        email: Option<Email>,
+        id: CeremonyId,
+        ceremony: PendingCeremony,
     ) -> Result<(), ChallengeStoreError>;
 
-    /// Consume a challenge, returning the email it was bound to (if any).
-    async fn consume_challenge(
+    /// Consume a ceremony. Succeeds at most once per stored id: a second call
+    /// (a replayed `finish`) must fail with
+    /// [`ChallengeStoreError::ChallengeNotFound`].
+    async fn consume_ceremony(
         &self,
-        challenge: &WebAuthnChallenge,
-    ) -> Result<Option<Email>, ChallengeStoreError>;
+        id: &CeremonyId,
+    ) -> Result<PendingCeremony, ChallengeStoreError>;
 }
 
 // OAuth ports and errors

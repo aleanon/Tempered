@@ -231,72 +231,17 @@ mod passkey_tests {
     use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
     use crate::authentication::credential_scheme::CredentialError;
     use crate::passkey::PasskeyFlow;
+    use crate::passkey::flow::test_support::{MockVerifier, reply_with_count};
     use crate::persistence::{
         HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore,
         hashmap_challenge_store::HashMapChallengeStore,
         hashmap_passkey_credential_store::HashMapPasskeyCredentialStore,
     };
     use secrecy::Secret;
-    use serde_json::json;
     use tempered_core::{
-        AuthValidator, AuthenticationScheme, CredentialId, Email, PasskeyCredential, Password,
-        SupportsPasskeys, User, UserStore, UserStoreError, VerifiedAssertion, VerifiedRegistration,
-        WebAuthnChallenge, WebAuthnError, WebAuthnVerifier,
+        AuthValidator, AuthenticationScheme, Email, Password, SupportsPasskeys, User, UserStore,
+        UserStoreError,
     };
-
-    #[derive(Clone)]
-    struct MockVerifier;
-
-    impl WebAuthnVerifier for MockVerifier {
-        fn start_registration(
-            &self,
-            _email: &Email,
-            challenge: &WebAuthnChallenge,
-        ) -> serde_json::Value {
-            json!({ "challenge": challenge.as_str() })
-        }
-
-        fn verify_registration(
-            &self,
-            _challenge: &WebAuthnChallenge,
-            response: &serde_json::Value,
-        ) -> Result<VerifiedRegistration, WebAuthnError> {
-            let id = response
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| WebAuthnError::Malformed("no id".into()))?;
-            Ok(VerifiedRegistration {
-                credential_id: CredentialId(id.to_string()),
-                public_key: vec![1, 2, 3],
-                sign_count: 0,
-            })
-        }
-
-        fn start_authentication(
-            &self,
-            _allowed: &[CredentialId],
-            challenge: &WebAuthnChallenge,
-        ) -> serde_json::Value {
-            json!({ "challenge": challenge.as_str() })
-        }
-
-        fn verify_authentication(
-            &self,
-            _challenge: &WebAuthnChallenge,
-            response: &serde_json::Value,
-            stored: &PasskeyCredential,
-        ) -> Result<VerifiedAssertion, WebAuthnError> {
-            let new_sign_count = response
-                .get("sign_count")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u32)
-                .unwrap_or(stored.sign_count + 1);
-            Ok(VerifiedAssertion {
-                credential_id: stored.credential_id.clone(),
-                new_sign_count,
-            })
-        }
-    }
 
     type TestScheme = JwtScheme<
         HashMapUserStore,
@@ -350,28 +295,29 @@ mod passkey_tests {
         Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
     }
 
-    fn challenge_of(options: &serde_json::Value) -> WebAuthnChallenge {
-        WebAuthnChallenge(options["challenge"].as_str().unwrap().to_string())
+    async fn enroll(scheme: &TestScheme, cred_id: &str) {
+        let ceremony = scheme.start_passkey_registration(email()).await.unwrap();
+        let response = reply_with_count(&ceremony, cred_id, 0);
+        scheme
+            .finish_passkey_registration(email(), ceremony.ceremony_id, response)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn register_then_authenticate_issues_a_jwt_that_validates() {
         let (scheme, _users) = scheme_with_passkeys().await;
 
-        let opts = scheme.start_passkey_registration(email()).await.unwrap();
-        scheme
-            .finish_passkey_registration(email(), challenge_of(&opts), json!({ "id": "cred-abc" }))
-            .await
-            .unwrap();
+        enroll(&scheme, "cred-abc").await;
 
-        let opts = scheme
+        let ceremony = scheme
             .start_passkey_authentication(Some(email()))
             .await
             .unwrap();
         let token = scheme
             .finish_passkey_authentication(
-                challenge_of(&opts),
-                json!({ "id": "cred-abc", "sign_count": 1 }),
+                ceremony.ceremony_id.clone(),
+                reply_with_count(&ceremony, "cred-abc", 1),
             )
             .await
             .unwrap();
@@ -389,23 +335,19 @@ mod passkey_tests {
     async fn passkey_of_a_deleted_account_cannot_log_in() {
         let (scheme, users) = scheme_with_passkeys().await;
 
-        let opts = scheme.start_passkey_registration(email()).await.unwrap();
-        scheme
-            .finish_passkey_registration(email(), challenge_of(&opts), json!({ "id": "cred-abc" }))
-            .await
-            .unwrap();
+        enroll(&scheme, "cred-abc").await;
 
         // The account is removed, but the credential is still in the passkey store.
         users.delete_user(&email()).await.unwrap();
 
-        let opts = scheme
+        let ceremony = scheme
             .start_passkey_authentication(Some(email()))
             .await
             .unwrap();
         let result = scheme
             .finish_passkey_authentication(
-                challenge_of(&opts),
-                json!({ "id": "cred-abc", "sign_count": 1 }),
+                ceremony.ceremony_id.clone(),
+                reply_with_count(&ceremony, "cred-abc", 1),
             )
             .await;
         assert!(matches!(
@@ -420,32 +362,28 @@ mod passkey_tests {
     async fn cloned_authenticator_is_rejected() {
         let (scheme, _users) = scheme_with_passkeys().await;
 
-        let opts = scheme.start_passkey_registration(email()).await.unwrap();
-        scheme
-            .finish_passkey_registration(email(), challenge_of(&opts), json!({ "id": "cred-abc" }))
-            .await
-            .unwrap();
+        enroll(&scheme, "cred-abc").await;
 
-        let opts = scheme
+        let ceremony = scheme
             .start_passkey_authentication(Some(email()))
             .await
             .unwrap();
         scheme
             .finish_passkey_authentication(
-                challenge_of(&opts),
-                json!({ "id": "cred-abc", "sign_count": 5 }),
+                ceremony.ceremony_id.clone(),
+                reply_with_count(&ceremony, "cred-abc", 5),
             )
             .await
             .unwrap();
 
-        let opts = scheme
+        let ceremony = scheme
             .start_passkey_authentication(Some(email()))
             .await
             .unwrap();
         let result = scheme
             .finish_passkey_authentication(
-                challenge_of(&opts),
-                json!({ "id": "cred-abc", "sign_count": 3 }),
+                ceremony.ceremony_id.clone(),
+                reply_with_count(&ceremony, "cred-abc", 3),
             )
             .await;
         assert!(result.is_err());

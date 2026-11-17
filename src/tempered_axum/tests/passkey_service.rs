@@ -5,6 +5,8 @@
 //! owner — never for an email named in the request. These tests pin that down
 //! at the HTTP level. In-memory stores and `tower::oneshot`; no containers.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use axum::{
     Extension, Router,
     body::{Body, to_bytes},
@@ -23,8 +25,8 @@ use tempered_adapters::persistence::{
 };
 use tempered_axum::auth_service::auth_service;
 use tempered_core::{
-    CredentialId, Email, PasskeyCredential, VerifiedAssertion, VerifiedRegistration,
-    WebAuthnChallenge, WebAuthnError, WebAuthnVerifier,
+    CeremonyStart, CeremonyState, CredentialId, Email, PasskeyCredential, VerifiedAssertion,
+    VerifiedRegistration, WebAuthnError, WebAuthnVerifier,
 };
 use tower::ServiceExt; // for `oneshot`
 
@@ -32,48 +34,76 @@ const PASSWORD: &str = "correct-horse-battery";
 const VICTIM: &str = "victim@example.com";
 const ATTACKER: &str = "attacker@example.com";
 
-/// No cryptography: accepts whatever credential id the "authenticator" sends.
-/// The routes' authorization, not the ceremony's crypto, is under test.
+/// No cryptography: accepts whatever credential id the "authenticator" sends,
+/// as long as the response echoes the challenge this verifier issued for the
+/// ceremony. The routes' authorization, not the crypto, is under test.
 #[derive(Clone)]
 struct MockVerifier;
 
+static NEXT_CHALLENGE: AtomicU64 = AtomicU64::new(1);
+
+fn start() -> CeremonyStart {
+    let challenge = format!(
+        "challenge-{}",
+        NEXT_CHALLENGE.fetch_add(1, Ordering::Relaxed)
+    );
+    CeremonyStart {
+        options: json!({ "challenge": challenge }),
+        state: CeremonyState(challenge.into_bytes()),
+    }
+}
+
+fn check_challenge(state: &CeremonyState, response: &Value) -> Result<(), WebAuthnError> {
+    if response["challenge"].as_str().map(str::as_bytes) == Some(state.0.as_slice()) {
+        Ok(())
+    } else {
+        Err(WebAuthnError::Verification("challenge mismatch".into()))
+    }
+}
+
 impl WebAuthnVerifier for MockVerifier {
-    fn start_registration(&self, _email: &Email, challenge: &WebAuthnChallenge) -> Value {
-        json!({ "challenge": challenge.as_str() })
+    fn start_registration(
+        &self,
+        _email: &Email,
+        _existing: &[PasskeyCredential],
+    ) -> Result<CeremonyStart, WebAuthnError> {
+        Ok(start())
     }
 
-    fn verify_registration(
+    fn finish_registration(
         &self,
-        _challenge: &WebAuthnChallenge,
+        state: &CeremonyState,
         response: &Value,
     ) -> Result<VerifiedRegistration, WebAuthnError> {
+        check_challenge(state, response)?;
         let id = response["id"]
             .as_str()
             .ok_or_else(|| WebAuthnError::Malformed("no id".into()))?;
         Ok(VerifiedRegistration {
             credential_id: CredentialId(id.to_string()),
-            public_key: vec![1, 2, 3],
+            credential_data: vec![1, 2, 3],
             sign_count: 0,
         })
     }
 
     fn start_authentication(
         &self,
-        _allowed: &[CredentialId],
-        challenge: &WebAuthnChallenge,
-    ) -> Value {
-        json!({ "challenge": challenge.as_str() })
+        _allowed: &[PasskeyCredential],
+    ) -> Result<CeremonyStart, WebAuthnError> {
+        Ok(start())
     }
 
-    fn verify_authentication(
+    fn finish_authentication(
         &self,
-        _challenge: &WebAuthnChallenge,
-        _response: &Value,
+        state: &CeremonyState,
+        response: &Value,
         stored: &PasskeyCredential,
     ) -> Result<VerifiedAssertion, WebAuthnError> {
+        check_challenge(state, response)?;
         Ok(VerifiedAssertion {
             credential_id: stored.credential_id.clone(),
             new_sign_count: stored.sign_count + 1,
+            updated_credential_data: None,
         })
     }
 }
@@ -144,18 +174,25 @@ async fn signed_in(app: &Router, email: &str) -> String {
     auth_cookie(&login)
 }
 
+/// The `finish` request answering a `start` response (`{ ceremony_id, options }`)
+/// with credential `cred_id`.
+fn finish_body(start: Value, cred_id: &str) -> Value {
+    json!({
+        "ceremony_id": start["ceremony_id"],
+        "response": { "id": cred_id, "challenge": start["options"]["challenge"] }
+    })
+}
+
 /// Enroll credential `cred_id` using `cookie`'s session; `body` is sent to
 /// `register/start` (the route must ignore it).
 async fn enroll(app: &Router, cookie: &str, start_body: Value, cred_id: &str) {
     let start = post(app, "/passkey/register/start", Some(cookie), start_body).await;
     assert_eq!(start.status(), StatusCode::OK);
-    let challenge = json_body(start).await["challenge"].clone();
-
     let finish = post(
         app,
         "/passkey/register/finish",
         Some(cookie),
-        json!({ "challenge": challenge, "response": { "id": cred_id } }),
+        finish_body(json_body(start).await, cred_id),
     )
     .await;
     assert_eq!(finish.status(), StatusCode::OK);
@@ -165,13 +202,11 @@ async fn enroll(app: &Router, cookie: &str, start_body: Value, cred_id: &str) {
 async fn passkey_login(app: &Router, email: Option<&str>, cred_id: &str) -> Response {
     let start = post(app, "/passkey/login/start", None, json!({ "email": email })).await;
     assert_eq!(start.status(), StatusCode::OK);
-    let challenge = json_body(start).await["challenge"].clone();
-
     post(
         app,
         "/passkey/login/finish",
         None,
-        json!({ "challenge": challenge, "response": { "id": cred_id } }),
+        finish_body(json_body(start).await, cred_id),
     )
     .await
 }
@@ -212,7 +247,7 @@ async fn registration_requires_a_session() {
         &app,
         "/passkey/register/finish",
         None,
-        json!({ "challenge": "anything", "response": { "id": "cred-evil" } }),
+        json!({ "ceremony_id": "anything", "response": { "id": "cred-evil" } }),
     )
     .await;
     assert_eq!(finish.status(), StatusCode::UNAUTHORIZED);
@@ -248,9 +283,18 @@ async fn an_email_in_the_request_body_is_ignored() {
     )
     .await;
 
-    // The credential belongs to the attacker's own account, whatever email the
-    // login ceremony is started with.
-    let login = passkey_login(&app, Some(VICTIM), "cred-evil").await;
+    // The credential was enrolled for the attacker's own account. It cannot
+    // answer a login ceremony started for the victim...
+    let as_victim = passkey_login(&app, Some(VICTIM), "cred-evil").await;
+    assert_eq!(as_victim.status(), StatusCode::UNAUTHORIZED);
+
+    // ...and where it does log in, it logs in as the attacker.
+    let login = passkey_login(&app, Some(ATTACKER), "cred-evil").await;
+    assert_eq!(login.status(), StatusCode::OK);
+    assert_eq!(whoami_of(&app, &auth_cookie(&login)).await, ATTACKER);
+
+    // A usernameless ceremony also resolves to the credential's real owner.
+    let login = passkey_login(&app, None, "cred-evil").await;
     assert_eq!(login.status(), StatusCode::OK);
     assert_eq!(whoami_of(&app, &auth_cookie(&login)).await, ATTACKER);
 }
@@ -261,7 +305,7 @@ async fn a_ceremony_cannot_be_finished_from_another_account() {
     let victim_cookie = signed_in(&app, VICTIM).await;
     let attacker_cookie = signed_in(&app, ATTACKER).await;
 
-    // The victim starts enrolling; the attacker learns the challenge.
+    // The victim starts enrolling; the attacker learns the whole start response.
     let start = post(
         &app,
         "/passkey/register/start",
@@ -269,17 +313,45 @@ async fn a_ceremony_cannot_be_finished_from_another_account() {
         json!({}),
     )
     .await;
-    let challenge = json_body(start).await["challenge"].clone();
-
     let finish = post(
         &app,
         "/passkey/register/finish",
         Some(&attacker_cookie),
-        json!({ "challenge": challenge, "response": { "id": "cred-evil" } }),
+        finish_body(json_body(start).await, "cred-evil"),
     )
     .await;
     assert_eq!(finish.status(), StatusCode::BAD_REQUEST);
 
     let login = passkey_login(&app, Some(VICTIM), "cred-evil").await;
     assert_eq!(login.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn another_accounts_credential_id_cannot_be_claimed() {
+    let app = app();
+    let victim_cookie = signed_in(&app, VICTIM).await;
+    let attacker_cookie = signed_in(&app, ATTACKER).await;
+    enroll(&app, &victim_cookie, json!({}), "cred-victim").await;
+
+    // The attacker, in their own session, tries to register the same id.
+    let start = post(
+        &app,
+        "/passkey/register/start",
+        Some(&attacker_cookie),
+        json!({}),
+    )
+    .await;
+    let finish = post(
+        &app,
+        "/passkey/register/finish",
+        Some(&attacker_cookie),
+        finish_body(json_body(start).await, "cred-victim"),
+    )
+    .await;
+    assert_eq!(finish.status(), StatusCode::CONFLICT);
+
+    // The credential still logs in as the victim.
+    let login = passkey_login(&app, Some(VICTIM), "cred-victim").await;
+    assert_eq!(login.status(), StatusCode::OK);
+    assert_eq!(whoami_of(&app, &auth_cookie(&login)).await, VICTIM);
 }
