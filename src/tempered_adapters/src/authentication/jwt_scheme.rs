@@ -395,16 +395,31 @@ mod oauth_tests {
             .unwrap();
 
         assert_eq!(response.status(), 302);
-        // No session: the only cookie is the cleared state cookie.
-        assert_eq!(header(&response, "set-cookie").len(), 1);
-        assert!(header(&response, "set-cookie")[0].starts_with("oauth_state=;"));
 
+        // No session cookie: only the cleared state cookie and the hand-off.
+        let cookies = header(&response, "set-cookie");
+        assert_eq!(cookies.len(), 2);
+        assert!(cookies.iter().any(|c| c.starts_with("oauth_state=;")));
+        assert!(!cookies.iter().any(|c| c.starts_with("jwt=")));
+
+        // The URL carries only a marker: no email, no attempt id.
         let location = header(&response, "location")[0];
-        assert!(location.starts_with("/login?step=2fa&"));
-        assert!(location.ends_with("#code"));
-        let url = url::Url::parse(&format!("https://app.example{location}")).unwrap();
-        let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
-        assert_eq!(params["oauth_2fa"], "required");
+        assert_eq!(location, "/login?step=2fa&oauth_2fa=required#code");
+
+        // The hand-off cookie is short-lived, script-readable, and holds what
+        // the page needs to call the 2FA verification route.
+        let handoff = cookies
+            .iter()
+            .find(|c| c.starts_with("oauth_2fa="))
+            .expect("hand-off cookie");
+        let (value, attributes) = handoff["oauth_2fa=".len()..].split_once("; ").unwrap();
+        assert!(attributes.contains("Max-Age=600"));
+        assert!(attributes.contains("Secure"));
+        assert!(attributes.contains("SameSite=Lax"));
+        assert!(!attributes.contains("HttpOnly"));
+        let params: std::collections::HashMap<_, _> = url::form_urlencoded::parse(value.as_bytes())
+            .into_owned()
+            .collect();
         assert_eq!(params["loginAttemptId"], attempt_id);
         assert_eq!(params["email"], "user@example.com");
     }

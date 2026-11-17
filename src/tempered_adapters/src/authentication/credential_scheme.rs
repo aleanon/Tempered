@@ -449,11 +449,14 @@ impl<U, T, F, L, R, M, ST, ID, HC, K> CredentialScheme<U, T, F, L, R, M, OAuth<S
     /// Override where the browser is redirected when an OAuth login reaches an
     /// account that requires two-factor authentication (default `/`).
     ///
-    /// No session is issued on that redirect. It carries three query
-    /// parameters — `oauth_2fa=required`, `loginAttemptId` and `email` — which
-    /// are exactly what the page needs to prompt for the code and call the
-    /// 2FA verification route, as after a password login that returns
-    /// `requires_2fa`.
+    /// No session is issued on that redirect. The URL gets a single marker,
+    /// `oauth_2fa=required`. What the page needs to call the 2FA verification
+    /// route — the login attempt id and the email — is delivered in a
+    /// short-lived `oauth_2fa` cookie instead of the URL, so it does not end
+    /// up in server logs, browser history or `Referer` headers. The cookie is
+    /// readable by the page's script (it is not `HttpOnly`) and holds a query
+    /// string: `new URLSearchParams(value)` yields `loginAttemptId` and
+    /// `email`. The page should delete it once read.
     pub fn oauth_two_fa_redirect(mut self, path: impl Into<String>) -> Self {
         self.oauth.two_fa_redirect = path.into();
         self
@@ -1223,37 +1226,47 @@ where
                 .cookie(&self.tokens.auth_cookie(&token))
                 .header("location", &self.oauth.post_login_redirect)
                 .build(),
-            // No token yet: send the browser to the app's second-factor step
-            // with what it needs to call the 2FA verification route.
+            // No token yet: send the browser to the app's second-factor step.
+            // What it needs to call the 2FA verification route travels in a
+            // short-lived cookie, not the URL (see `oauth_two_fa_redirect`).
             LoginOutcome::Requires2Fa { email, attempt_id } => builder
-                .header(
-                    "location",
-                    &two_fa_redirect_location(&self.oauth.two_fa_redirect, &email, &attempt_id),
-                )
+                .cookie(&two_fa_handoff_cookie(&email, &attempt_id))
+                .header("location", &with_two_fa_marker(&self.oauth.two_fa_redirect))
                 .build(),
         }
     }
 }
 
-/// `base` plus the query parameters a page needs to finish a 2FA login:
-/// `oauth_2fa=required`, `loginAttemptId`, `email`. Keeps any query string or
-/// fragment `base` already has.
-fn two_fa_redirect_location(base: &str, email: &Email, attempt_id: &TwoFaAttemptId) -> String {
+/// Name of the cookie that hands a pending OAuth 2FA login to the page.
+pub const OAUTH_TWO_FA_COOKIE: &str = "oauth_2fa";
+
+/// The hand-off cookie: `loginAttemptId` and `email` as a query string.
+///
+/// Deliberately not `HttpOnly`: the page's script must read it to call the 2FA
+/// verification route, exactly as it reads the attempt id from the JSON body
+/// after a password login. Neither value is a credential — the attempt id is
+/// useless without the emailed code. `Max-Age` matches the OAuth state cookie.
+fn two_fa_handoff_cookie(email: &Email, attempt_id: &TwoFaAttemptId) -> String {
+    let value = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("loginAttemptId", &attempt_id.to_string())
+        .append_pair("email", email.as_ref().expose_secret())
+        .finish();
+    format!("{OAUTH_TWO_FA_COOKIE}={value}; Secure; SameSite=Lax; Path=/; Max-Age=600")
+}
+
+/// `base` with `oauth_2fa=required` added to its query string, keeping any
+/// query or fragment `base` already has.
+fn with_two_fa_marker(base: &str) -> String {
     let (path_and_query, fragment) = match base.split_once('#') {
         Some((before, after)) => (before, Some(after)),
         None => (base, None),
     };
-    let params = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("oauth_2fa", "required")
-        .append_pair("loginAttemptId", &attempt_id.to_string())
-        .append_pair("email", email.as_ref().expose_secret())
-        .finish();
     let separator = if path_and_query.contains('?') {
         '&'
     } else {
         '?'
     };
-    let mut location = format!("{path_and_query}{separator}{params}");
+    let mut location = format!("{path_and_query}{separator}oauth_2fa=required");
     if let Some(fragment) = fragment {
         location.push('#');
         location.push_str(fragment);
