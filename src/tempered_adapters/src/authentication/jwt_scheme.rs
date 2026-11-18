@@ -450,6 +450,40 @@ mod oauth_tests {
     }
 
     #[tokio::test]
+    async fn provider_links_do_not_outlive_their_account() {
+        // The owner logged in through the provider (linking it), then deleted
+        // the account.
+        let account = Account::signed_up().await;
+        account.verified.mark_verified(&email()).await.unwrap();
+        let scheme = account.scheme().await;
+        oauth_login(&scheme).await.unwrap();
+        assert!(
+            account
+                .identities
+                .has_identity_for_email(&email())
+                .await
+                .unwrap()
+        );
+
+        assert!(scheme.delete_account(email()).await.is_ok());
+        assert!(
+            !account
+                .identities
+                .has_identity_for_email(&email())
+                .await
+                .unwrap()
+        );
+
+        // Someone signs up with the same address again. The old link neither
+        // logs the provider's user straight in nor counts as proof: the new
+        // account is secured like any other unproven one.
+        add_account(&account.users, SIGNUP_PASSWORD, false).await;
+        let outcome = oauth_login(&scheme).await.unwrap();
+        assert!(matches!(outcome, LoginOutcome::Success(_)));
+        assert!(!account.password_works(SIGNUP_PASSWORD).await);
+    }
+
+    #[tokio::test]
     async fn first_login_through_a_second_provider_leaves_the_account_untouched() {
         // Another provider already proved the address for this account.
         let account = Account::signed_up().await;

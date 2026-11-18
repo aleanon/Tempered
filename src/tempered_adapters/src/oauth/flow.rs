@@ -216,6 +216,16 @@ where
             .map_err(|e| OAuthFlowError::Identity(e.to_string()))
     }
 
+    /// Remove every provider identity linked to `email`'s account. Call when
+    /// the account is deleted, so its links cannot log anyone in to, or stand
+    /// as proof for, a later account that reuses the address.
+    pub async fn forget_user(&self, email: &Email) -> Result<(), OAuthFlowError> {
+        self.identity_store
+            .unlink_all_for_email(email)
+            .await
+            .map_err(|e| OAuthFlowError::Identity(e.to_string()))
+    }
+
     /// Look up the local email previously linked to a provider identity.
     pub async fn linked_email(
         &self,

@@ -109,10 +109,12 @@ and hands the `loginAttemptId` and `email` to the page in a short-lived
 The first time a provider login reaches an account that was created by signup,
 the account is trusted as it is only if its address has been proven: by the
 email-verification capability, or by another provider already linked to it.
-Otherwise its password is replaced with a random one, its sessions are revoked
-and its passkeys removed before the user is let in, because whoever signed up
-may not own the address. Enable `.supports_email_verification(...)` alongside
-OAuth so verified users keep their password.
+Otherwise whoever signed up may not own the address, so before the user is let
+in the account's password is replaced with a random one, its sessions are
+revoked, its passkeys are removed and its 2FA requirement is switched off.
+Enable `.supports_email_verification(...)` alongside OAuth: without it every
+signup account counts as unproven, and a genuine user loses their password and
+2FA setting on their first provider login.
 
 Login, logout, and verify-token are always present. Every default path can be
 overridden on the service builder (e.g. `.login("/signin")`).

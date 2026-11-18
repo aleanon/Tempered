@@ -56,4 +56,9 @@ impl OAuthIdentityStore for HashMapOAuthIdentityStore {
     async fn has_identity_for_email(&self, email: &Email) -> Result<bool, OAuthIdentityStoreError> {
         Ok(self.identities.read().await.values().any(|e| e == email))
     }
+
+    async fn unlink_all_for_email(&self, email: &Email) -> Result<(), OAuthIdentityStoreError> {
+        self.identities.write().await.retain(|_, e| e != email);
+        Ok(())
+    }
 }

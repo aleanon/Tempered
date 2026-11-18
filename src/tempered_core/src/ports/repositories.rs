@@ -354,6 +354,12 @@ pub trait OAuthIdentityStore: Send + Sync {
     /// belongs to the account's user, so a later first login through another
     /// provider can trust the account as it is.
     async fn has_identity_for_email(&self, email: &Email) -> Result<bool, OAuthIdentityStoreError>;
+
+    /// Remove every provider identity linked to `email`. Called when the
+    /// account is deleted: a link is a way to log in to that account, and
+    /// proof of its address, and neither may pass to a later account that
+    /// reuses the address. Succeeds when there is nothing to remove.
+    async fn unlink_all_for_email(&self, email: &Email) -> Result<(), OAuthIdentityStoreError>;
 }
 
 // ApiKeyStore port, records and errors

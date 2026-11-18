@@ -169,6 +169,32 @@ where
     }
 }
 
+/// Removes a deleted user's provider links during `delete_account`. `()`
+/// (OAuth not configured) has nothing to remove.
+#[async_trait]
+trait OAuthCleanup {
+    async fn forget_user(&self, email: &Email) -> Result<(), OAuthFlowError>;
+}
+
+#[async_trait]
+impl OAuthCleanup for () {
+    async fn forget_user(&self, _email: &Email) -> Result<(), OAuthFlowError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<ST, ID, HC> OAuthCleanup for OAuth<ST, ID, HC>
+where
+    ST: OAuthStateStore + Send + Sync,
+    ID: OAuthIdentityStore + Send + Sync,
+    HC: OAuthHttpClient + Send + Sync,
+{
+    async fn forget_user(&self, email: &Email) -> Result<(), OAuthFlowError> {
+        self.flow.forget_user(email).await
+    }
+}
+
 /// Says whether an account's email address has been proven to belong to its
 /// user by the email-verification capability. `()` (capability not configured)
 /// has proven nothing, and has nothing to forget when the account is deleted.
@@ -803,7 +829,7 @@ where
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: EmailProof + Clone + Send + Sync + 'static,
-    O: Clone + Send + Sync + 'static,
+    O: OAuthCleanup + Clone + Send + Sync + 'static,
     K: PasskeyCleanup + Clone + Send + Sync + 'static,
 {
     type AccountDeletionError = CredentialError<T::Error>;
@@ -818,6 +844,8 @@ where
         // they cannot outlive it or be inherited by a later account that
         // reuses the address.
         self.passkeys.forget_user(&email).await?;
+        // So are its provider links, which also count as proof of the address.
+        self.oauth.forget_user(&email).await?;
         // Proof that the address was verified belongs to this account, not to
         // the address: a later account that reuses it must prove it again.
         self.email_verify.forget(&email).await?;

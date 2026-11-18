@@ -268,8 +268,8 @@ Consequences for Phase 3: `OAuthStateStore` holds a verifier per state;
    account requires 2FA → challenge issued, no token, callback redirects to
    `.oauth_two_fa_redirect(path)?oauth_2fa=required` with the attempt id and
    email in a short-lived `oauth_2fa` cookie.
-3. **OAuth identity links on account deletion — deferred** by decision. Still
-   not removed.
+3. **OAuth identity links on account deletion** — deferred on 2026-11-17,
+   then decided on 2026-11-18: removed with the account (see below).
 
 Also fixed from review of these changes: each OAuth state is bound to the
 provider it was issued for (`PendingAuthorization { provider, code_verifier }`
@@ -305,16 +305,27 @@ index on the email column).
 
 Proof belongs to an account, not to an address, so account deletion also
 clears the verified mark and pending verification tokens
-(`EmailVerificationTokenStore::forget_email`, which the Phase 3 Redis store
-must implement).
+(`EmailVerificationTokenStore::forget_email`) and the account's provider links
+(`OAuthIdentityStore::unlink_all_for_email`, decided 2026-11-18, reversing the
+deferral of 2026-11-17). Without that, a later account reusing the address
+would count as proven and already linked.
 
-**Known gap, waiting on the deferred decision about OAuth identity links.**
-Account deletion does not remove the account's provider links. If the owner
-deletes an account that had a provider linked and someone else then signs up
-with the same address, the stale link makes that new account count as proven
-and as already linked: the original owner's next provider login enters it
-without the reset. Closing this means removing the links on deletion
-(`OAuthIdentityStore::unlink_all_for_email`).
+Securing an unproven account also turns its 2FA requirement off
+(`UserStore::set_requires_2fa`): the setting was chosen by whoever signed up,
+and the owner must not be held to a factor they did not set up. A proven
+account keeps its 2FA and is still challenged on an OAuth login.
+
+**Revoke-all is exact to the token, not to the second** (decided 2026-11-18).
+`revoke_all_for_user` sets the cutoff one second past the latest stamp a token
+can carry, and `issue` stamps new tokens no earlier than the cutoff; expiry is
+always measured from the real clock. A token issued earlier in the same second
+as a password change, deletion or first-link cleanup is now rejected. Accepted
+and not closed: a login request that had already passed its credential check
+when the cleanup ran and issues its token just after.
+
+Ports the Phase 3 stores must implement because of this section:
+`OAuthIdentityStore::{has_identity_for_email, unlink_all_for_email}` (Postgres,
+index on email) and `EmailVerificationTokenStore::forget_email` (Redis).
 
 Options that were considered and not taken: refuse OAuth login to a
 never-linked account (needs a "link a provider while logged in" route that
