@@ -1263,9 +1263,7 @@ where
     /// runs: the password first (no new password logins), then passkeys (no
     /// new passkey logins), then sessions (which could still enrol a passkey),
     /// then passkeys once more for one enrolled by a session that was still
-    /// alive a moment ago. What remains is the token strategy's own
-    /// granularity: a JWT issued in the same second as the revocation survives
-    /// until it expires (see `LocalJwtValidator`).
+    /// alive a moment ago.
     async fn secure_unproven_account(
         &self,
         email: &Email,

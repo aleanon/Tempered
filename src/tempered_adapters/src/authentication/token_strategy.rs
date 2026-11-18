@@ -17,7 +17,8 @@ use tempered_core::{
 use thiserror::Error;
 
 use crate::auth_validation::local_jwt_validator::{
-    JwtAuthConfig, LocalJwtValidator, TokenAuthError, create_auth_cookie, generate_auth_token,
+    JwtAuthConfig, LocalJwtValidator, TokenAuthError, create_auth_cookie,
+    generate_auth_token_issued_at,
 };
 
 /// How a credential scheme mints, validates, and revokes its session token.
@@ -145,7 +146,20 @@ where
     type Error = JwtTokenError;
 
     async fn issue(&self, email: &Email) -> Result<JwtToken, JwtTokenError> {
-        let token = generate_auth_token(email, &self.config).map_err(JwtTokenError::Generate)?;
+        // Stamp the token no earlier than the user's revocation cutoff. After
+        // a "revoke all" the cutoff is one second ahead (see below), and a
+        // token stamped "now" would be rejected for the rest of this second.
+        // An unreadable cutoff fails the login rather than guessing.
+        let cutoff = self
+            .epoch
+            .min_valid_iat(email)
+            .await
+            .map_err(JwtTokenError::Cutoff)?;
+        let now = chrono::Utc::now().timestamp();
+        let iat = cutoff.map_or(now, |cutoff| cutoff.max(now));
+
+        let token = generate_auth_token_issued_at(email, &self.config, iat)
+            .map_err(JwtTokenError::Generate)?;
         Ok(JwtToken(token))
     }
 
@@ -158,10 +172,23 @@ where
     }
 
     async fn revoke_all_for_user(&self, email: &Email) -> Result<(), JwtTokenError> {
-        // Move the user's epoch cutoff to "now": the validator rejects every
-        // token with an earlier iat (see LocalJwtValidator).
+        // Move the user's cutoff one second past the latest stamp any of their
+        // tokens can carry. That is "now", or an earlier cutoff that is still
+        // ahead of the clock (a second revocation within the same second,
+        // whose in-between login was stamped at that cutoff). The validator
+        // rejects every token with an earlier iat (see LocalJwtValidator), and
+        // `issue` stamps the next token at the new cutoff, so it is valid at
+        // once.
+        let latest_stamp = self
+            .epoch
+            .min_valid_iat(email)
+            .await
+            .map_err(JwtTokenError::Cutoff)?
+            .map_or(chrono::Utc::now().timestamp(), |cutoff| {
+                cutoff.max(chrono::Utc::now().timestamp())
+            });
         self.epoch
-            .revoke_before(email, chrono::Utc::now().timestamp())
+            .revoke_before(email, latest_stamp + 1)
             .await
             .map_err(JwtTokenError::RevokeAll)?;
         Ok(())
@@ -195,6 +222,8 @@ pub enum JwtTokenError {
     Revoke(BannedTokenStoreError),
     #[error("Failed to record revocation cutoff: {0}")]
     RevokeAll(tempered_core::TokenEpochStoreError),
+    #[error("Failed to read revocation cutoff: {0}")]
+    Cutoff(tempered_core::TokenEpochStoreError),
 }
 
 impl ClassifyError for JwtTokenError {
@@ -208,6 +237,10 @@ impl ClassifyError for JwtTokenError {
             }
             JwtTokenError::RevokeAll(e) => {
                 tracing::error!(error = %e, "failed to record revocation cutoff");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
+            JwtTokenError::Cutoff(e) => {
+                tracing::error!(error = %e, "failed to read revocation cutoff");
                 (ErrorCategory::Internal, "Internal error".to_string())
             }
         }
@@ -254,6 +287,37 @@ mod tests {
             .await
             .unwrap()
             .expect("revoke_all_for_user must record a cutoff");
-        assert!(cutoff >= before);
+        assert!(cutoff > before);
+    }
+
+    #[tokio::test]
+    async fn revoke_all_rejects_a_token_issued_a_moment_earlier_and_accepts_the_next_one() {
+        let tokens = strategy();
+
+        // No second boundary is crossed between these three steps (unless the
+        // clock happens to tick): this is the case whole-second cutoffs used
+        // to miss.
+        let earlier = tokens.issue(&email()).await.unwrap();
+        tokens.revoke_all_for_user(&email()).await.unwrap();
+        let next = tokens.issue(&email()).await.unwrap();
+
+        assert!(!validates(&tokens, &earlier).await);
+        assert!(validates(&tokens, &next).await);
+
+        // Revoking again rejects that one too.
+        tokens.revoke_all_for_user(&email()).await.unwrap();
+        assert!(!validates(&tokens, &next).await);
+    }
+
+    async fn validates(tokens: &JwtTokens<HashSetBannedTokenStore>, token: &JwtToken) -> bool {
+        use tempered_core::AuthValidator;
+
+        let parts = http::Request::builder()
+            .header("cookie", format!("jwt={}", token.as_str()))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        tokens.validator().validate(&parts).await.is_ok()
     }
 }

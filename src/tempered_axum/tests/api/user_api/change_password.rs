@@ -46,10 +46,8 @@ async fn should_invalidate_existing_sessions_after_password_change() {
     let stolen_token = app.get_jwt_token().expect("login sets the jwt cookie");
     assert_eq!(app.post_elevate(&body).await.status().as_u16(), 200);
 
-    // Cross a second boundary: the revocation cutoff has 1 s granularity and
-    // deliberately keeps same-second tokens valid (see LocalJwtValidator).
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-
+    // No waiting: a token issued in the same second as the change must be
+    // rejected too.
     let new_password = serde_json::json!({ "new_password": "newpassword123" });
     assert_eq!(
         app.post_change_password(&new_password)

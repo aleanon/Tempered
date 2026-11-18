@@ -166,22 +166,27 @@ pub fn create_auth_cookie(
     builder.build()
 }
 
-// Create JWT auth token
+// Create JWT auth token, issued now.
 pub fn generate_auth_token(
     email: &Email,
     config: &JwtAuthConfig,
 ) -> Result<String, TokenAuthError> {
-    let delta = chrono::Duration::try_seconds(config.token_ttl_in_seconds as i64).ok_or(
-        TokenAuthError::UnexpectedError("Failed to create auth token duration".to_string()),
-    )?;
+    generate_auth_token_issued_at(email, config, Utc::now().timestamp())
+}
 
-    // Create JWT expiration time
-    let exp = Utc::now()
-        .checked_add_signed(delta)
-        .ok_or(TokenAuthError::UnexpectedError(
-            "Duration out of range".to_string(),
-        ))?
-        .timestamp();
+/// Create a JWT auth token with an explicit issued-at (unix seconds).
+///
+/// The token strategy uses this to stamp a token no earlier than the user's
+/// revocation cutoff, so a login right after a "revoke all" is valid at once
+/// while every token from before it is rejected (see `validate_auth_token`).
+pub fn generate_auth_token_issued_at(
+    email: &Email,
+    config: &JwtAuthConfig,
+    iat: i64,
+) -> Result<String, TokenAuthError> {
+    let exp = iat.checked_add(config.token_ttl_in_seconds as i64).ok_or(
+        TokenAuthError::UnexpectedError("Duration out of range".to_string()),
+    )?;
 
     // Cast exp to a usize, which is what Claims expects
     let exp: usize = exp
@@ -193,7 +198,7 @@ pub fn generate_auth_token(
     let claims = Claims {
         sub,
         exp,
-        iat: Some(Utc::now().timestamp()),
+        iat: Some(iat),
         jti: Some(uuid::Uuid::new_v4().to_string()),
         aud: config.audience.clone(),
         iss: config.issuer.clone(),
@@ -248,12 +253,13 @@ pub async fn validate_auth_token(
     match token_epoch_store.min_valid_iat(&email).await {
         Ok(None) => {}
         Ok(Some(cutoff)) => {
-            // Strict `<`, deliberately: a token issued in the same second as
-            // the revocation (the re-login right after a password change)
-            // stays valid; `<=` would lock the user out of their own fresh
-            // session. The cost is a ≤1 s replay window. Tokens with no iat
-            // (minted before the claim existed) are rejected once a cutoff
-            // exists.
+            // Strict `<`: a token stamped exactly at the cutoff is valid.
+            // The strategy relies on this from both ends: "revoke all" sets
+            // the cutoff one second ahead, which rejects every token issued
+            // up to and including the current second, and the next token is
+            // stamped at the cutoff, so the user's fresh login works at once.
+            // Tokens with no iat (minted before the claim existed) are
+            // rejected once a cutoff exists.
             if claims.iat.is_none_or(|iat| iat < cutoff) {
                 return Err(TokenAuthError::InvalidToken);
             }
@@ -460,8 +466,8 @@ mod tests {
             .iat
             .unwrap();
 
-        // Strict `<`: iat == cutoff is the re-login issued in the same second
-        // as the revocation — it must remain valid.
+        // Strict `<`: iat == cutoff is how the strategy stamps the login
+        // that follows a revocation — it must remain valid.
         epoch.revoke_before(&email, iat).await.unwrap();
         let result = validate_auth_token(&token, &banned_token_store, &epoch, &config).await;
         assert!(result.is_ok());
