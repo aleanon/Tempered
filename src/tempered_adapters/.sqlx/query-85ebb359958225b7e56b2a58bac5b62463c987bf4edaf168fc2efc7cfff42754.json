@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE users\n                SET requires_2fa = $1\n                WHERE email = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "85ebb359958225b7e56b2a58bac5b62463c987bf4edaf168fc2efc7cfff42754"
+}

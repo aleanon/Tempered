@@ -194,6 +194,26 @@ mod oauth_tests {
         .with_provider(provider())
     }
 
+    /// Like [`flow`], for an account whose address is already proven: another
+    /// provider is linked to it, so a first login through this one leaves the
+    /// account (and its 2FA requirement) as it is.
+    async fn flow_for_a_proven_account()
+    -> OAuthFlow<HashMapOAuthStateStore, HashMapOAuthIdentityStore, MockClient> {
+        let identities = HashMapOAuthIdentityStore::new();
+        identities
+            .link_identity("github".to_string(), "gh-1".to_string(), email())
+            .await
+            .unwrap();
+        OAuthFlow::new(
+            HashMapOAuthStateStore::new(),
+            identities,
+            MockClient {
+                email: "user@example.com".to_string(),
+            },
+        )
+        .with_provider(provider())
+    }
+
     /// A scheme with OAuth and no 2FA, plus a handle on its user store.
     fn scheme_with_oauth() -> (TestScheme, HashMapUserStore) {
         let users = HashMapUserStore::new();
@@ -475,7 +495,7 @@ mod oauth_tests {
             HashMapTokenEpochStore::new(),
         )
         .supports_2fa(codes.clone(), MockEmailClient::new())
-        .supports_oauth(flow());
+        .supports_oauth(flow_for_a_proven_account().await);
 
         // The provider login yields a pending challenge, not a token.
         let outcome = oauth_login(&scheme).await.unwrap();
@@ -502,12 +522,33 @@ mod oauth_tests {
 
     #[tokio::test]
     async fn oauth_login_to_a_two_factor_account_fails_closed_without_two_factor_support() {
-        // The scheme has no 2FA capability, so it cannot challenge this account.
-        let (scheme, users) = scheme_with_oauth();
+        // The scheme has no 2FA capability, so it cannot challenge this
+        // (proven) account, and must not let the login through without it.
+        let users = HashMapUserStore::new();
         add_account(&users, "the-users-own-password", true).await;
+        let scheme = JwtScheme::new(
+            users,
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_oauth(flow_for_a_proven_account().await);
 
         let result = oauth_login(&scheme).await;
         assert!(matches!(result, Err(CredentialError::TwoFaNotConfigured)));
+    }
+
+    #[tokio::test]
+    async fn two_factor_set_at_an_unproven_signup_does_not_bind_the_owner() {
+        // Whoever signed up with this address turned 2FA on. Nothing proves
+        // they own the address, so the provider's user is not held to it:
+        // no challenge, and the requirement is gone from the account.
+        let (scheme, users) = scheme_with_oauth();
+        add_account(&users, SIGNUP_PASSWORD, true).await;
+
+        let outcome = oauth_login(&scheme).await.unwrap();
+        assert!(matches!(outcome, LoginOutcome::Success(_)));
+        assert!(!users.get_user(&email()).await.unwrap().requires_2fa);
     }
 
     fn header<'a>(response: &'a http::Response<String>, name: &str) -> Vec<&'a str> {
@@ -547,7 +588,7 @@ mod oauth_tests {
             HashMapTokenEpochStore::new(),
         )
         .supports_2fa(HashMapTwoFaCodeStore::new(), MockEmailClient::new())
-        .supports_oauth(flow())
+        .supports_oauth(flow_for_a_proven_account().await)
         .oauth_two_fa_redirect("/login?step=2fa#code");
 
         let outcome = oauth_login(&scheme).await.unwrap();

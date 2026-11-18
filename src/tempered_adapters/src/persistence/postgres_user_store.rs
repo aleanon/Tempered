@@ -67,6 +67,33 @@ impl UserStore for PostgresUserStore {
         Ok(())
     }
 
+    #[tracing::instrument(name = "Set 2FA requirement", skip_all)]
+    async fn set_requires_2fa(
+        &self,
+        email: &Email,
+        requires_2fa: bool,
+    ) -> Result<(), UserStoreError> {
+        let query = sqlx::query!(
+            r#"
+                UPDATE users
+                SET requires_2fa = $1
+                WHERE email = $2
+            "#,
+            requires_2fa,
+            email.as_ref().expose_secret()
+        );
+
+        let result = query
+            .execute(&self.pool)
+            .await
+            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(UserStoreError::UserNotFound);
+        }
+        Ok(())
+    }
+
     #[tracing::instrument(name = "Set new password", skip_all)]
     async fn set_new_password(
         &self,
@@ -436,6 +463,35 @@ mod tests {
         let validated_user = result.unwrap();
         assert_eq!(validated_user.email(), &email);
         assert_eq!(validated_user, ValidatedUser::No2Fa(email));
+    }
+
+    #[tokio::test]
+    async fn test_set_requires_2fa() {
+        let (_container, pool) = setup_and_connect_db_container().await;
+        let store = PostgresUserStore::new(pool);
+        let user = create_test_user();
+        let email = user.email().clone();
+        let before = user.requires_2fa();
+        store.add_user(user).await.unwrap();
+
+        store.set_requires_2fa(&email, !before).await.unwrap();
+        assert_eq!(
+            store.get_user(&email).await.unwrap().requires_2fa(),
+            !before
+        );
+
+        store.set_requires_2fa(&email, before).await.unwrap();
+        assert_eq!(store.get_user(&email).await.unwrap().requires_2fa(), before);
+    }
+
+    #[tokio::test]
+    async fn test_set_requires_2fa_user_not_found() {
+        let (_container, pool) = setup_and_connect_db_container().await;
+        let store = PostgresUserStore::new(pool);
+        let email = Email::try_from(Secret::from("nobody@example.com".to_string())).unwrap();
+
+        let result = store.set_requires_2fa(&email, true).await;
+        assert_eq!(result, Err(UserStoreError::UserNotFound));
     }
 
     #[tokio::test]

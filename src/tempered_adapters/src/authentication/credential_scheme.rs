@@ -1245,6 +1245,8 @@ where
             || self.oauth.flow.has_linked_identity(email).await?;
         if !proven {
             self.secure_unproven_account(email).await?;
+            // The 2FA setting was among what got reset.
+            return Ok(false);
         }
         Ok(existing.requires_2fa)
     }
@@ -1255,9 +1257,11 @@ where
     /// attacker can register a victim's address and wait for the victim to
     /// arrive through a provider ("account pre-hijacking"). Whoever created
     /// this account may still hold its password, a session, or a passkey: all
-    /// three go before the provider's user is let in. A genuine user who
-    /// signed up with a password loses it and sets a new one via password
-    /// reset.
+    /// three go before the provider's user is let in. Its 2FA requirement goes
+    /// too: it was chosen by whoever signed up, and the owner should not be
+    /// held to a second factor they did not set up (or cannot pass). A genuine
+    /// user who signed up with a password loses it and sets a new one via
+    /// password reset, and turns 2FA back on if they want it.
     ///
     /// The order closes the ways one credential can mint another while this
     /// runs: the password first (no new password logins), then passkeys (no
@@ -1271,6 +1275,7 @@ where
         self.user_store
             .set_new_password(email, unknowable_password())
             .await?;
+        self.user_store.set_requires_2fa(email, false).await?;
         self.passkeys.forget_user(email).await?;
         self.tokens
             .revoke_all_for_user(email)

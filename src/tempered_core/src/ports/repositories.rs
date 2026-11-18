@@ -49,6 +49,14 @@ pub trait UserStore: Send + Sync {
         password: &Password,
     ) -> Result<ValidatedUser, UserStoreError>;
     async fn get_user(&self, email: &Email) -> Result<User, UserStoreError>;
+    /// Turn the account's 2FA requirement on or off, leaving everything else
+    /// about it unchanged. Fails with [`UserStoreError::UserNotFound`] if
+    /// there is no such account.
+    async fn set_requires_2fa(
+        &self,
+        email: &Email,
+        requires_2fa: bool,
+    ) -> Result<(), UserStoreError>;
     async fn delete_user(&self, user: &Email) -> Result<(), UserStoreError>;
 }
 

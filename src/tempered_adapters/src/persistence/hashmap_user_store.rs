@@ -49,6 +49,18 @@ impl UserStore for HashMapUserStore {
         Ok(())
     }
 
+    async fn set_requires_2fa(
+        &self,
+        email: &Email,
+        requires_2fa: bool,
+    ) -> Result<(), UserStoreError> {
+        let mut users = self.users.write().await;
+        let user = users.get_mut(email).ok_or(UserStoreError::UserNotFound)?;
+
+        user.requires_2fa = requires_2fa;
+        Ok(())
+    }
+
     async fn authenticate_user(
         &self,
         email: &Email,
