@@ -169,6 +169,32 @@ where
     }
 }
 
+/// Says whether an account's email address has been proven to belong to its
+/// user by the email-verification capability. `()` (capability not configured)
+/// has proven nothing.
+#[async_trait]
+trait EmailProof {
+    async fn is_proven(&self, email: &Email) -> Result<bool, EmailVerificationStoreError>;
+}
+
+#[async_trait]
+impl EmailProof for () {
+    async fn is_proven(&self, _email: &Email) -> Result<bool, EmailVerificationStoreError> {
+        Ok(false)
+    }
+}
+
+#[async_trait]
+impl<V, E> EmailProof for EmailVerify<V, E>
+where
+    V: EmailVerificationTokenStore + Send + Sync,
+    E: Send + Sync,
+{
+    async fn is_proven(&self, email: &Email) -> Result<bool, EmailVerificationStoreError> {
+        self.store.is_verified(email).await
+    }
+}
+
 /// Issues the 2FA challenge during `login`. `()` rejects (2FA not configured).
 #[async_trait]
 trait TwoFaChallenge {
@@ -1099,11 +1125,11 @@ where
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
-    M: Clone + Send + Sync + 'static,
+    M: EmailProof + Clone + Send + Sync + 'static,
     ST: OAuthStateStore + Clone + Send + Sync + 'static,
     ID: OAuthIdentityStore + Clone + Send + Sync + 'static,
     HC: OAuthHttpClient + Clone + Send + Sync + 'static,
-    K: Clone + Send + Sync + 'static,
+    K: PasskeyCleanup + Clone + Send + Sync + 'static,
 {
     type OAuth2Error = CredentialError<T::Error>;
 
@@ -1120,21 +1146,24 @@ where
         query_state: &str,
         cookie_state: &str,
     ) -> Result<LoginOutcome<Self::Token>, Self::OAuth2Error> {
-        // The flow verifies the provider identity and yields a verified email.
-        let email = self
+        // The flow proves who is at the provider; nothing is linked yet.
+        let identity = self
             .oauth
             .flow
             .complete(provider, code, query_state, cookie_state)
             .await?;
+        let email = identity.email().clone();
 
         // From here it is an ordinary login to that email's account, creating
         // the account first if this is the user's first visit.
-        let requires_2fa = match self.user_store.get_user(&email).await {
-            Ok(user) => user.requires_2fa,
-            Err(UserStoreError::UserNotFound) => {
-                self.create_account_for_provider_login(&email).await?
-            }
-            Err(e) => return Err(e.into()),
+        let requires_2fa = if identity.already_linked() {
+            self.user_store.get_user(&email).await?.requires_2fa
+        } else {
+            let requires_2fa = self.prepare_account_for_first_link(&email).await?;
+            // Linked last: if anything above failed, the next attempt starts
+            // from an unlinked identity and secures the account again.
+            self.oauth.flow.link(&identity).await?;
+            requires_2fa
         };
 
         if requires_2fa {
@@ -1154,32 +1183,82 @@ where
     }
 }
 
-impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+// Private helpers: the slot traits in the bounds are internal by design.
+#[allow(private_bounds)]
+impl<U, T, F, L, R, M, ST, ID, HC, K> CredentialScheme<U, T, F, L, R, M, OAuth<ST, ID, HC>, K>
 where
     U: UserStore,
+    T: TokenStrategy,
+    M: EmailProof + Send + Sync,
+    ST: OAuthStateStore + Send + Sync,
+    ID: OAuthIdentityStore + Send + Sync,
+    HC: OAuthHttpClient + Send + Sync,
+    K: PasskeyCleanup + Send + Sync,
+    F: Send + Sync,
+    L: Send + Sync,
+    R: Send + Sync,
 {
-    /// Create the local account for a first-time provider login, returning
-    /// whether the account that now exists requires 2FA.
+    /// Get `email`'s account ready for the first login through a provider
+    /// identity that is not linked to it yet. Returns whether the account
+    /// requires 2FA.
     ///
-    /// The provider has verified the address, so no email verification is
-    /// needed. The user store requires a password, so the account gets a random
-    /// one that nobody knows: the user keeps signing in through the provider,
-    /// and can set a real password through password reset if the scheme
-    /// offers it.
-    async fn create_account_for_provider_login(
+    /// - No account: create one. The user store requires a password, so it gets
+    ///   a random one nobody knows; the user signs in through the provider and
+    ///   can set a real password through password reset.
+    /// - An account whose address is already proven: left untouched.
+    /// - An account whose address was never proven: secured first, see
+    ///   [`secure_unproven_account`](Self::secure_unproven_account).
+    async fn prepare_account_for_first_link(
         &self,
         email: &Email,
-    ) -> Result<bool, UserStoreError> {
-        let user = User::new(email.clone(), unknowable_password(), false);
-        match self.user_store.add_user(user).await {
-            Ok(()) => Ok(false),
-            // Lost a race with another request creating the same account (a
-            // signup, or a second callback): log in to the one that exists.
-            Err(UserStoreError::UserAlreadyExists) => {
-                Ok(self.user_store.get_user(email).await?.requires_2fa)
+    ) -> Result<bool, CredentialError<T::Error>> {
+        let existing = match self.user_store.get_user(email).await {
+            Ok(user) => user,
+            Err(UserStoreError::UserNotFound) => {
+                let user = User::new(email.clone(), unknowable_password(), false);
+                match self.user_store.add_user(user).await {
+                    Ok(()) => return Ok(false),
+                    // Lost a race with a signup for the same address. That
+                    // account is as unproven as any other: fall through.
+                    Err(UserStoreError::UserAlreadyExists) => {
+                        self.user_store.get_user(email).await?
+                    }
+                    Err(e) => return Err(e.into()),
+                }
             }
-            Err(e) => Err(e),
+            Err(e) => return Err(e.into()),
+        };
+
+        let proven = self.email_verify.is_proven(email).await?
+            || self.oauth.flow.has_linked_identity(email).await?;
+        if !proven {
+            self.secure_unproven_account(email).await?;
         }
+        Ok(existing.requires_2fa)
+    }
+
+    /// Remove every way into an account that predates proof of its address.
+    ///
+    /// Signup does not prove the address belongs to whoever signed up, so an
+    /// attacker can register a victim's address and wait for the victim to
+    /// arrive through a provider ("account pre-hijacking"). Whoever created
+    /// this account may still hold its password, a session, or a passkey: all
+    /// three go before the provider's user is let in. A genuine user who
+    /// signed up with a password loses it and sets a new one via password
+    /// reset.
+    async fn secure_unproven_account(
+        &self,
+        email: &Email,
+    ) -> Result<(), CredentialError<T::Error>> {
+        self.passkeys.forget_user(email).await?;
+        self.user_store
+            .set_new_password(email, unknowable_password())
+            .await?;
+        self.tokens
+            .revoke_all_for_user(email)
+            .await
+            .map_err(CredentialError::Token)?;
+        Ok(())
     }
 }
 
@@ -1202,11 +1281,11 @@ where
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     L: ElevatedCookieName + Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
-    M: Clone + Send + Sync + 'static,
+    M: EmailProof + Clone + Send + Sync + 'static,
     ST: OAuthStateStore + Clone + Send + Sync + 'static,
     ID: OAuthIdentityStore + Clone + Send + Sync + 'static,
     HC: OAuthHttpClient + Clone + Send + Sync + 'static,
-    K: Clone + Send + Sync + 'static,
+    K: PasskeyCleanup + Clone + Send + Sync + 'static,
 {
     fn oauth_state_cookie_name(&self) -> &str {
         &self.oauth.state_cookie_name

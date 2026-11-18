@@ -263,7 +263,8 @@ Consequences for Phase 3: `OAuthStateStore` holds a verifier per state;
    fixed `/elevated/change-password` and `/elevated/delete-account` returning
    500 for session schemes.
 2. **OAuth login semantics.** Done: no account → create one (random,
-   unknowable password) and log in; existing account → normal login, untouched;
+   unknowable password) and log in; existing account → normal login (see the
+   pre-hijacking decision below for the first login to an unproven account);
    account requires 2FA → challenge issued, no token, callback redirects to
    `.oauth_two_fa_redirect(path)?oauth_2fa=required` with the attempt id and
    email in a short-lived `oauth_2fa` cookie.
@@ -274,30 +275,37 @@ Also fixed from review of these changes: each OAuth state is bound to the
 provider it was issued for (`PendingAuthorization { provider, code_verifier }`
 in `OAuthStateStore`); account deletion removes credentials before the account.
 
-## Open decision (raised 2026-11-17)
+## Pre-hijacking decision (raised 2026-11-17, settled 2026-11-18)
 
-**Pre-existing password account + first OAuth login (pre-hijacking).** With
-"existing account → normal login", this sequence works: an attacker signs up
-with the victim's email and a password they choose (signup does not prove the
-address is theirs); later the real owner logs in through the provider and lands
-in that same account; the attacker still knows its password. The library keeps
-no "email verified" flag on users, so it cannot tell a proven account from an
-unproven one. Options:
+**The problem.** With "existing account → normal login", an attacker could sign
+up with the victim's email and a password they choose (signup does not prove
+the address is theirs), wait for the real owner to log in through a provider,
+and still hold a way into that account.
 
-- **A. Reset on first link (recommended).** The first time a provider identity
-  is linked to an account that already existed: replace its password with a
-  random one, revoke all sessions, remove its passkeys, then log in. Later OAuth
-  logins change nothing. Cost: a genuine user who signed up with a password and
-  then uses the provider once loses that password (password reset restores it).
-- **B. Refuse.** An existing, never-linked account cannot be entered by OAuth.
-  Safe, but the library has no "link a provider from a logged-in session" route
-  yet, so such users could never use OAuth until one exists.
-- **C. Track email verification on the user** (`User.email_verified`, set by the
-  email-verification capability and by provider creation), and allow OAuth login
-  only to verified accounts, falling back to A or B for unverified ones. Most
-  precise; needs a user-store schema change.
-- **D. Keep as is** and document that OAuth should only be enabled together
-  with verified signup.
+**Decision: secure the account on the first link, but only if its address was
+never proven.** This is what Firebase Auth and Supabase Auth do. Built in
+`CredentialScheme::prepare_account_for_first_link`:
+
+- The first time a provider identity reaches an existing account, the account
+  counts as **proven** if the email-verification capability has marked its
+  address verified, or if another provider identity is already linked to it.
+  A proven account is left untouched.
+- An **unproven** account gets its password replaced with a random one, its
+  sessions revoked and its passkeys removed, before the user is logged in.
+- A scheme without the email-verification capability has proven nothing, so
+  every password account is unproven on its first provider login. A genuine
+  user in that position sets a new password through password reset.
+- Later logins with an already-linked identity change nothing.
+
+To keep this safe under partial failure, `OAuthFlow::complete` now only
+verifies and returns a `VerifiedIdentity`; the scheme secures the account and
+calls `OAuthFlow::link` last. `OAuthIdentityStore` gained
+`has_identity_for_email`, which the Phase 3 Postgres store must implement (an
+index on the email column).
+
+Options that were considered and not taken: refuse OAuth login to a
+never-linked account (needs a "link a provider while logged in" route that
+does not exist yet); keep as is and document the risk.
 
 ## Decisions (settled 2026-11-16)
 

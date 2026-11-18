@@ -333,6 +333,13 @@ pub trait OAuthIdentityStore: Send + Sync {
         provider: &str,
         subject: &str,
     ) -> Result<Option<Email>, OAuthIdentityStoreError>;
+
+    /// Whether any provider identity is linked to `email`.
+    ///
+    /// A linked identity means a provider has already proven the address
+    /// belongs to the account's user, so a later first login through another
+    /// provider can trust the account as it is.
+    async fn has_identity_for_email(&self, email: &Email) -> Result<bool, OAuthIdentityStoreError>;
 }
 
 // ApiKeyStore port, records and errors

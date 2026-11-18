@@ -33,6 +33,32 @@ use super::pkce::{CODE_CHALLENGE_METHOD, generate_verifier, pkce_challenge_s256}
 // original path for backwards compatibility.
 pub use tempered_core::AuthorizationRequest;
 
+/// A provider identity the flow has verified: the callback was genuine, the
+/// code exchanged, and the provider vouches for the email.
+///
+/// Only [`OAuthFlow::complete`] can produce one, so [`OAuthFlow::link`] cannot
+/// be handed an identity nobody verified.
+#[derive(Debug, Clone)]
+pub struct VerifiedIdentity {
+    provider: String,
+    subject: String,
+    email: Email,
+    already_linked: bool,
+}
+
+impl VerifiedIdentity {
+    /// The local account this identity logs in to.
+    pub fn email(&self) -> &Email {
+        &self.email
+    }
+
+    /// Whether this identity was linked to that account before this login.
+    /// `false` means this is the first time it is used to reach the account.
+    pub fn already_linked(&self) -> bool {
+        self.already_linked
+    }
+}
+
 #[derive(Clone)]
 pub struct OAuthFlow<ST, ID, HC> {
     state_store: ST,
@@ -90,8 +116,13 @@ where
         })
     }
 
-    /// Step 2: validate state, exchange the code, fetch userinfo, link the
-    /// identity, and return the verified local email.
+    /// Step 2: validate state, exchange the code, fetch userinfo, and return
+    /// the verified provider identity.
+    ///
+    /// This does **not** link the identity. The caller decides what the login
+    /// means for the local account (create it, or secure an unproven one) and
+    /// then calls [`link`](Self::link), so a failure in between never leaves an
+    /// identity linked to an account that was not made safe first.
     ///
     /// `query_state` is the `state` returned by the provider on the callback;
     /// `cookie_state` is the value previously bound to the initiating browser
@@ -103,7 +134,7 @@ where
         code: &str,
         query_state: &str,
         cookie_state: &str,
-    ) -> Result<Email, OAuthFlowError> {
+    ) -> Result<VerifiedIdentity, OAuthFlowError> {
         let config = self.provider(provider)?;
 
         // Bind the callback to the initiating browser before trusting `state`.
@@ -146,15 +177,43 @@ where
         }
 
         let email = Email::try_from(Secret::new(info.email))?;
+        let already_linked = match self.linked_email(provider, &info.subject).await? {
+            Some(linked) if linked == email => true,
+            // The identity belongs to another account: never move it silently.
+            Some(_) => return Err(OAuthFlowError::IdentityConflict),
+            None => false,
+        };
+
+        Ok(VerifiedIdentity {
+            provider: provider.to_string(),
+            subject: info.subject,
+            email,
+            already_linked,
+        })
+    }
+
+    /// Record a verified identity as a way to log in to its email's account.
+    /// Idempotent for an identity that is already linked to that account.
+    pub async fn link(&self, identity: &VerifiedIdentity) -> Result<(), OAuthFlowError> {
         self.identity_store
-            .link_identity(provider.to_string(), info.subject, email.clone())
+            .link_identity(
+                identity.provider.clone(),
+                identity.subject.clone(),
+                identity.email.clone(),
+            )
             .await
             .map_err(|e| match e {
                 OAuthIdentityStoreError::AlreadyLinked => OAuthFlowError::IdentityConflict,
                 other => OAuthFlowError::Identity(other.to_string()),
-            })?;
+            })
+    }
 
-        Ok(email)
+    /// Whether any provider identity is already linked to `email`'s account.
+    pub async fn has_linked_identity(&self, email: &Email) -> Result<bool, OAuthFlowError> {
+        self.identity_store
+            .has_identity_for_email(email)
+            .await
+            .map_err(|e| OAuthFlowError::Identity(e.to_string()))
     }
 
     /// Look up the local email previously linked to a provider identity.
@@ -441,15 +500,30 @@ mod tests {
         let req = f.begin("google").await.unwrap();
 
         // cookie_state == query_state proves the same browser is completing.
-        let email = f
+        let identity = f
             .complete("google", "auth-code", &req.state, &req.state)
             .await
             .unwrap();
         let expected = Email::try_from(Secret::new("user@example.com".to_string())).unwrap();
-        assert_eq!(email, expected);
+        assert_eq!(identity.email(), &expected);
 
+        // Verifying is not linking: the caller secures the account first.
+        assert!(!identity.already_linked());
+        assert_eq!(f.linked_email("google", "sub-123").await.unwrap(), None);
+        assert!(!f.has_linked_identity(&expected).await.unwrap());
+
+        f.link(&identity).await.unwrap();
         let linked = f.linked_email("google", "sub-123").await.unwrap();
-        assert_eq!(linked, Some(expected));
+        assert_eq!(linked, Some(expected.clone()));
+        assert!(f.has_linked_identity(&expected).await.unwrap());
+
+        // The next login with the same identity reports it as linked.
+        let req = f.begin("google").await.unwrap();
+        let again = f
+            .complete("google", "auth-code", &req.state, &req.state)
+            .await
+            .unwrap();
+        assert!(again.already_linked());
     }
 
     #[tokio::test]
@@ -516,9 +590,11 @@ mod tests {
         // First sign-in links (google, sub-123) -> a@.
         let f1 = link("a@example.com");
         let r1 = f1.begin("google").await.unwrap();
-        f1.complete("google", "code", &r1.state, &r1.state)
+        let first = f1
+            .complete("google", "code", &r1.state, &r1.state)
             .await
             .unwrap();
+        f1.link(&first).await.unwrap();
 
         // The same provider identity now returning a different email must not
         // silently re-bind the account.

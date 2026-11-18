@@ -99,7 +99,10 @@ mod oauth_tests {
     use crate::email::MockEmailClient;
     use crate::http::HttpResponseBuilder;
     use crate::oauth::OAuthFlow;
+    use crate::passkey::PasskeyFlow;
+    use crate::passkey::flow::test_support::{MockVerifier, reply_with_count};
     use crate::persistence::{
+        HashMapChallengeStore, HashMapEmailVerificationTokenStore, HashMapPasskeyCredentialStore,
         HashMapTokenEpochStore, HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
         hashmap_oauth_identity_store::HashMapOAuthIdentityStore,
         hashmap_oauth_state_store::HashMapOAuthStateStore,
@@ -107,9 +110,10 @@ mod oauth_tests {
     use async_trait::async_trait;
     use secrecy::{ExposeSecret, Secret};
     use tempered_core::{
-        AuthValidator, AuthenticationScheme, Email, HttpOAuth2Scheme, LoginOutcome,
-        OAuthHttpClient, OAuthHttpError, OAuthProviderConfig, OAuthUserInfo, Password,
-        SupportsOAuth2, SupportsTwoFactor, TwoFaCodeStore, User, UserStore,
+        AuthValidator, AuthenticationScheme, Email, EmailVerificationTokenStore, HttpOAuth2Scheme,
+        LoginOutcome, OAuthHttpClient, OAuthHttpError, OAuthIdentityStore, OAuthProviderConfig,
+        OAuthUserInfo, PasskeyCredentialStore, Password, SupportsOAuth2, SupportsPasskeys,
+        SupportsTwoFactor, TokenEpochStore, TwoFaCodeStore, User, UserStore,
     };
 
     #[derive(Clone)]
@@ -275,26 +279,169 @@ mod oauth_tests {
         assert_eq!(a.as_ref().expose_secret().len(), 43);
     }
 
+    /// The parts of an account that let someone in, as handles a test can
+    /// inspect after an OAuth login.
+    struct Account {
+        users: HashMapUserStore,
+        epochs: HashMapTokenEpochStore,
+        passkeys: HashMapPasskeyCredentialStore,
+        identities: HashMapOAuthIdentityStore,
+        verified: HashMapEmailVerificationTokenStore,
+    }
+
+    impl Account {
+        /// An account for [`email`] created by signup, with a password and a
+        /// passkey, and (as a stand-in for a live session) no revocation yet.
+        async fn signed_up() -> Self {
+            let account = Self {
+                users: HashMapUserStore::new(),
+                epochs: HashMapTokenEpochStore::new(),
+                passkeys: HashMapPasskeyCredentialStore::new(),
+                identities: HashMapOAuthIdentityStore::new(),
+                verified: HashMapEmailVerificationTokenStore::new(),
+            };
+            add_account(&account.users, SIGNUP_PASSWORD, false).await;
+            account
+        }
+
+        /// A scheme over this account's stores with OAuth, passkeys and email
+        /// verification, with one passkey already enrolled.
+        async fn scheme(&self) -> impl SupportsOAuth2<Token = JwtToken> + use<> {
+            let scheme = JwtScheme::new(
+                self.users.clone(),
+                jwt_config(),
+                HashSetBannedTokenStore::new(),
+                self.epochs.clone(),
+            )
+            .supports_email_verification(self.verified.clone(), MockEmailClient::new())
+            .supports_oauth(
+                OAuthFlow::new(
+                    HashMapOAuthStateStore::new(),
+                    self.identities.clone(),
+                    MockClient {
+                        email: "user@example.com".to_string(),
+                    },
+                )
+                .with_provider(provider()),
+            )
+            .supports_passkeys(PasskeyFlow::new(
+                self.passkeys.clone(),
+                HashMapChallengeStore::new(),
+                MockVerifier,
+            ));
+
+            let ceremony = scheme.start_passkey_registration(email()).await.unwrap();
+            let response = reply_with_count(&ceremony, "cred-from-signup", 0);
+            scheme
+                .finish_passkey_registration(email(), ceremony.ceremony_id, response)
+                .await
+                .unwrap();
+            scheme
+        }
+
+        async fn password_works(&self, password: &str) -> bool {
+            let password = Password::try_from(Secret::new(password.to_string())).unwrap();
+            self.users
+                .authenticate_user(&email(), &password)
+                .await
+                .is_ok()
+        }
+
+        async fn passkey_count(&self) -> usize {
+            self.passkeys.list_for_user(&email()).await.unwrap().len()
+        }
+
+        async fn sessions_revoked(&self) -> bool {
+            self.epochs.min_valid_iat(&email()).await.unwrap().is_some()
+        }
+
+        async fn assert_untouched(&self) {
+            assert!(self.password_works(SIGNUP_PASSWORD).await);
+            assert_eq!(self.passkey_count().await, 1);
+            assert!(!self.sessions_revoked().await);
+        }
+    }
+
+    const SIGNUP_PASSWORD: &str = "chosen-by-whoever-signed-up";
+
     #[tokio::test]
-    async fn oauth_login_to_an_existing_account_leaves_it_untouched() {
+    async fn first_oauth_login_to_an_unproven_account_removes_every_earlier_way_in() {
+        // Signup never proved the address. Whoever signed up (possibly an
+        // attacker squatting on the victim's address) holds a password, a
+        // passkey and maybe a session.
+        let account = Account::signed_up().await;
+        let scheme = account.scheme().await;
+        account.assert_untouched().await;
+
+        let outcome = oauth_login(&scheme).await.unwrap();
+        assert!(matches!(outcome, LoginOutcome::Success(_)));
+
+        assert!(!account.password_works(SIGNUP_PASSWORD).await);
+        assert_eq!(account.passkey_count().await, 0);
+        assert!(account.sessions_revoked().await);
+    }
+
+    #[tokio::test]
+    async fn later_oauth_logins_leave_the_account_untouched() {
+        let account = Account::signed_up().await;
+        let scheme = account.scheme().await;
+        oauth_login(&scheme).await.unwrap();
+
+        // The owner sets a password of their own (as password reset would).
+        let own = Password::try_from(Secret::new("the-owners-new-password".into())).unwrap();
+        account.users.set_new_password(&email(), own).await.unwrap();
+
+        // The identity is linked now: this is just another login.
+        let outcome = oauth_login(&scheme).await.unwrap();
+        assert!(matches!(outcome, LoginOutcome::Success(_)));
+        assert!(account.password_works("the-owners-new-password").await);
+    }
+
+    #[tokio::test]
+    async fn first_oauth_login_to_a_verified_account_leaves_it_untouched() {
+        // The owner proved the address through email verification, so the
+        // password, passkey and sessions are theirs.
+        let account = Account::signed_up().await;
+        account.verified.mark_verified(&email()).await.unwrap();
+        let scheme = account.scheme().await;
+
+        let outcome = oauth_login(&scheme).await.unwrap();
+        assert!(matches!(outcome, LoginOutcome::Success(_)));
+        account.assert_untouched().await;
+    }
+
+    #[tokio::test]
+    async fn first_login_through_a_second_provider_leaves_the_account_untouched() {
+        // Another provider already proved the address for this account.
+        let account = Account::signed_up().await;
+        account
+            .identities
+            .link_identity("github".to_string(), "gh-1".to_string(), email())
+            .await
+            .unwrap();
+        let scheme = account.scheme().await;
+
+        let outcome = oauth_login(&scheme).await.unwrap();
+        assert!(matches!(outcome, LoginOutcome::Success(_)));
+        account.assert_untouched().await;
+    }
+
+    #[tokio::test]
+    async fn without_email_verification_an_existing_account_counts_as_unproven() {
+        // No verification capability on the scheme: nothing has proven the
+        // address, so the signup password does not survive.
         let (scheme, users) = scheme_with_oauth();
-        add_account(&users, "the-users-own-password", false).await;
+        add_account(&users, SIGNUP_PASSWORD, false).await;
 
         let outcome = oauth_login(&scheme).await.unwrap();
         let LoginOutcome::Success(token) = outcome else {
             panic!("expected an immediate login");
         };
+        // The session issued by this login is not caught by the revocation.
         assert!(validates(&scheme, &token).await);
 
-        // Same account: its password still works, and it is the only account.
-        let password = Password::try_from(Secret::new("the-users-own-password".into())).unwrap();
-        assert!(users.authenticate_user(&email(), &password).await.is_ok());
-
-        // A second OAuth login is just another login.
-        assert!(matches!(
-            oauth_login(&scheme).await.unwrap(),
-            LoginOutcome::Success(_)
-        ));
+        let password = Password::try_from(Secret::new(SIGNUP_PASSWORD.into())).unwrap();
+        assert!(users.authenticate_user(&email(), &password).await.is_err());
     }
 
     #[tokio::test]

@@ -106,6 +106,14 @@ callback redirects to `.oauth_two_fa_redirect(path)` with `?oauth_2fa=required`
 and hands the `loginAttemptId` and `email` to the page in a short-lived
 `oauth_2fa` cookie, for the usual `verify-2fa` call.
 
+The first time a provider login reaches an account that was created by signup,
+the account is trusted as it is only if its address has been proven: by the
+email-verification capability, or by another provider already linked to it.
+Otherwise its password is replaced with a random one, its sessions are revoked
+and its passkeys removed before the user is let in, because whoever signed up
+may not own the address. Enable `.supports_email_verification(...)` alongside
+OAuth so verified users keep their password.
+
 Login, logout, and verify-token are always present. Every default path can be
 overridden on the service builder (e.g. `.login("/signin")`).
 

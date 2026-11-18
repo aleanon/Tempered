@@ -52,4 +52,8 @@ impl OAuthIdentityStore for HashMapOAuthIdentityStore {
             .get(&(provider.to_string(), subject.to_string()))
             .cloned())
     }
+
+    async fn has_identity_for_email(&self, email: &Email) -> Result<bool, OAuthIdentityStoreError> {
+        Ok(self.identities.read().await.values().any(|e| e == email))
+    }
 }
