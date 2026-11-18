@@ -35,8 +35,26 @@ pub trait TokenStrategy: Clone + Send + Sync + 'static {
     /// Errors from issuing/revoking (validation errors belong to the validator).
     type Error: std::error::Error + Send + Sync + 'static + ClassifyError;
 
-    /// Mint a token for an already-verified identity.
-    async fn issue(&self, email: &Email) -> Result<Self::Token, Self::Error>;
+    /// Proof of when a login began, taken by [`begin`](Self::begin) and spent
+    /// by [`issue`](Self::issue).
+    type Ticket: Send + Sync + 'static;
+
+    /// Open a login for `email`. Call this **before** checking the credential
+    /// (password, 2FA code, passkey, provider link) that the login rests on.
+    ///
+    /// The ticket pins the login to the user's revocation state at this
+    /// moment. If [`revoke_all_for_user`](Self::revoke_all_for_user) runs
+    /// before the token is issued, the credential that was checked may no
+    /// longer exist, and the token must not survive.
+    async fn begin(&self, email: &Email) -> Result<Self::Ticket, Self::Error>;
+
+    /// Mint a token for an identity whose credential was checked after
+    /// `ticket` was taken.
+    ///
+    /// Contract: if `revoke_all_for_user` ran for this user since the ticket
+    /// was taken, the result MUST NOT be a usable token: either this returns
+    /// an error, or the token it returns fails validation.
+    async fn issue(&self, email: &Email, ticket: Self::Ticket) -> Result<Self::Token, Self::Error>;
 
     /// Invalidate a token (logout / ban / delete).
     async fn revoke(&self, token: &Self::Token) -> Result<(), Self::Error>;
@@ -144,21 +162,29 @@ where
     type Token = JwtToken;
     type Validator = LocalJwtValidator<B>;
     type Error = JwtTokenError;
+    type Ticket = JwtTicket;
 
-    async fn issue(&self, email: &Email) -> Result<JwtToken, JwtTokenError> {
-        // Stamp the token no earlier than the user's revocation cutoff. After
-        // a "revoke all" the cutoff is one second ahead (see below), and a
-        // token stamped "now" would be rejected for the rest of this second.
-        // An unreadable cutoff fails the login rather than guessing.
+    async fn begin(&self, email: &Email) -> Result<JwtTicket, JwtTokenError> {
+        // The stamp the token will carry: now, or the user's revocation cutoff
+        // if that is ahead of the clock (right after a "revoke all" the cutoff
+        // is one second ahead, see below). An unreadable cutoff fails the
+        // login rather than guessing.
         let cutoff = self
             .epoch
             .min_valid_iat(email)
             .await
             .map_err(JwtTokenError::Cutoff)?;
         let now = chrono::Utc::now().timestamp();
-        let iat = cutoff.map_or(now, |cutoff| cutoff.max(now));
+        Ok(JwtTicket {
+            issued_at: cutoff.map_or(now, |cutoff| cutoff.max(now)),
+        })
+    }
 
-        let token = generate_auth_token_issued_at(email, &self.config, iat)
+    async fn issue(&self, email: &Email, ticket: JwtTicket) -> Result<JwtToken, JwtTokenError> {
+        // Stamped with the moment the login began, not the moment it finished.
+        // A "revoke all" in between moved the cutoff past this stamp, so the
+        // validator rejects the token: no check is needed here.
+        let token = generate_auth_token_issued_at(email, &self.config, ticket.issued_at)
             .map_err(JwtTokenError::Generate)?;
         Ok(JwtToken(token))
     }
@@ -177,7 +203,7 @@ where
         // ahead of the clock (a second revocation within the same second,
         // whose in-between login was stamped at that cutoff). The validator
         // rejects every token with an earlier iat (see LocalJwtValidator), and
-        // `issue` stamps the next token at the new cutoff, so it is valid at
+        // `begin` stamps the next login at the new cutoff, so it is valid at
         // once.
         let latest_stamp = self
             .epoch
@@ -211,6 +237,12 @@ where
         req.cookie(&self.config.jwt_cookie_name)
             .map(|s| JwtToken(s.to_string()))
     }
+}
+
+/// When a JWT login began: the issued-at stamp its token will carry.
+#[derive(Debug, Clone, Copy)]
+pub struct JwtTicket {
+    issued_at: i64,
 }
 
 /// Errors from the JWT strategy's issue/revoke steps.
@@ -297,9 +329,9 @@ mod tests {
         // No second boundary is crossed between these three steps (unless the
         // clock happens to tick): this is the case whole-second cutoffs used
         // to miss.
-        let earlier = tokens.issue(&email()).await.unwrap();
+        let earlier = login(&tokens).await;
         tokens.revoke_all_for_user(&email()).await.unwrap();
-        let next = tokens.issue(&email()).await.unwrap();
+        let next = login(&tokens).await;
 
         assert!(!validates(&tokens, &earlier).await);
         assert!(validates(&tokens, &next).await);
@@ -320,7 +352,7 @@ mod tests {
             tokens.revoke_all_for_user(&email()).await.unwrap();
         }
         let now = chrono::Utc::now().timestamp();
-        let token = tokens.issue(&email()).await.unwrap();
+        let token = login(&tokens).await;
 
         let claims = validate_auth_token(
             token.as_str(),
@@ -333,6 +365,27 @@ mod tests {
         assert!(claims.iat.unwrap() > now);
         let ttl = tokens.config.token_ttl_in_seconds as usize;
         assert!(claims.exp <= now as usize + ttl + 1);
+    }
+
+    #[tokio::test]
+    async fn a_login_that_began_before_revoke_all_does_not_yield_a_valid_token() {
+        let tokens = strategy();
+
+        // The credential check happens between `begin` and `issue`. Here the
+        // revocation lands in that gap: whatever was checked may be gone.
+        let ticket = tokens.begin(&email()).await.unwrap();
+        tokens.revoke_all_for_user(&email()).await.unwrap();
+        let token = tokens.issue(&email(), ticket).await.unwrap();
+        assert!(!validates(&tokens, &token).await);
+
+        // A login that begins afterwards is unaffected.
+        assert!(validates(&tokens, &login(&tokens).await).await);
+    }
+
+    /// A whole login with nothing in between.
+    async fn login(tokens: &JwtTokens<HashSetBannedTokenStore>) -> JwtToken {
+        let ticket = tokens.begin(&email()).await.unwrap();
+        tokens.issue(&email(), ticket).await.unwrap()
     }
 
     async fn validates(tokens: &JwtTokens<HashSetBannedTokenStore>, token: &JwtToken) -> bool {

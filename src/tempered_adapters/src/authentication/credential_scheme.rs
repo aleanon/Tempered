@@ -737,6 +737,13 @@ where
         let email = Email::try_from(credentials.email)?;
         let password = Password::try_from(credentials.password)?;
 
+        // The login opens before the credential is checked: see
+        // `TokenStrategy::begin`.
+        let ticket = self
+            .tokens
+            .begin(&email)
+            .await
+            .map_err(CredentialError::Token)?;
         let validated_user = self.user_store.authenticate_user(&email, &password).await?;
 
         match validated_user {
@@ -749,7 +756,7 @@ where
             ValidatedUser::No2Fa(email) => {
                 let token = self
                     .tokens
-                    .issue(&email)
+                    .issue(&email, ticket)
                     .await
                     .map_err(CredentialError::Token)?;
                 Ok(LoginOutcome::Success(token))
@@ -927,6 +934,11 @@ where
         attempt_id: TwoFaAttemptId,
         code: TwoFaCode,
     ) -> Result<Self::Token, Self::TwoFactorError> {
+        let ticket = self
+            .tokens
+            .begin(&email)
+            .await
+            .map_err(CredentialError::Token)?;
         self.two_fa
             .store
             .validate(&email, &attempt_id, &code)
@@ -934,7 +946,7 @@ where
         self.two_fa.store.delete(&email).await?;
         Ok(self
             .tokens
-            .issue(&email)
+            .issue(&email, ticket)
             .await
             .map_err(CredentialError::Token)?)
     }
@@ -968,11 +980,17 @@ where
         password: Password,
     ) -> Result<Self::ElevatedToken, Self::ElevationError> {
         // Re-authenticate, then mint a token via the *elevated* strategy.
+        let ticket = self
+            .elevation
+            .tokens
+            .begin(&email)
+            .await
+            .map_err(CredentialError::Token)?;
         self.user_store.authenticate_user(&email, &password).await?;
         Ok(self
             .elevation
             .tokens
-            .issue(&email)
+            .issue(&email, ticket)
             .await
             .map_err(CredentialError::Token)?)
     }
@@ -1211,15 +1229,26 @@ where
 
         // From here it is an ordinary login to that email's account, creating
         // the account first if this is the user's first visit.
-        let requires_2fa = if identity.already_linked() {
-            self.user_store.get_user(&email).await?.requires_2fa
-        } else {
-            let requires_2fa = self.prepare_account_for_first_link(&email).await?;
+        if !identity.already_linked() {
+            self.prepare_account_for_first_link(&email).await?;
             // Linked last: if anything above failed, the next attempt starts
             // from an unlinked identity and secures the account again.
             self.oauth.flow.link(&identity).await?;
-            requires_2fa
-        };
+        }
+
+        // The login opens once the account is in its final state (securing it
+        // revokes its sessions, which would void an earlier ticket), and
+        // before the account is read: a deletion from here on is caught.
+        let ticket = self
+            .tokens
+            .begin(&email)
+            .await
+            .map_err(CredentialError::Token)?;
+        if !self.oauth.flow.is_linked(&identity).await? {
+            // Unlinked since it was verified: the account was deleted.
+            return Err(UserStoreError::UserNotFound.into());
+        }
+        let requires_2fa = self.user_store.get_user(&email).await?.requires_2fa;
 
         if requires_2fa {
             // The provider stands in for the password, not for the second
@@ -1231,7 +1260,7 @@ where
 
         let token = self
             .tokens
-            .issue(&email)
+            .issue(&email, ticket)
             .await
             .map_err(CredentialError::Token)?;
         Ok(LoginOutcome::Success(token))
@@ -1254,8 +1283,7 @@ where
     R: Send + Sync,
 {
     /// Get `email`'s account ready for the first login through a provider
-    /// identity that is not linked to it yet. Returns whether the account
-    /// requires 2FA.
+    /// identity that is not linked to it yet.
     ///
     /// - No account: create one. The user store requires a password, so it gets
     ///   a random one nobody knows; the user signs in through the provider and
@@ -1266,29 +1294,27 @@ where
     async fn prepare_account_for_first_link(
         &self,
         email: &Email,
-    ) -> Result<bool, CredentialError<T::Error>> {
-        let existing = match self.user_store.get_user(email).await {
-            Ok(user) => user,
+    ) -> Result<(), CredentialError<T::Error>> {
+        match self.user_store.get_user(email).await {
+            Ok(_) => {}
             Err(UserStoreError::UserNotFound) => {
                 let user = User::new(email.clone(), unknowable_password(), false);
                 match self.user_store.add_user(user).await {
-                    Ok(()) => return Ok(false),
+                    Ok(()) => return Ok(()),
                     // Lost a race with a signup for the same address. That
                     // account is as unproven as any other: fall through.
-                    Err(UserStoreError::UserAlreadyExists) => {
-                        self.user_store.get_user(email).await?
-                    }
+                    Err(UserStoreError::UserAlreadyExists) => {}
                     Err(e) => return Err(e.into()),
                 }
             }
             Err(e) => return Err(e.into()),
-        };
+        }
 
         let proof = self.email_verify.proof(email).await?;
         let proven =
             proof == AddressProof::Verified || self.oauth.flow.has_linked_identity(email).await?;
         if proven {
-            return Ok(existing.requires_2fa);
+            return Ok(());
         }
 
         // The 2FA requirement is dropped only when the scheme positively knows
@@ -1296,8 +1322,7 @@ where
         // signup account looks unproven, and most of them are genuine: their
         // owners keep the second factor they chose.
         let drop_two_fa = proof == AddressProof::Unverified;
-        self.secure_unproven_account(email, drop_two_fa).await?;
-        Ok(existing.requires_2fa && !drop_two_fa)
+        self.secure_unproven_account(email, drop_two_fa).await
     }
 
     /// Remove every way into an account that predates proof of its address.
@@ -1517,17 +1542,29 @@ where
         ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<Self::Token, Self::PasskeyError> {
-        let email = self
+        let (email, credential_id) = self
             .passkeys
             .flow
-            .finish_authentication(ceremony_id, response)
+            .finish_authentication_with_credential(ceremony_id, response)
+            .await?;
+        // Only the credential says whose login this is, so the login opens
+        // here and the credential is confirmed again after it: removed in
+        // between, it fails; removed later, the ticket catches it.
+        let ticket = self
+            .tokens
+            .begin(&email)
+            .await
+            .map_err(CredentialError::Token)?;
+        self.passkeys
+            .flow
+            .confirm_enrolled(&email, &credential_id)
             .await?;
         // A passkey outlives nothing: if the account it was enrolled for is gone
         // (deleted since enrollment), the credential must not mint a session.
         self.user_store.get_user(&email).await?;
         Ok(self
             .tokens
-            .issue(&email)
+            .issue(&email, ticket)
             .await
             .map_err(CredentialError::Token)?)
     }

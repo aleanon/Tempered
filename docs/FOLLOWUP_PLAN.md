@@ -321,13 +321,35 @@ stays and the OAuth login is challenged. A proven account always keeps its 2FA.
 `revoke_all_for_user` sets the cutoff one second past the latest stamp a token
 can carry, and `issue` stamps new tokens no earlier than the cutoff; expiry is
 always measured from the real clock. A token issued earlier in the same second
-as a password change, deletion or first-link cleanup is now rejected. Accepted
-and not closed: a login request that had already passed its credential check
-when the cleanup ran and issues its token just after.
+as a password change, deletion or first-link cleanup is now rejected.
+
+**A login is pinned to the moment it began** (decided 2026-11-19).
+`TokenStrategy` is now `begin(email) -> Ticket` then `issue(email, ticket)`,
+and every login path takes its ticket before checking the credential it rests
+on (password, 2FA code, elevation, provider link; a passkey login takes it as
+soon as the credential names the owner and then confirms the credential
+again). If `revoke_all_for_user` runs in between, the login yields nothing
+usable:
+- JWT: the ticket is the token's issued-at stamp, so the moved cutoff rejects
+  it on validation.
+- Sessions: the ticket is the user's `SessionStore::revocation_count`;
+  `delete_all_for_user` must advance it before deleting, and `issue` discards
+  the new session if it changed (`SessionError::Superseded`).
+
+Still open after this, both needing an attacker to land whole requests inside
+the gaps between two consecutive store calls of a cleanup:
+- Securing an unproven account removes several credentials in sequence, and
+  they can mint one another (a session enrols a passkey, a passkey logs in to a
+  session). Closing that exactly needs a per-user "cleanup in progress" lock
+  that refuses logins and enrolments for its duration (with an expiry, so a
+  crashed cleanup cannot lock the user out), on top of the tickets.
+- A pending 2FA attempt (password already accepted) survives a password reset
+  or cleanup. With emailed codes only the mailbox owner can finish it.
 
 Ports the Phase 3 stores must implement because of this section:
 `OAuthIdentityStore::{has_identity_for_email, unlink_all_for_email}` (Postgres,
-index on email) and `EmailVerificationTokenStore::forget_email` (Redis).
+index on email), `EmailVerificationTokenStore::forget_email` (Redis) and
+`SessionStore::revocation_count` (Redis: `INCR` before deleting).
 
 Options that were considered and not taken: refuse OAuth login to a
 never-linked account (needs a "link a provider while logged in" route that

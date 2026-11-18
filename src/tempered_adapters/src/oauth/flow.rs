@@ -208,6 +208,15 @@ where
             })
     }
 
+    /// Whether `identity` is linked to its account right now.
+    pub async fn is_linked(&self, identity: &VerifiedIdentity) -> Result<bool, OAuthFlowError> {
+        Ok(self
+            .linked_email(&identity.provider, &identity.subject)
+            .await?
+            .as_ref()
+            == Some(&identity.email))
+    }
+
     /// Whether any provider identity is already linked to `email`'s account.
     pub async fn has_linked_identity(&self, email: &Email) -> Result<bool, OAuthFlowError> {
         self.identity_store

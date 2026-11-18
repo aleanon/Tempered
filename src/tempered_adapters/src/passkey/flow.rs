@@ -122,6 +122,20 @@ where
         ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<Email, PasskeyFlowError> {
+        Ok(self
+            .finish_authentication_with_credential(ceremony_id, response)
+            .await?
+            .0)
+    }
+
+    /// [`finish_authentication`](Self::finish_authentication), also returning
+    /// which credential answered, so the caller can
+    /// [`confirm_enrolled`](Self::confirm_enrolled) it later.
+    pub async fn finish_authentication_with_credential(
+        &self,
+        ceremony_id: CeremonyId,
+        response: serde_json::Value,
+    ) -> Result<(Email, CredentialId), PasskeyFlowError> {
         // Consume the ceremony regardless of the outcome (single use).
         let pending = self.challenge_store.consume_ceremony(&ceremony_id).await?;
 
@@ -164,7 +178,26 @@ where
             )
             .await?;
 
-        Ok(stored.owner)
+        Ok((stored.owner, stored.credential_id))
+    }
+
+    /// Check that `credential_id` is still enrolled for `owner`.
+    ///
+    /// A usernameless login only learns whose account it is from the
+    /// credential itself, so the caller cannot open the login (take its
+    /// ticket) before the credential is read. It opens the login once the
+    /// owner is known and then calls this: a credential removed in between
+    /// fails here, one removed afterwards is caught by the ticket.
+    pub async fn confirm_enrolled(
+        &self,
+        owner: &Email,
+        credential_id: &CredentialId,
+    ) -> Result<(), PasskeyFlowError> {
+        let stored = self.credential_store.get_credential(credential_id).await?;
+        if &stored.owner != owner {
+            return Err(PasskeyFlowError::WrongCredential);
+        }
+        Ok(())
     }
 
     /// Remove every passkey enrolled for `email`. Call when the account is

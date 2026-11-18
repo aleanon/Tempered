@@ -103,9 +103,10 @@ pub use tempered_adapters::{
         Elevation, EmailVerify, JwtScheme, OAuth, Passkeys, PasswordReset, TwoFa,
     },
     authentication::session_scheme::{
-        SessionClaims, SessionConfig, SessionError, SessionScheme, SessionToken, SessionTokens,
+        SessionClaims, SessionConfig, SessionError, SessionScheme, SessionTicket, SessionToken,
+        SessionTokens,
     },
-    authentication::token_strategy::{JwtToken, JwtTokens, TokenStrategy},
+    authentication::token_strategy::{JwtTicket, JwtToken, JwtTokens, TokenStrategy},
     email::MockEmailClient,
     oauth::{OAuthFlow, OAuthFlowError, VerifiedIdentity, pkce_challenge_s256},
     passkey::{PasskeyFlow, PasskeyFlowError},

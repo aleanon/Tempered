@@ -435,7 +435,21 @@ pub trait SessionStore: Send + Sync {
     async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError>;
 
     /// Delete every session belonging to a user (logout-everywhere / password change).
+    ///
+    /// Contract: implementations MUST advance the user's
+    /// [`revocation_count`](Self::revocation_count) **before** deleting, so a
+    /// login racing this call either sees the new count or has its session
+    /// deleted here.
     async fn delete_all_for_user(&self, email: &Email) -> Result<(), SessionStoreError>;
+
+    /// How many times `delete_all_for_user` has run for this user (0 if never).
+    ///
+    /// The session strategy reads this when a login begins and again after
+    /// creating the session: a change means the user's sessions were revoked
+    /// while the login was in flight, and the new session is discarded.
+    /// Implementations MUST keep the count at least as long as a login can
+    /// take; it never needs to decrease.
+    async fn revocation_count(&self, email: &Email) -> Result<u64, SessionStoreError>;
 }
 
 #[async_trait]

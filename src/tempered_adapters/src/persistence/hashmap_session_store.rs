@@ -12,12 +12,14 @@ use tempered_core::{Email, SessionId, SessionStore, SessionStoreError};
 #[derive(Default, Clone)]
 pub struct HashMapSessionStore {
     sessions: Arc<RwLock<HashMap<SessionId, Email>>>,
+    revocations: Arc<RwLock<HashMap<Email, u64>>>,
 }
 
 impl HashMapSessionStore {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            revocations: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -53,7 +55,24 @@ impl SessionStore for HashMapSessionStore {
     }
 
     async fn delete_all_for_user(&self, email: &Email) -> Result<(), SessionStoreError> {
+        // Count first, delete second (the port's contract).
+        *self
+            .revocations
+            .write()
+            .await
+            .entry(email.clone())
+            .or_default() += 1;
         self.sessions.write().await.retain(|_, v| v != email);
         Ok(())
+    }
+
+    async fn revocation_count(&self, email: &Email) -> Result<u64, SessionStoreError> {
+        Ok(self
+            .revocations
+            .read()
+            .await
+            .get(email)
+            .copied()
+            .unwrap_or(0))
     }
 }

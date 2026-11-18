@@ -43,6 +43,12 @@ pub struct SessionConfig {
 #[derive(Clone, Debug)]
 pub struct SessionToken(pub SessionId);
 
+/// When a session login began: how often the user's sessions had been revoked.
+#[derive(Debug, Clone, Copy)]
+pub struct SessionTicket {
+    revocations: u64,
+}
+
 // ============================================================================
 // Session token strategy
 // ============================================================================
@@ -85,10 +91,32 @@ where
     type Token = SessionToken;
     type Validator = SessionValidator<S>;
     type Error = SessionError;
+    type Ticket = SessionTicket;
 
-    async fn issue(&self, email: &Email) -> Result<SessionToken, SessionError> {
+    async fn begin(&self, email: &Email) -> Result<SessionTicket, SessionError> {
+        Ok(SessionTicket {
+            revocations: self.store.revocation_count(email).await?,
+        })
+    }
+
+    async fn issue(
+        &self,
+        email: &Email,
+        ticket: SessionTicket,
+    ) -> Result<SessionToken, SessionError> {
         let id = SessionId::new();
         self.store.create_session(id.clone(), email.clone()).await?;
+
+        // Create first, then look: "delete all" counts before it deletes, so
+        // either the count has moved by now (and the session goes here), or
+        // the deletion comes after this session exists and removes it.
+        if self.store.revocation_count(email).await? != ticket.revocations {
+            match self.store.delete_session(&id).await {
+                Ok(()) | Err(SessionStoreError::SessionNotFound) => {}
+                Err(e) => return Err(e.into()),
+            }
+            return Err(SessionError::Superseded);
+        }
         Ok(SessionToken(id))
     }
 
@@ -240,6 +268,8 @@ pub enum SessionError {
     MissingSession,
     #[error("Invalid session")]
     InvalidSession,
+    #[error("Sessions were revoked while this login was in progress")]
+    Superseded,
     #[error("Session store error: {0}")]
     Store(#[from] SessionStoreError),
 }
@@ -253,6 +283,10 @@ impl ClassifyError for SessionError {
             SessionError::InvalidSession => {
                 (ErrorCategory::Unauthorized, "Invalid session".to_string())
             }
+            SessionError::Superseded => (
+                ErrorCategory::Unauthorized,
+                "Sessions were revoked during login; log in again".to_string(),
+            ),
             SessionError::Store(SessionStoreError::SessionNotFound) => (
                 ErrorCategory::Unauthorized,
                 "Session not found or expired".to_string(),
@@ -281,6 +315,31 @@ mod tests {
             cookie_name: "session".to_string(),
             ttl_in_seconds: 3600,
         }
+    }
+
+    #[tokio::test]
+    async fn a_login_that_began_before_revoke_all_gets_no_session() {
+        use super::SessionTokens;
+        use crate::authentication::token_strategy::TokenStrategy;
+        use tempered_core::SessionStore;
+
+        let store = HashMapSessionStore::new();
+        let tokens = SessionTokens::new(store.clone(), config());
+        let email = Email::try_from(Secret::new("user@example.com".to_string())).unwrap();
+
+        // The credential check happens between `begin` and `issue`. Here the
+        // revocation lands in that gap: whatever was checked may be gone.
+        let ticket = tokens.begin(&email).await.unwrap();
+        tokens.revoke_all_for_user(&email).await.unwrap();
+        let result = tokens.issue(&email, ticket).await;
+        assert!(matches!(result, Err(SessionError::Superseded)));
+
+        // A login that begins afterwards gets a session, and it is the only one.
+        let ticket = tokens.begin(&email).await.unwrap();
+        let token = tokens.issue(&email, ticket).await.unwrap();
+        assert_eq!(store.get_session(&token.0).await.unwrap(), email);
+        tokens.revoke_all_for_user(&email).await.unwrap();
+        assert!(store.get_session(&token.0).await.is_err());
     }
 
     async fn scheme_with_user(
