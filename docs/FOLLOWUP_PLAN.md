@@ -336,15 +336,18 @@ usable:
   `delete_all_for_user` must advance it before deleting, and `issue` discards
   the new session if it changed (`SessionError::Superseded`).
 
-Still open after this, both needing an attacker to land whole requests inside
-the gaps between two consecutive store calls of a cleanup:
+Still open after this, needing an attacker to land whole requests inside the
+gaps between two consecutive store calls of a cleanup:
 - Securing an unproven account removes several credentials in sequence, and
   they can mint one another (a session enrols a passkey, a passkey logs in to a
   session). Closing that exactly needs a per-user "cleanup in progress" lock
   that refuses logins and enrolments for its duration (with an expiry, so a
   crashed cleanup cannot lock the user out), on top of the tickets.
-- A pending 2FA attempt (password already accepted) survives a password reset
-  or cleanup. With emailed codes only the mailbox owner can finish it.
+
+Closed alongside (2026-11-19): every credential reset and account deletion
+cancels a half-finished 2FA login for the user (first factor accepted, code
+not yet entered), and account deletion revokes a second time after the account
+is gone, so a password login that began while it still existed is voided.
 
 Ports the Phase 3 stores must implement because of this section:
 `OAuthIdentityStore::{has_identity_for_email, unlink_all_for_email}` (Postgres,

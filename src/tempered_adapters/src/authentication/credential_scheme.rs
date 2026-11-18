@@ -249,12 +249,22 @@ where
 #[async_trait]
 trait TwoFaChallenge {
     async fn issue_challenge(&self, email: &Email) -> Result<TwoFaAttemptId, TwoFaChallengeError>;
+
+    /// Drop a half-finished login for `email` (first factor accepted, code not
+    /// yet entered). Called whenever the account's credentials are reset or
+    /// the account is deleted: the first factor that login passed no longer
+    /// stands. Succeeds when there is none.
+    async fn cancel_pending(&self, email: &Email) -> Result<(), TwoFaChallengeError>;
 }
 
 #[async_trait]
 impl TwoFaChallenge for () {
     async fn issue_challenge(&self, _email: &Email) -> Result<TwoFaAttemptId, TwoFaChallengeError> {
         Err(TwoFaChallengeError::NotConfigured)
+    }
+
+    async fn cancel_pending(&self, _email: &Email) -> Result<(), TwoFaChallengeError> {
+        Ok(())
     }
 }
 
@@ -278,6 +288,13 @@ where
             .map_err(TwoFaChallengeError::Email)?;
 
         Ok(attempt_id)
+    }
+
+    async fn cancel_pending(&self, email: &Email) -> Result<(), TwoFaChallengeError> {
+        match self.store.delete(email).await {
+            Ok(()) | Err(TwoFaCodeStoreError::UserNotFound) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
@@ -834,6 +851,7 @@ where
             .await?;
         // A password change must strand whoever was holding the old password's
         // sessions — revoke every outstanding token (all devices).
+        self.two_fa.cancel_pending(&email).await?;
         self.tokens
             .revoke_all_for_user(&email)
             .await
@@ -873,11 +891,20 @@ where
         self.email_verify.forget(&email).await?;
         // A deleted user's token would otherwise keep validating until it
         // expires (JWT validation is signature-based, not a user-store read).
+        self.two_fa.cancel_pending(&email).await?;
         self.tokens
             .revoke_all_for_user(&email)
             .await
             .map_err(CredentialError::Token)?;
         self.user_store.delete_user(&email).await?;
+        // Revoked once more now that the account is gone. A password login
+        // that began after the first revocation, while the account still
+        // existed, is voided by this one; a login that begins after it finds
+        // no account.
+        self.tokens
+            .revoke_all_for_user(&email)
+            .await
+            .map_err(CredentialError::Token)?;
         Ok(())
     }
 }
@@ -944,6 +971,8 @@ where
             .validate(&email, &attempt_id, &code)
             .await?;
         self.two_fa.store.delete(&email).await?;
+        // The account may have been deleted since the first factor.
+        self.user_store.get_user(&email).await?;
         Ok(self
             .tokens
             .issue(&email, ticket)
@@ -1116,6 +1145,7 @@ where
 
         // A reset is a password change — typically *because* the account may
         // be compromised — so strand every outstanding session.
+        self.two_fa.cancel_pending(&email).await?;
         self.tokens
             .revoke_all_for_user(&email)
             .await
@@ -1278,7 +1308,7 @@ where
     ID: OAuthIdentityStore + Send + Sync,
     HC: OAuthHttpClient + Send + Sync,
     K: PasskeyCleanup + Send + Sync,
-    F: Send + Sync,
+    F: TwoFaChallenge + Send + Sync,
     L: Send + Sync,
     R: Send + Sync,
 {
@@ -1356,6 +1386,7 @@ where
             self.user_store.set_requires_2fa(email, false).await?;
         }
         self.passkeys.forget_user(email).await?;
+        self.two_fa.cancel_pending(email).await?;
         self.tokens
             .revoke_all_for_user(email)
             .await

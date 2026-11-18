@@ -555,6 +555,45 @@ mod oauth_tests {
     }
 
     #[tokio::test]
+    async fn a_half_finished_two_factor_login_does_not_survive_a_password_change() {
+        use crate::authentication::credential_scheme::PasswordCredentials;
+        use tempered_core::SupportsPasswordChange;
+
+        let users = HashMapUserStore::new();
+        add_account(&users, SIGNUP_PASSWORD, true).await;
+        let codes = HashMapTwoFaCodeStore::new();
+        let scheme = JwtScheme::new(
+            users.clone(),
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_2fa(codes.clone(), MockEmailClient::new());
+
+        // Someone gets past the password and holds a pending 2FA attempt.
+        let outcome = scheme
+            .login(PasswordCredentials {
+                email: Secret::new("user@example.com".to_string()),
+                password: Secret::new(SIGNUP_PASSWORD.to_string()),
+            })
+            .await
+            .unwrap();
+        let LoginOutcome::Requires2Fa { attempt_id, .. } = outcome else {
+            panic!("expected a 2FA challenge");
+        };
+        let (_, code) = codes
+            .get_login_attempt_id_and_two_fa_code(&email())
+            .await
+            .unwrap();
+
+        // The password they used is then replaced. The attempt rested on it.
+        let new_password = Password::try_from(Secret::new("a-brand-new-password".into())).unwrap();
+        scheme.change_password(email(), new_password).await.unwrap();
+
+        assert!(scheme.verify_2fa(email(), attempt_id, code).await.is_err());
+    }
+
+    #[tokio::test]
     async fn oauth_login_to_a_two_factor_account_fails_closed_without_two_factor_support() {
         // The scheme has no 2FA capability, so it cannot challenge this
         // (proven) account, and must not let the login through without it.
