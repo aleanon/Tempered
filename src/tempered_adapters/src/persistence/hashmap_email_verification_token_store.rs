@@ -54,4 +54,13 @@ impl EmailVerificationTokenStore for HashMapEmailVerificationTokenStore {
     async fn is_verified(&self, email: &Email) -> Result<bool, EmailVerificationStoreError> {
         Ok(self.verified.read().await.contains(email))
     }
+
+    async fn forget_email(&self, email: &Email) -> Result<(), EmailVerificationStoreError> {
+        self.verified.write().await.remove(email);
+        self.pending
+            .write()
+            .await
+            .retain(|_, pending| pending != email);
+        Ok(())
+    }
 }

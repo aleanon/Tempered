@@ -303,6 +303,19 @@ calls `OAuthFlow::link` last. `OAuthIdentityStore` gained
 `has_identity_for_email`, which the Phase 3 Postgres store must implement (an
 index on the email column).
 
+Proof belongs to an account, not to an address, so account deletion also
+clears the verified mark and pending verification tokens
+(`EmailVerificationTokenStore::forget_email`, which the Phase 3 Redis store
+must implement).
+
+**Known gap, waiting on the deferred decision about OAuth identity links.**
+Account deletion does not remove the account's provider links. If the owner
+deletes an account that had a provider linked and someone else then signs up
+with the same address, the stale link makes that new account count as proven
+and as already linked: the original owner's next provider login enters it
+without the reset. Closing this means removing the links on deletion
+(`OAuthIdentityStore::unlink_all_for_email`).
+
 Options that were considered and not taken: refuse OAuth login to a
 never-linked account (needs a "link a provider while logged in" route that
 does not exist yet); keep as is and document the risk.

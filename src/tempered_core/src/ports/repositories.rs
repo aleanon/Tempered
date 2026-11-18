@@ -189,6 +189,12 @@ pub trait EmailVerificationTokenStore: Send + Sync {
 
     /// Check whether the email address has been verified.
     async fn is_verified(&self, email: &Email) -> Result<bool, EmailVerificationStoreError>;
+
+    /// Forget everything held for `email`: its verified mark and any pending
+    /// verification tokens. Called when the account is deleted, so the proof
+    /// cannot be inherited by a later account that reuses the address.
+    /// Succeeds when there is nothing to forget.
+    async fn forget_email(&self, email: &Email) -> Result<(), EmailVerificationStoreError>;
 }
 
 // Passkey (WebAuthn) ports and errors

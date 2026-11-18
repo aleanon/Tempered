@@ -171,16 +171,21 @@ where
 
 /// Says whether an account's email address has been proven to belong to its
 /// user by the email-verification capability. `()` (capability not configured)
-/// has proven nothing.
+/// has proven nothing, and has nothing to forget when the account is deleted.
 #[async_trait]
 trait EmailProof {
     async fn is_proven(&self, email: &Email) -> Result<bool, EmailVerificationStoreError>;
+    async fn forget(&self, email: &Email) -> Result<(), EmailVerificationStoreError>;
 }
 
 #[async_trait]
 impl EmailProof for () {
     async fn is_proven(&self, _email: &Email) -> Result<bool, EmailVerificationStoreError> {
         Ok(false)
+    }
+
+    async fn forget(&self, _email: &Email) -> Result<(), EmailVerificationStoreError> {
+        Ok(())
     }
 }
 
@@ -192,6 +197,10 @@ where
 {
     async fn is_proven(&self, email: &Email) -> Result<bool, EmailVerificationStoreError> {
         self.store.is_verified(email).await
+    }
+
+    async fn forget(&self, email: &Email) -> Result<(), EmailVerificationStoreError> {
+        self.store.forget_email(email).await
     }
 }
 
@@ -793,7 +802,7 @@ where
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
-    M: Clone + Send + Sync + 'static,
+    M: EmailProof + Clone + Send + Sync + 'static,
     O: Clone + Send + Sync + 'static,
     K: PasskeyCleanup + Clone + Send + Sync + 'static,
 {
@@ -809,6 +818,9 @@ where
         // they cannot outlive it or be inherited by a later account that
         // reuses the address.
         self.passkeys.forget_user(&email).await?;
+        // Proof that the address was verified belongs to this account, not to
+        // the address: a later account that reuses it must prove it again.
+        self.email_verify.forget(&email).await?;
         // A deleted user's token would otherwise keep validating until it
         // expires (JWT validation is signature-based, not a user-store read).
         self.tokens
@@ -1246,18 +1258,27 @@ where
     /// three go before the provider's user is let in. A genuine user who
     /// signed up with a password loses it and sets a new one via password
     /// reset.
+    ///
+    /// The order closes the ways one credential can mint another while this
+    /// runs: the password first (no new password logins), then passkeys (no
+    /// new passkey logins), then sessions (which could still enrol a passkey),
+    /// then passkeys once more for one enrolled by a session that was still
+    /// alive a moment ago. What remains is the token strategy's own
+    /// granularity: a JWT issued in the same second as the revocation survives
+    /// until it expires (see `LocalJwtValidator`).
     async fn secure_unproven_account(
         &self,
         email: &Email,
     ) -> Result<(), CredentialError<T::Error>> {
-        self.passkeys.forget_user(email).await?;
         self.user_store
             .set_new_password(email, unknowable_password())
             .await?;
+        self.passkeys.forget_user(email).await?;
         self.tokens
             .revoke_all_for_user(email)
             .await
             .map_err(CredentialError::Token)?;
+        self.passkeys.forget_user(email).await?;
         Ok(())
     }
 }

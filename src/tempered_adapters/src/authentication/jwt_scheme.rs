@@ -112,8 +112,8 @@ mod oauth_tests {
     use tempered_core::{
         AuthValidator, AuthenticationScheme, Email, EmailVerificationTokenStore, HttpOAuth2Scheme,
         LoginOutcome, OAuthHttpClient, OAuthHttpError, OAuthIdentityStore, OAuthProviderConfig,
-        OAuthUserInfo, PasskeyCredentialStore, Password, SupportsOAuth2, SupportsPasskeys,
-        SupportsTwoFactor, TokenEpochStore, TwoFaCodeStore, User, UserStore,
+        OAuthUserInfo, PasskeyCredentialStore, Password, SupportsAccountDeletion, SupportsOAuth2,
+        SupportsPasskeys, SupportsTwoFactor, TokenEpochStore, TwoFaCodeStore, User, UserStore,
     };
 
     #[derive(Clone)]
@@ -306,7 +306,9 @@ mod oauth_tests {
 
         /// A scheme over this account's stores with OAuth, passkeys and email
         /// verification, with one passkey already enrolled.
-        async fn scheme(&self) -> impl SupportsOAuth2<Token = JwtToken> + use<> {
+        async fn scheme(
+            &self,
+        ) -> impl SupportsOAuth2<Token = JwtToken> + SupportsAccountDeletion + use<> {
             let scheme = JwtScheme::new(
                 self.users.clone(),
                 jwt_config(),
@@ -408,6 +410,23 @@ mod oauth_tests {
         let outcome = oauth_login(&scheme).await.unwrap();
         assert!(matches!(outcome, LoginOutcome::Success(_)));
         account.assert_untouched().await;
+    }
+
+    #[tokio::test]
+    async fn a_verified_mark_does_not_outlive_its_account() {
+        // The owner verified the address, then deleted the account.
+        let account = Account::signed_up().await;
+        account.verified.mark_verified(&email()).await.unwrap();
+        let scheme = account.scheme().await;
+        assert!(scheme.delete_account(email()).await.is_ok());
+        assert!(!account.verified.is_verified(&email()).await.unwrap());
+
+        // Someone signs up with the same address again. Nothing proves this
+        // new account's address, so a provider login secures it.
+        add_account(&account.users, SIGNUP_PASSWORD, false).await;
+        let outcome = oauth_login(&scheme).await.unwrap();
+        assert!(matches!(outcome, LoginOutcome::Success(_)));
+        assert!(!account.password_works(SIGNUP_PASSWORD).await);
     }
 
     #[tokio::test]
