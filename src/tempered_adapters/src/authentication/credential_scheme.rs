@@ -897,10 +897,12 @@ where
             .await
             .map_err(CredentialError::Token)?;
         self.user_store.delete_user(&email).await?;
-        // Revoked once more now that the account is gone. A password login
-        // that began after the first revocation, while the account still
-        // existed, is voided by this one; a login that begins after it finds
-        // no account.
+        // Both once more now that the account is gone. A password login that
+        // began after the first pass, while the account still existed, may
+        // have left a pending 2FA attempt or be about to get a token: the
+        // attempt is cancelled and the token voided. A login that begins
+        // after this finds no account.
+        self.two_fa.cancel_pending(&email).await?;
         self.tokens
             .revoke_all_for_user(&email)
             .await
