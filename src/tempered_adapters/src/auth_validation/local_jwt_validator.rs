@@ -179,14 +179,21 @@ pub fn generate_auth_token(
 /// The token strategy uses this to stamp a token no earlier than the user's
 /// revocation cutoff, so a login right after a "revoke all" is valid at once
 /// while every token from before it is rejected (see `validate_auth_token`).
+///
+/// The expiry is always measured from the real clock, never from `iat`: a
+/// stamp that runs ahead of the clock must not lengthen the token's life, or
+/// let it outlive the revocation record that covers it.
 pub fn generate_auth_token_issued_at(
     email: &Email,
     config: &JwtAuthConfig,
     iat: i64,
 ) -> Result<String, TokenAuthError> {
-    let exp = iat.checked_add(config.token_ttl_in_seconds as i64).ok_or(
-        TokenAuthError::UnexpectedError("Duration out of range".to_string()),
-    )?;
+    let exp = Utc::now()
+        .timestamp()
+        .checked_add(config.token_ttl_in_seconds as i64)
+        .ok_or(TokenAuthError::UnexpectedError(
+            "Duration out of range".to_string(),
+        ))?;
 
     // Cast exp to a usize, which is what Claims expects
     let exp: usize = exp

@@ -309,6 +309,32 @@ mod tests {
         assert!(!validates(&tokens, &next).await);
     }
 
+    #[tokio::test]
+    async fn a_stamp_ahead_of_the_clock_does_not_lengthen_the_token() {
+        use crate::auth_validation::local_jwt_validator::validate_auth_token;
+
+        let tokens = strategy();
+        // Several revocations within a second push the cutoff, and so the
+        // next token's stamp, ahead of the clock.
+        for _ in 0..5 {
+            tokens.revoke_all_for_user(&email()).await.unwrap();
+        }
+        let now = chrono::Utc::now().timestamp();
+        let token = tokens.issue(&email()).await.unwrap();
+
+        let claims = validate_auth_token(
+            token.as_str(),
+            &tokens.banned,
+            tokens.epoch.as_ref(),
+            &tokens.config,
+        )
+        .await
+        .unwrap();
+        assert!(claims.iat.unwrap() > now);
+        let ttl = tokens.config.token_ttl_in_seconds as usize;
+        assert!(claims.exp <= now as usize + ttl + 1);
+    }
+
     async fn validates(tokens: &JwtTokens<HashSetBannedTokenStore>, token: &JwtToken) -> bool {
         use tempered_core::AuthValidator;
 
