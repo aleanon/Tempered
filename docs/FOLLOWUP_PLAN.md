@@ -311,9 +311,11 @@ deferral of 2026-11-17). Without that, a later account reusing the address
 would count as proven and already linked.
 
 Securing an unproven account also turns its 2FA requirement off
-(`UserStore::set_requires_2fa`): the setting was chosen by whoever signed up,
-and the owner must not be held to a factor they did not set up. A proven
-account keeps its 2FA and is still challenged on an OAuth login.
+(`UserStore::set_requires_2fa`), but only when the scheme offers email
+verification and the address is unverified (decided 2026-11-19): the setting
+was then chosen by someone who never confirmed the address. Without email
+verification the scheme cannot tell a squatter from a genuine user, so 2FA
+stays and the OAuth login is challenged. A proven account always keeps its 2FA.
 
 **Revoke-all is exact to the token, not to the second** (decided 2026-11-18).
 `revoke_all_for_user` sets the cutoff one second past the latest stamp a token

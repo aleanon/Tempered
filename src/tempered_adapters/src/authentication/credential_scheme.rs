@@ -195,19 +195,30 @@ where
     }
 }
 
-/// Says whether an account's email address has been proven to belong to its
-/// user by the email-verification capability. `()` (capability not configured)
-/// has proven nothing, and has nothing to forget when the account is deleted.
+/// What the email-verification capability knows about an account's address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddressProof {
+    /// The owner confirmed the address.
+    Verified,
+    /// Verification is offered and this address has not been confirmed.
+    Unverified,
+    /// The scheme has no email verification, so it cannot tell either way.
+    Unknown,
+}
+
+/// Reads and clears the email-verification capability's proof of an account's
+/// address. `()` (capability not configured) knows nothing and has nothing to
+/// forget when the account is deleted.
 #[async_trait]
 trait EmailProof {
-    async fn is_proven(&self, email: &Email) -> Result<bool, EmailVerificationStoreError>;
+    async fn proof(&self, email: &Email) -> Result<AddressProof, EmailVerificationStoreError>;
     async fn forget(&self, email: &Email) -> Result<(), EmailVerificationStoreError>;
 }
 
 #[async_trait]
 impl EmailProof for () {
-    async fn is_proven(&self, _email: &Email) -> Result<bool, EmailVerificationStoreError> {
-        Ok(false)
+    async fn proof(&self, _email: &Email) -> Result<AddressProof, EmailVerificationStoreError> {
+        Ok(AddressProof::Unknown)
     }
 
     async fn forget(&self, _email: &Email) -> Result<(), EmailVerificationStoreError> {
@@ -221,8 +232,12 @@ where
     V: EmailVerificationTokenStore + Send + Sync,
     E: Send + Sync,
 {
-    async fn is_proven(&self, email: &Email) -> Result<bool, EmailVerificationStoreError> {
-        self.store.is_verified(email).await
+    async fn proof(&self, email: &Email) -> Result<AddressProof, EmailVerificationStoreError> {
+        Ok(if self.store.is_verified(email).await? {
+            AddressProof::Verified
+        } else {
+            AddressProof::Unverified
+        })
     }
 
     async fn forget(&self, email: &Email) -> Result<(), EmailVerificationStoreError> {
@@ -1269,14 +1284,20 @@ where
             Err(e) => return Err(e.into()),
         };
 
-        let proven = self.email_verify.is_proven(email).await?
-            || self.oauth.flow.has_linked_identity(email).await?;
-        if !proven {
-            self.secure_unproven_account(email).await?;
-            // The 2FA setting was among what got reset.
-            return Ok(false);
+        let proof = self.email_verify.proof(email).await?;
+        let proven =
+            proof == AddressProof::Verified || self.oauth.flow.has_linked_identity(email).await?;
+        if proven {
+            return Ok(existing.requires_2fa);
         }
-        Ok(existing.requires_2fa)
+
+        // The 2FA requirement is dropped only when the scheme positively knows
+        // the address was never confirmed. Without email verification every
+        // signup account looks unproven, and most of them are genuine: their
+        // owners keep the second factor they chose.
+        let drop_two_fa = proof == AddressProof::Unverified;
+        self.secure_unproven_account(email, drop_two_fa).await?;
+        Ok(existing.requires_2fa && !drop_two_fa)
     }
 
     /// Remove every way into an account that predates proof of its address.
@@ -1285,11 +1306,13 @@ where
     /// attacker can register a victim's address and wait for the victim to
     /// arrive through a provider ("account pre-hijacking"). Whoever created
     /// this account may still hold its password, a session, or a passkey: all
-    /// three go before the provider's user is let in. Its 2FA requirement goes
-    /// too: it was chosen by whoever signed up, and the owner should not be
-    /// held to a second factor they did not set up (or cannot pass). A genuine
-    /// user who signed up with a password loses it and sets a new one via
-    /// password reset, and turns 2FA back on if they want it.
+    /// three go before the provider's user is let in. A genuine user who
+    /// signed up with a password loses it and sets a new one via password
+    /// reset.
+    ///
+    /// With `drop_two_fa`, the account's 2FA requirement goes too: it was
+    /// chosen by whoever signed up, and the owner should not be held to a
+    /// second factor they did not set up (or cannot pass).
     ///
     /// The order closes the ways one credential can mint another while this
     /// runs: the password first (no new password logins), then passkeys (no
@@ -1299,11 +1322,14 @@ where
     async fn secure_unproven_account(
         &self,
         email: &Email,
+        drop_two_fa: bool,
     ) -> Result<(), CredentialError<T::Error>> {
         self.user_store
             .set_new_password(email, unknowable_password())
             .await?;
-        self.user_store.set_requires_2fa(email, false).await?;
+        if drop_two_fa {
+            self.user_store.set_requires_2fa(email, false).await?;
+        }
         self.passkeys.forget_user(email).await?;
         self.tokens
             .revoke_all_for_user(email)

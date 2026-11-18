@@ -111,10 +111,12 @@ the account is trusted as it is only if its address has been proven: by the
 email-verification capability, or by another provider already linked to it.
 Otherwise whoever signed up may not own the address, so before the user is let
 in the account's password is replaced with a random one, its sessions are
-revoked, its passkeys are removed and its 2FA requirement is switched off.
+revoked and its passkeys are removed. If the scheme offers email verification
+and the address was never confirmed, the account's 2FA requirement is switched
+off as well; without email verification the scheme cannot tell, and 2FA stays.
 Enable `.supports_email_verification(...)` alongside OAuth: without it every
-signup account counts as unproven, and a genuine user loses their password and
-2FA setting on their first provider login.
+signup account counts as unproven, and a genuine user loses their password on
+their first provider login.
 
 Login, logout, and verify-token are always present. Every default path can be
 overridden on the service builder (e.g. `.login("/signin")`).

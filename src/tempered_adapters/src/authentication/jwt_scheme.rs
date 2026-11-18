@@ -573,16 +573,46 @@ mod oauth_tests {
     }
 
     #[tokio::test]
-    async fn two_factor_set_at_an_unproven_signup_does_not_bind_the_owner() {
-        // Whoever signed up with this address turned 2FA on. Nothing proves
-        // they own the address, so the provider's user is not held to it:
-        // no challenge, and the requirement is gone from the account.
-        let (scheme, users) = scheme_with_oauth();
-        add_account(&users, SIGNUP_PASSWORD, true).await;
+    async fn two_factor_set_at_an_unverified_signup_does_not_bind_the_owner() {
+        // The scheme offers email verification and this address was never
+        // confirmed, yet whoever signed up turned 2FA on. The provider's user
+        // is not held to it: no challenge, and the requirement is gone.
+        let account = Account::signed_up().await;
+        account
+            .users
+            .set_requires_2fa(&email(), true)
+            .await
+            .unwrap();
+        let scheme = account.scheme().await;
 
         let outcome = oauth_login(&scheme).await.unwrap();
         assert!(matches!(outcome, LoginOutcome::Success(_)));
-        assert!(!users.get_user(&email()).await.unwrap().requires_2fa);
+        assert!(!account.users.get_user(&email()).await.unwrap().requires_2fa);
+        assert!(!account.password_works(SIGNUP_PASSWORD).await);
+    }
+
+    #[tokio::test]
+    async fn without_email_verification_an_unproven_account_keeps_its_two_factor() {
+        // No verification capability: the scheme cannot tell a squatter's
+        // account from a genuine one. The password still goes, but the second
+        // factor stays and the provider login is challenged.
+        let users = HashMapUserStore::new();
+        add_account(&users, SIGNUP_PASSWORD, true).await;
+        let scheme = JwtScheme::new(
+            users.clone(),
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_2fa(HashMapTwoFaCodeStore::new(), MockEmailClient::new())
+        .supports_oauth(flow());
+
+        let outcome = oauth_login(&scheme).await.unwrap();
+        assert!(matches!(outcome, LoginOutcome::Requires2Fa { .. }));
+        assert!(users.get_user(&email()).await.unwrap().requires_2fa);
+
+        let password = Password::try_from(Secret::new(SIGNUP_PASSWORD.into())).unwrap();
+        assert!(users.authenticate_user(&email(), &password).await.is_err());
     }
 
     fn header<'a>(response: &'a http::Response<String>, name: &str) -> Vec<&'a str> {
