@@ -414,8 +414,19 @@ pub trait RequiresEmailVerification: AuthenticationScheme {
         email: Email,
     ) -> Result<(), Self::EmailVerificationError>;
 
-    /// Verify the email by consuming the token from the verification link.
-    async fn verify_email(&self, token: String) -> Result<(), Self::EmailVerificationError>;
+    /// Verify `email` by consuming the token from the verification link.
+    ///
+    /// `email` MUST be the logged-in user's address, never a value from the
+    /// request. The token proves control of the inbox; the login proves the
+    /// account. Both are needed: with a public link, whoever signed up with
+    /// someone else's address could get the real owner to click it, and the
+    /// account (with the signer-up's password) would count as proven. A
+    /// token sent to another address is rejected, and burned.
+    async fn verify_email(
+        &self,
+        email: &Email,
+        token: String,
+    ) -> Result<(), Self::EmailVerificationError>;
 
     /// Returns `true` if the given email address has been verified.
     async fn is_email_verified(&self, email: &Email) -> Result<bool, Self::EmailVerificationError>;

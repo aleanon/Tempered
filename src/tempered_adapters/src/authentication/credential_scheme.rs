@@ -1299,18 +1299,27 @@ where
     }
 
     #[tracing::instrument(name = "CredentialScheme::verify_email", skip(self, token))]
-    async fn verify_email(&self, token: String) -> Result<(), Self::EmailVerificationError> {
+    async fn verify_email(
+        &self,
+        email: &Email,
+        token: String,
+    ) -> Result<(), Self::EmailVerificationError> {
         let token = EmailVerificationToken::parse(&token)
             .ok_or(CredentialError::InvalidVerificationToken)?;
 
-        let email = self
+        let sent_to = self
             .email_verify
             .store
             .consume_token(&token)
             .await
             .map_err(|_| CredentialError::InvalidVerificationToken)?;
+        // Answered exactly like an unknown token: the caller learns nothing
+        // about whose token it was.
+        if &sent_to != email {
+            return Err(CredentialError::InvalidVerificationToken);
+        }
 
-        self.email_verify.store.mark_verified(&email).await?;
+        self.email_verify.store.mark_verified(email).await?;
         Ok(())
     }
 

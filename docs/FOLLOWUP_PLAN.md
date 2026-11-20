@@ -221,6 +221,16 @@ the example's `DemoVerifier`.
   uses the Redis `SessionStore` from Phase 3 when `REDIS_HOST_NAME` is set and
   the in-memory one otherwise. Add it to the README example list.
 
+## Backlog
+
+- **Configurable rate limit on `/verify-email/resend`** (requested
+  2026-11-20). A logged-in user, including one squatting on someone else's
+  address, can make the library mail that address as often as they like.
+  Add a per-address limit (count per window, set on the email-verification
+  builder) backed by a store port with Redis and in-memory implementations;
+  over the limit, answer 429 without sending. Signup also sends a link, so
+  the same limit should count those.
+
 ---
 
 ## Port changes as executed (2026-11-17, branch `feat/pkce-and-webauthn-port`)
@@ -381,13 +391,23 @@ The user asked for nested tiers: login → verified → elevated. Built:
   verification.
 - Library routes in the verified tier: password change (login level), passkey
   enrolment (login level), `/elevate`. Account deletion, logout,
-  `/verify-token` and the new `POST /verify-email/resend` stay in the login
-  tier; `/verify-email` stays public.
+  `/verify-token`, the new `POST /verify-email/resend` and `/verify-email`
+  are in the login tier.
 - Signup sends the verification link (a failed send is logged; the account
   exists and the user can resend). Resending to a verified address sends
   nothing.
 - A provider login marks the address verified, under the credential lock so a
   concurrent deletion cannot leave the mark behind.
+
+**Verifying needs a login** (raised by an automated security review,
+decided 2026-11-20). With signup mailing the link, an attacker who signs up
+with the victim's address gets the link delivered to the victim; a public
+`/verify-email` let the victim's click prove the attacker's account, whose
+password then survived the victim's first provider login. Now
+`RequiresEmailVerification::verify_email(email, token)` takes the logged-in
+user's address and rejects (and burns) a token sent to any other address, and
+`/verify-email` is login-gated. A frontend that opens the link without a
+session sends the user to log in first. This is what GitHub does.
 
 ## Decisions (settled 2026-11-16)
 

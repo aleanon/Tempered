@@ -98,7 +98,12 @@ async fn status(app: &Router, request: Request<Body>) -> StatusCode {
 
 /// Sign up and log in, returning the `name=value` auth cookie.
 async fn signed_in(app: &Router) -> String {
-    let credentials = json!({ "email": EMAIL, "password": PASSWORD, "requires2FA": false });
+    signed_in_as(app, EMAIL).await
+}
+
+/// Sign up `email` and log in, returning the auth cookie.
+async fn signed_in_as(app: &Router, email: &str) -> String {
+    let credentials = json!({ "email": email, "password": PASSWORD, "requires2FA": false });
     let signup = status(app, request("POST", "/signup", None, credentials.clone())).await;
     assert!(signup.is_success(), "signup: {signup}");
 
@@ -153,8 +158,15 @@ async fn verifying_opens_the_verified_tier_without_a_new_login() {
     let sent = outbox.sent();
     assert_eq!(sent.len(), 2);
 
-    // The link is opened without a session.
-    let verify = request("POST", "/verify-email", None, json!({ "token": sent[1] }));
+    // The token alone is not enough: verifying needs the account's login.
+    let anonymous = request("POST", "/verify-email", None, json!({ "token": sent[1] }));
+    assert_eq!(status(&app, anonymous).await, StatusCode::UNAUTHORIZED);
+    let verify = request(
+        "POST",
+        "/verify-email",
+        Some(&cookie),
+        json!({ "token": sent[1] }),
+    );
     assert_eq!(status(&app, verify).await, StatusCode::OK);
 
     // The same cookie now reaches the verified tier: checked per request.
@@ -184,6 +196,37 @@ async fn an_unverified_user_can_still_delete_the_account() {
 
     let delete = request("DELETE", "/delete-account", Some(&cookie), json!({}));
     assert!(status(&app, delete).await.is_success());
+}
+
+#[tokio::test]
+async fn the_inbox_owner_cannot_verify_an_account_someone_else_created() {
+    // An attacker signs up with the victim's address; signup mails the link
+    // to the victim. The victim, logged in to an account of their own, opens
+    // it. The attacker's account must stay unproven.
+    let outbox = Outbox::default();
+    let app = app(&outbox);
+    let attackers = signed_in(&app).await;
+    let link = outbox.sent()[0].clone();
+
+    let victims = signed_in_as(&app, "victim-own@example.com").await;
+    let verify = request(
+        "POST",
+        "/verify-email",
+        Some(&victims),
+        json!({ "token": link }),
+    );
+    assert_eq!(status(&app, verify).await, StatusCode::BAD_REQUEST);
+
+    let billing = request("GET", "/billing", Some(&attackers), json!({}));
+    assert_eq!(status(&app, billing).await, StatusCode::FORBIDDEN);
+    // The token was spent by the failed attempt.
+    let verify = request(
+        "POST",
+        "/verify-email",
+        Some(&attackers),
+        json!({ "token": link }),
+    );
+    assert_eq!(status(&app, verify).await, StatusCode::BAD_REQUEST);
 }
 
 /// Log in again (the password change revoked the earlier cookie).

@@ -83,9 +83,13 @@ hand it to the service:
 - `.validated_elevated_router(router)` — protected by a short-lived elevated
   ("sudo") token; requires the `.supports_elevation(...)` capability.
 
-The tiers nest: public routes (login, signup, `/verify-email`), then any
-logged-in user (logout, `/verify-token`, `/verify-email/resend`, account
-deletion), then verified users, then elevated. With email verification on, the
+The tiers nest: public routes (login, signup), then any logged-in user
+(logout, `/verify-token`, `/verify-email`, `/verify-email/resend`, account
+deletion), then verified users, then elevated. Verifying needs both the token
+from the email and a login to the account it was sent for: the token alone
+would let the inbox owner prove an account someone else created with their
+address. A page that opens the link without a session should send the user to
+log in first, then post the token. With email verification on, the
 library's own credential-changing routes sit in the verified tier: password
 change, passkey enrolment and `/elevate` (so everything elevated is reached by
 a verified user). Without email verification the scheme cannot tell, and those
@@ -106,7 +110,7 @@ automatically:
 | Two-factor | `.supports_2fa(store, email_client)` | `POST /verify-2fa` |
 | Elevation ("sudo") | `.supports_elevation(ban_store, config, \|e\| ...)` | `POST /elevate`, elevated routes |
 | Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes |
-| Email verification | `.supports_email_verification(...)` | `POST /verify-email` (public), `POST /verify-email/resend` (logged in); signup sends the link; credential changes need a verified address |
+| Email verification | `.supports_email_verification(...)` | `POST /verify-email`, `POST /verify-email/resend` (both logged in); signup sends the link; credential changes need a verified address |
 | OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes |
 | Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey login routes (public) + enrolment routes (logged-in user only; add `e.supports_passkey_enrollment()` in the elevation closure to require a fresh re-authentication) |
 

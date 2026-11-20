@@ -392,12 +392,13 @@ where
     LoginClaims<Self>: IdentityClaims,
 {
     fn wire_email_verify(&self, mut routers: Routers<Self>, o: &PathOverrides) -> Routers<Self> {
-        // The link in the email is opened without a session → public.
-        routers.main_router = routers.main_router.route(
+        // Verifying needs the token (the inbox) and a login (the account):
+        // either alone could prove an account someone else created with the
+        // address. Login tier, not verified tier, like resending a link.
+        routers.validated_router = routers.validated_router.route(
             or(&o.verify_email, "/verify-email"),
-            post(crate::routes::verify_email::<Self>),
+            post(crate::routes::verify_email::<Self, LoginClaims<Self>>),
         );
-        // Another link, for a logged-in user who has not verified yet.
         routers.validated_router = routers.validated_router.route(
             or(&o.resend_verification, "/verify-email/resend"),
             post(crate::routes::resend_verification::<Self, LoginClaims<Self>>),
