@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, prefix, secret_hash, owner, scopes FROM api_keys WHERE prefix = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "prefix",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "secret_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "owner",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "scopes",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "56ee6dc0c04003623c7708ad65a1484dd4403b094885451d9f30ec945cd658cf"
+}

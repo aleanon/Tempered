@@ -68,3 +68,13 @@ impl ApiKeyStore for HashMapApiKeyStore {
             .collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn meets_the_api_key_store_contract() {
+        crate::persistence::contract::api_key_store(HashMapApiKeyStore::new()).await;
+    }
+}

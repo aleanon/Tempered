@@ -146,11 +146,18 @@ Every moving part is a trait, so you choose the backend:
 - **Banned-token store:** `HashSetBannedTokenStore` (dev) or `RedisBannedTokenStore`.
 - **Token-epoch store** (revoke-all on password change / account deletion):
   `HashMapTokenEpochStore` (dev) or `RedisTokenEpochStore`.
-- **Capability stores:** 2FA codes and password-reset tokens have in-memory
-  `HashMap*` (dev) and Redis (prod) implementations. Sessions, API keys,
-  email-verification tokens, OAuth state/identity, and passkey
-  challenges/credentials currently ship in-memory only — implement the port
-  trait for production (see [`docs/FOLLOWUP_PLAN.md`](docs/FOLLOWUP_PLAN.md)).
+- **Capability stores:** every store has an in-memory `HashMap*` (dev) and a
+  production implementation:
+  - Redis: `RedisSessionStore`, `RedisTwoFaCodeStore`,
+    `RedisPasswordResetTokenStore`, `RedisEmailVerificationTokenStore`,
+    `RedisOAuthStateStore`, `RedisChallengeStore` (passkey ceremonies).
+  - Postgres: `PostgresOAuthIdentityStore`, `PostgresPasskeyCredentialStore`,
+    `PostgresApiKeyStore`.
+
+  The Redis stores need Redis 6.2 or later (`GETDEL`/`GETEX`), and the one
+  holding the email-verified mark must persist (AOF/RDB). The Postgres stores'
+  tables are in `src/tempered_adapters/migrations/`; like `PostgresUserStore`,
+  the stores do not run them, so migrate at startup.
 - **Email client:** `MockEmailClient`, `PostmarkEmailClient`, or your own `EmailClient`.
 - **Token strategy:** JWT and session are both `CredentialScheme`s over a
   `TokenStrategy`; implement the trait to add a new token type.

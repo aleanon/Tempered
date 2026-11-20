@@ -125,7 +125,28 @@ tests passing, lean build verified. Deviations from the plan as written:
 
 ---
 
-## Phase 3 — Production stores for the new schemes
+## Phase 3 — Production stores for the new schemes ✅ DONE (2026-11-20)
+
+As built: `RedisSessionStore`, `RedisOAuthStateStore`, `RedisChallengeStore`,
+`RedisEmailVerificationTokenStore`, `PostgresOAuthIdentityStore`,
+`PostgresPasskeyCredentialStore`, `PostgresApiKeyStore`, one commit each, with
+three migrations and refreshed `.sqlx/`. Every port has one contract test in
+`persistence::contract`, run against both its in-memory and its production
+store (Redis 7 / Postgres containers). Choices made on the way:
+- The Redis stores need Redis 6.2+ (`GETDEL`, `GETEX`); the tests pin 7.4,
+  since the testcontainers default image is older.
+- Per-user Redis sets index sessions, passkey ceremonies and pending
+  verification tokens, written in the same transaction as the entry. The
+  session revocation counter never expires.
+- The verified mark lives in Redis without a TTL: that Redis must persist.
+- The sign-count rule is now part of `PasskeyCredentialStore`: an update that
+  does not advance the counter (unless both are 0) fails with the new
+  `PasskeyStoreError::SignCountNotAdvanced`, atomically (one conditional
+  `UPDATE` in Postgres, under the write lock in memory). A concurrent test
+  checks that exactly one of 16 replays wins.
+- `PostgresApiKeyStore` keeps ids as text; scopes are `TEXT[]`.
+
+Original plan:
 
 Seven ports have only a `HashMap*` implementation. Split by data lifetime:
 
