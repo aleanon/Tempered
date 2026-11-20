@@ -64,3 +64,16 @@ impl EmailVerificationTokenStore for HashMapEmailVerificationTokenStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn meets_the_email_verification_token_store_contract() {
+        crate::persistence::contract::email_verification_token_store(
+            HashMapEmailVerificationTokenStore::new(),
+        )
+        .await;
+    }
+}

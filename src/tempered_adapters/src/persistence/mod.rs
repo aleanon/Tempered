@@ -6,6 +6,8 @@ pub mod redis_banned_token_store;
 #[cfg(feature = "redis")]
 pub mod redis_challenge_store;
 #[cfg(feature = "redis")]
+pub mod redis_email_verification_token_store;
+#[cfg(feature = "redis")]
 pub mod redis_oauth_state_store;
 #[cfg(feature = "redis")]
 pub mod redis_password_reset_token_store;
@@ -45,6 +47,8 @@ pub use postgres_user_store::PostgresUserStore;
 pub use redis_banned_token_store::RedisBannedTokenStore;
 #[cfg(feature = "redis")]
 pub use redis_challenge_store::RedisChallengeStore;
+#[cfg(feature = "redis")]
+pub use redis_email_verification_token_store::RedisEmailVerificationTokenStore;
 #[cfg(feature = "redis")]
 pub use redis_oauth_state_store::RedisOAuthStateStore;
 #[cfg(feature = "redis")]
