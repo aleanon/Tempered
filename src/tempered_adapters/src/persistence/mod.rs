@@ -4,6 +4,8 @@ pub mod postgres_user_store;
 #[cfg(feature = "redis")]
 pub mod redis_banned_token_store;
 #[cfg(feature = "redis")]
+pub mod redis_challenge_store;
+#[cfg(feature = "redis")]
 pub mod redis_oauth_state_store;
 #[cfg(feature = "redis")]
 pub mod redis_password_reset_token_store;
@@ -41,6 +43,8 @@ pub(crate) mod test_support;
 pub use postgres_user_store::PostgresUserStore;
 #[cfg(feature = "redis")]
 pub use redis_banned_token_store::RedisBannedTokenStore;
+#[cfg(feature = "redis")]
+pub use redis_challenge_store::RedisChallengeStore;
 #[cfg(feature = "redis")]
 pub use redis_oauth_state_store::RedisOAuthStateStore;
 #[cfg(feature = "redis")]

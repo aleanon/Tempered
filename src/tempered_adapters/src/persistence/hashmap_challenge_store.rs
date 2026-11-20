@@ -48,3 +48,13 @@ impl ChallengeStore for HashMapChallengeStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn meets_the_challenge_store_contract() {
+        crate::persistence::contract::challenge_store(HashMapChallengeStore::new()).await;
+    }
+}

@@ -1,0 +1,137 @@
+use std::sync::Arc;
+
+use base64::{Engine, engine::general_purpose::STANDARD};
+use redis::Commands;
+use secrecy::{ExposeSecret, Secret};
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+
+use tempered_core::{
+    CeremonyId, CeremonyState, ChallengeStore, ChallengeStoreError, Email, PendingCeremony,
+};
+
+use super::redis_support::user_key;
+
+const CEREMONY_PREFIX: &str = "passkey_ceremony:";
+const USER_CEREMONIES_PREFIX: &str = "passkey_ceremonies:";
+
+/// Redis-backed [`ChallengeStore`] for in-flight WebAuthn ceremonies.
+///
+/// `passkey_ceremony:{id}` holds the user and the verifier's opaque state,
+/// expiring after `ttl_seconds` (a few minutes; browsers time a ceremony out
+/// after about five). Consumed with `GETDEL`. A per-user set lists the
+/// ceremonies started for a user, so they can be dropped when the user's
+/// credentials are removed.
+#[derive(Clone)]
+pub struct RedisChallengeStore {
+    client: Arc<RwLock<redis::Connection>>,
+    ttl_seconds: u64,
+}
+
+impl RedisChallengeStore {
+    pub fn new(client: Arc<RwLock<redis::Connection>>, ttl_seconds: u64) -> Self {
+        Self {
+            client,
+            ttl_seconds,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Stored {
+    user: Option<String>,
+    /// Base64 of the opaque state bytes.
+    state: String,
+}
+
+fn unexpected(e: impl std::fmt::Display) -> ChallengeStoreError {
+    ChallengeStoreError::UnexpectedError(e.to_string())
+}
+
+fn ceremony_key(id: &str) -> String {
+    format!("{CEREMONY_PREFIX}{id}")
+}
+
+#[async_trait::async_trait]
+impl ChallengeStore for RedisChallengeStore {
+    async fn store_ceremony(
+        &self,
+        id: CeremonyId,
+        ceremony: PendingCeremony,
+    ) -> Result<(), ChallengeStoreError> {
+        let value = serde_json::to_string(&Stored {
+            user: ceremony
+                .user
+                .as_ref()
+                .map(|e| e.as_ref().expose_secret().clone()),
+            state: STANDARD.encode(&ceremony.state.0),
+        })
+        .map_err(unexpected)?;
+
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .set_ex(ceremony_key(id.as_str()), value, self.ttl_seconds)
+            .ignore();
+        if let Some(user) = &ceremony.user {
+            let set = user_key(USER_CEREMONIES_PREFIX, user);
+            pipe.sadd(&set, id.as_str())
+                .ignore()
+                .expire(&set, self.ttl_seconds as i64)
+                .ignore();
+        }
+        pipe.query::<()>(&mut *self.client.write().await)
+            .map_err(unexpected)
+    }
+
+    async fn consume_ceremony(
+        &self,
+        id: &CeremonyId,
+    ) -> Result<PendingCeremony, ChallengeStoreError> {
+        let mut client = self.client.write().await;
+        let value: Option<String> = client
+            .get_del(ceremony_key(id.as_str()))
+            .map_err(unexpected)?;
+        let stored: Stored =
+            serde_json::from_str(&value.ok_or(ChallengeStoreError::ChallengeNotFound)?)
+                .map_err(unexpected)?;
+
+        let user = stored
+            .user
+            .map(|u| Email::try_from(Secret::new(u)).map_err(unexpected))
+            .transpose()?;
+        if let Some(user) = &user {
+            let _: i64 = client
+                .srem(user_key(USER_CEREMONIES_PREFIX, user), id.as_str())
+                .map_err(unexpected)?;
+        }
+        Ok(PendingCeremony {
+            user,
+            state: CeremonyState(STANDARD.decode(stored.state).map_err(unexpected)?),
+        })
+    }
+
+    async fn delete_all_for_user(&self, user: &Email) -> Result<(), ChallengeStoreError> {
+        let mut client = self.client.write().await;
+        let set = user_key(USER_CEREMONIES_PREFIX, user);
+        let ids: Vec<String> = client.smembers(&set).map_err(unexpected)?;
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        for id in &ids {
+            pipe.del(ceremony_key(id)).ignore();
+        }
+        pipe.del(&set).ignore();
+        pipe.query::<()>(&mut *client).map_err(unexpected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::{contract, test_support};
+
+    #[tokio::test]
+    async fn meets_the_challenge_store_contract() {
+        let (_redis, connection) = test_support::redis::connection().await;
+        contract::challenge_store(RedisChallengeStore::new(connection, 300)).await;
+    }
+}
