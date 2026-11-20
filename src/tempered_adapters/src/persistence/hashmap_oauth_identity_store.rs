@@ -62,3 +62,13 @@ impl OAuthIdentityStore for HashMapOAuthIdentityStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn meets_the_oauth_identity_store_contract() {
+        crate::persistence::contract::oauth_identity_store(HashMapOAuthIdentityStore::new()).await;
+    }
+}

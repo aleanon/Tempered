@@ -127,7 +127,7 @@ pub use tempered_adapters::email::PostmarkEmailClient;
 pub use tempered_adapters::oauth::ReqwestOAuthHttpClient;
 #[cfg(feature = "postgres")]
 pub use tempered_adapters::persistence::{
-    PostgresPasskeyCredentialStore,
+    PostgresOAuthIdentityStore, PostgresPasskeyCredentialStore,
     PostgresUserStore,
 };
 #[cfg(feature = "redis")]
