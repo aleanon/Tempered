@@ -203,7 +203,11 @@ where
     /// Remove every passkey enrolled for `email`. Call when the account is
     /// deleted, so its credentials cannot outlive it or be inherited by a later
     /// account that reuses the address.
+    ///
+    /// Enrolments the user has started but not finished are dropped too, so
+    /// one begun before this call cannot add a passkey after it.
     pub async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError> {
+        self.challenge_store.delete_all_for_user(email).await?;
         Ok(self.credential_store.delete_all_for_user(email).await?)
     }
 

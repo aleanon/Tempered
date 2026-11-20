@@ -13,6 +13,7 @@ use tempered_core::{Email, SessionId, SessionStore, SessionStoreError};
 pub struct HashMapSessionStore {
     sessions: Arc<RwLock<HashMap<SessionId, Email>>>,
     revocations: Arc<RwLock<HashMap<Email, u64>>>,
+    locks: super::user_locks::UserLocks,
 }
 
 impl HashMapSessionStore {
@@ -20,6 +21,7 @@ impl HashMapSessionStore {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             revocations: Arc::new(RwLock::new(HashMap::new())),
+            locks: Default::default(),
         }
     }
 }
@@ -74,5 +76,23 @@ impl SessionStore for HashMapSessionStore {
             .get(email)
             .copied()
             .unwrap_or(0))
+    }
+
+    async fn try_lock_user(
+        &self,
+        email: &Email,
+        holder: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool, SessionStoreError> {
+        Ok(self.locks.try_lock(email, holder, ttl_seconds).await)
+    }
+
+    async fn unlock_user(&self, email: &Email, holder: &str) -> Result<(), SessionStoreError> {
+        self.locks.unlock(email, holder).await;
+        Ok(())
+    }
+
+    async fn is_user_locked(&self, email: &Email) -> Result<bool, SessionStoreError> {
+        Ok(self.locks.is_locked(email).await)
     }
 }

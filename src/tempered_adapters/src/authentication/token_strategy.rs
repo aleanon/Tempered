@@ -69,6 +69,23 @@ pub trait TokenStrategy: Clone + Send + Sync + 'static {
     /// impl, visibly against this contract.
     async fn revoke_all_for_user(&self, email: &Email) -> Result<(), Self::Error>;
 
+    /// Take the user's credential lock, or `None` if someone else holds it.
+    ///
+    /// Held while the user's credentials are removed (account deletion,
+    /// securing an unproven account) and while a new credential is stored
+    /// (passkey enrolment), so the two cannot interleave: a session that is
+    /// about to be revoked cannot leave a fresh credential behind.
+    ///
+    /// Contract: the take is atomic; while the lock is held
+    /// [`begin`](Self::begin) fails for this user; the lock expires on its own
+    /// after [`USER_LOCK_TTL_SECONDS`], so a holder that crashed cannot lock
+    /// the user out.
+    async fn lock_user(&self, email: &Email) -> Result<Option<UserLock>, Self::Error>;
+
+    /// Release a lock taken with [`lock_user`](Self::lock_user). Releasing a
+    /// lock that has expired (and may be held by someone else) does nothing.
+    async fn unlock_user(&self, email: &Email, lock: UserLock) -> Result<(), Self::Error>;
+
     /// The validator middleware uses.
     fn validator(&self) -> &Self::Validator;
 
@@ -81,6 +98,31 @@ pub trait TokenStrategy: Clone + Send + Sync + 'static {
 
     /// Pull the token back out of a request.
     fn extract<R: AuthRequest>(&self, req: &R) -> Option<Self::Token>;
+}
+
+/// How long a credential lock lives if its holder never releases it. The work
+/// done under it is a handful of store calls.
+pub const USER_LOCK_TTL_SECONDS: u64 = 10;
+
+/// Proof of holding a user's credential lock: the random name it was taken
+/// under, which only the holder knows.
+#[derive(Debug)]
+pub struct UserLock {
+    holder: String,
+}
+
+impl UserLock {
+    /// A lock under a fresh random holder name.
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            holder: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    pub fn holder(&self) -> &str {
+        &self.holder
+    }
 }
 
 // ============================================================================
@@ -165,6 +207,14 @@ where
     type Ticket = JwtTicket;
 
     async fn begin(&self, email: &Email) -> Result<JwtTicket, JwtTokenError> {
+        if self
+            .epoch
+            .is_user_locked(email)
+            .await
+            .map_err(JwtTokenError::Cutoff)?
+        {
+            return Err(JwtTokenError::Locked);
+        }
         // The stamp the token will carry: now, or the user's revocation cutoff
         // if that is ahead of the clock (right after a "revoke all" the cutoff
         // is one second ahead, see below). An unreadable cutoff fails the
@@ -220,6 +270,23 @@ where
         Ok(())
     }
 
+    async fn lock_user(&self, email: &Email) -> Result<Option<UserLock>, JwtTokenError> {
+        let lock = UserLock::new();
+        let taken = self
+            .epoch
+            .try_lock_user(email, lock.holder(), USER_LOCK_TTL_SECONDS)
+            .await
+            .map_err(JwtTokenError::Lock)?;
+        Ok(taken.then_some(lock))
+    }
+
+    async fn unlock_user(&self, email: &Email, lock: UserLock) -> Result<(), JwtTokenError> {
+        self.epoch
+            .unlock_user(email, lock.holder())
+            .await
+            .map_err(JwtTokenError::Lock)
+    }
+
     fn validator(&self) -> &LocalJwtValidator<B> {
         &self.validator
     }
@@ -239,6 +306,9 @@ where
     }
 }
 
+/// What a client is told when a login or enrolment meets a held credential lock.
+pub(crate) const ACCOUNT_BUSY: &str = "The account is being updated; try again in a moment";
+
 /// When a JWT login began: the issued-at stamp its token will carry.
 #[derive(Debug, Clone, Copy)]
 pub struct JwtTicket {
@@ -256,6 +326,10 @@ pub enum JwtTokenError {
     RevokeAll(tempered_core::TokenEpochStoreError),
     #[error("Failed to read revocation cutoff: {0}")]
     Cutoff(tempered_core::TokenEpochStoreError),
+    #[error("The account is being updated")]
+    Locked,
+    #[error("Failed to take or release the credential lock: {0}")]
+    Lock(tempered_core::TokenEpochStoreError),
 }
 
 impl ClassifyError for JwtTokenError {
@@ -269,6 +343,11 @@ impl ClassifyError for JwtTokenError {
             }
             JwtTokenError::RevokeAll(e) => {
                 tracing::error!(error = %e, "failed to record revocation cutoff");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
+            JwtTokenError::Locked => (ErrorCategory::Conflict, ACCOUNT_BUSY.to_string()),
+            JwtTokenError::Lock(e) => {
+                tracing::error!(error = %e, "credential lock store error");
                 (ErrorCategory::Internal, "Internal error".to_string())
             }
             JwtTokenError::Cutoff(e) => {
@@ -379,6 +458,21 @@ mod tests {
         assert!(!validates(&tokens, &token).await);
 
         // A login that begins afterwards is unaffected.
+        assert!(validates(&tokens, &login(&tokens).await).await);
+    }
+
+    #[tokio::test]
+    async fn no_login_begins_while_the_user_is_locked() {
+        let tokens = strategy();
+
+        let lock = tokens.lock_user(&email()).await.unwrap().expect("free");
+        assert!(tokens.lock_user(&email()).await.unwrap().is_none());
+        assert!(matches!(
+            tokens.begin(&email()).await,
+            Err(JwtTokenError::Locked)
+        ));
+
+        tokens.unlock_user(&email(), lock).await.unwrap();
         assert!(validates(&tokens, &login(&tokens).await).await);
     }
 

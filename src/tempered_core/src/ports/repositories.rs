@@ -102,6 +102,28 @@ pub trait TokenEpochStore: Send + Sync {
     /// seconds). Implementations MUST keep the highest cutoff seen, never
     /// lower it.
     async fn revoke_before(&self, email: &Email, cutoff: i64) -> Result<(), TokenEpochStoreError>;
+
+    /// Try to take the user's **credential lock** for `ttl_seconds`, as
+    /// `holder`. Returns `false` if someone else holds it.
+    ///
+    /// The lock makes "remove this user's credentials" and "store a new
+    /// credential for this user" mutually exclusive, and logins are refused
+    /// while it is held. Implementations MUST make the take atomic
+    /// (compare-and-set) and MUST let the lock expire after `ttl_seconds`, so
+    /// a holder that crashed cannot lock the user out.
+    async fn try_lock_user(
+        &self,
+        email: &Email,
+        holder: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool, TokenEpochStoreError>;
+
+    /// Release the user's credential lock, if `holder` still holds it. A lock
+    /// that expired and was taken by someone else MUST be left alone.
+    async fn unlock_user(&self, email: &Email, holder: &str) -> Result<(), TokenEpochStoreError>;
+
+    /// Whether anyone holds the user's credential lock right now.
+    async fn is_user_locked(&self, email: &Email) -> Result<bool, TokenEpochStoreError>;
 }
 
 // TwoFaCodeStore port trait and errors
@@ -280,6 +302,11 @@ pub trait ChallengeStore: Send + Sync {
         &self,
         id: &CeremonyId,
     ) -> Result<PendingCeremony, ChallengeStoreError>;
+
+    /// Drop every pending ceremony bound to `user` (usernameless ceremonies
+    /// carry no user and are untouched). Called when the user's credentials
+    /// are removed: an enrolment started before that must not finish after it.
+    async fn delete_all_for_user(&self, user: &Email) -> Result<(), ChallengeStoreError>;
 }
 
 // OAuth ports and errors
@@ -450,6 +477,28 @@ pub trait SessionStore: Send + Sync {
     /// Implementations MUST keep the count at least as long as a login can
     /// take; it never needs to decrease.
     async fn revocation_count(&self, email: &Email) -> Result<u64, SessionStoreError>;
+
+    /// Try to take the user's **credential lock** for `ttl_seconds`, as
+    /// `holder`. Returns `false` if someone else holds it.
+    ///
+    /// The lock makes "remove this user's credentials" and "store a new
+    /// credential for this user" mutually exclusive, and logins are refused
+    /// while it is held. Implementations MUST make the take atomic
+    /// (compare-and-set) and MUST let the lock expire after `ttl_seconds`, so
+    /// a holder that crashed cannot lock the user out.
+    async fn try_lock_user(
+        &self,
+        email: &Email,
+        holder: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool, SessionStoreError>;
+
+    /// Release the user's credential lock, if `holder` still holds it. A lock
+    /// that expired and was taken by someone else MUST be left alone.
+    async fn unlock_user(&self, email: &Email, holder: &str) -> Result<(), SessionStoreError>;
+
+    /// Whether anyone holds the user's credential lock right now.
+    async fn is_user_locked(&self, email: &Email) -> Result<bool, SessionStoreError>;
 }
 
 #[async_trait]

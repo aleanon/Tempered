@@ -336,13 +336,22 @@ usable:
   `delete_all_for_user` must advance it before deleting, and `issue` discards
   the new session if it changed (`SessionError::Superseded`).
 
-Still open after this, needing an attacker to land whole requests inside the
-gaps between two consecutive store calls of a cleanup:
-- Securing an unproven account removes several credentials in sequence, and
-  they can mint one another (a session enrols a passkey, a passkey logs in to a
-  session). Closing that exactly needs a per-user "cleanup in progress" lock
-  that refuses logins and enrolments for its duration (with an expiry, so a
-  crashed cleanup cannot lock the user out), on top of the tickets.
+**A per-user credential lock** (built 2026-11-20, closing the last gap of
+this section). Securing an unproven account removes several credentials in
+sequence, and they could mint one another in between (a session enrols a
+passkey, a passkey logs in to a session). Now:
+- `TokenStrategy::lock_user` / `unlock_user` take and release a per-user lock
+  with a 10 s expiry (`USER_LOCK_TTL_SECONDS`), so a crashed holder cannot
+  lock the user out. JWT keeps it in the `TokenEpochStore`, sessions in the
+  `SessionStore`; Redis uses `SET NX EX` and a compare-and-delete script.
+- Securing an unproven account, account deletion and finishing a passkey
+  enrolment all run under it; `begin` refuses a login while it is held
+  (409, "try again in a moment"). The scheme waits up to ~1 s for a held lock.
+- Removing a user's passkeys also drops their unfinished enrolments
+  (`ChallengeStore::delete_all_for_user`), so an enrolment started from a
+  session that is then revoked finds no ceremony under the lock.
+- The old ordering and the second passkey pass stay, for a lock that expires
+  under a store stalled for more than 10 s.
 
 Closed alongside (2026-11-19): every credential reset and account deletion
 cancels a half-finished 2FA login for the user (first factor accepted, code
@@ -352,7 +361,10 @@ is gone, so a password login that began while it still existed is voided.
 Ports the Phase 3 stores must implement because of this section:
 `OAuthIdentityStore::{has_identity_for_email, unlink_all_for_email}` (Postgres,
 index on email), `EmailVerificationTokenStore::forget_email` (Redis) and
-`SessionStore::revocation_count` (Redis: `INCR` before deleting).
+`SessionStore::revocation_count` (Redis: `INCR` before deleting),
+`SessionStore::{try_lock_user, unlock_user, is_user_locked}` (Redis: as in
+`RedisTokenEpochStore`) and `ChallengeStore::delete_all_for_user` (Redis: keep
+a per-user set of ceremony ids, or scan).
 
 Options that were considered and not taken: refuse OAuth login to a
 never-linked account (needs a "link a provider while logged in" route that

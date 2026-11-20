@@ -950,6 +950,102 @@ mod passkey_tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn an_enrolment_started_before_the_account_was_deleted_cannot_finish() {
+        let (scheme, users) = scheme_with_passkeys().await;
+        // Begun from a session of the old account...
+        let ceremony = scheme.start_passkey_registration(email()).await.unwrap();
+
+        scheme.delete_account(email()).await.unwrap();
+        let password = Password::try_from(Secret::new("another-password".to_string())).unwrap();
+        users
+            .add_user(User::new(email(), password, false))
+            .await
+            .unwrap();
+
+        // ...it must not add a passkey to the account that reuses the address.
+        let response = reply_with_count(&ceremony, "cred-abc", 0);
+        let result = scheme
+            .finish_passkey_registration(email(), ceremony.ceremony_id, response)
+            .await;
+        assert!(matches!(
+            result,
+            Err(CredentialError::Passkey(PasskeyFlowError::Challenge(
+                tempered_core::ChallengeStoreError::ChallengeNotFound
+            )))
+        ));
+    }
+
+    // Paused time: the scheme's short wait for the lock passes instantly.
+    #[tokio::test(start_paused = true)]
+    async fn nothing_logs_in_or_enrols_while_the_credentials_are_locked() {
+        use crate::authentication::token_strategy::{JwtTokenError, TokenStrategy};
+
+        let (scheme, _users) = scheme_with_passkeys().await;
+        enroll(&scheme, "cred-abc").await;
+        let enrolment = scheme.start_passkey_registration(email()).await.unwrap();
+        let login = scheme
+            .start_passkey_authentication(Some(email()))
+            .await
+            .unwrap();
+
+        // Someone is removing this user's credentials.
+        let lock = scheme
+            .token_strategy()
+            .lock_user(&email())
+            .await
+            .unwrap()
+            .expect("free");
+
+        let result = scheme
+            .finish_passkey_registration(
+                email(),
+                enrolment.ceremony_id.clone(),
+                reply_with_count(&enrolment, "cred-new", 0),
+            )
+            .await;
+        assert!(matches!(result, Err(CredentialError::AccountBusy)));
+
+        let result = scheme
+            .finish_passkey_authentication(
+                login.ceremony_id.clone(),
+                reply_with_count(&login, "cred-abc", 1),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(CredentialError::Token(JwtTokenError::Locked))
+        ));
+
+        let result = scheme
+            .login(
+                crate::authentication::credential_scheme::PasswordCredentials {
+                    email: Secret::new("user@example.com".to_string()),
+                    password: Secret::new("a-long-password".to_string()),
+                },
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(CredentialError::Token(JwtTokenError::Locked))
+        ));
+
+        // Deletion waits for the lock too, and gives up rather than run
+        // alongside the other holder.
+        assert!(matches!(
+            scheme.delete_account(email()).await,
+            Err(CredentialError::AccountBusy)
+        ));
+
+        // Released, everything works again.
+        scheme
+            .token_strategy()
+            .unlock_user(&email(), lock)
+            .await
+            .unwrap();
+        enroll(&scheme, "cred-new").await;
+    }
+
     /// A credential store that is down: every call fails.
     #[derive(Clone)]
     struct UnavailableCredentialStore;
@@ -1008,5 +1104,16 @@ mod passkey_tests {
         // not a deleted account whose passkeys are still in the store.
         assert!(scheme.delete_account(email()).await.is_err());
         assert!(users.get_user(&email()).await.is_ok());
+
+        // The failed deletion released its lock: the user can still log in.
+        let outcome = scheme
+            .login(
+                crate::authentication::credential_scheme::PasswordCredentials {
+                    email: Secret::new("user@example.com".to_string()),
+                    password: Secret::new("a-long-password".to_string()),
+                },
+            )
+            .await;
+        assert!(outcome.is_ok());
     }
 }

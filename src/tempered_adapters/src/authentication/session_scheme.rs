@@ -23,7 +23,9 @@ use tempered_core::{
 use thiserror::Error;
 
 use crate::authentication::credential_scheme::{CredentialScheme, ElevatedCapabilities, Elevation};
-use crate::authentication::token_strategy::TokenStrategy;
+use crate::authentication::token_strategy::{
+    ACCOUNT_BUSY, TokenStrategy, USER_LOCK_TTL_SECONDS, UserLock,
+};
 
 // ============================================================================
 // Configuration
@@ -94,6 +96,9 @@ where
     type Ticket = SessionTicket;
 
     async fn begin(&self, email: &Email) -> Result<SessionTicket, SessionError> {
+        if self.store.is_user_locked(email).await? {
+            return Err(SessionError::Locked);
+        }
         Ok(SessionTicket {
             revocations: self.store.revocation_count(email).await?,
         })
@@ -129,6 +134,19 @@ where
         // Sessions live server-side, so global revocation is just deleting them.
         self.store.delete_all_for_user(email).await?;
         Ok(())
+    }
+
+    async fn lock_user(&self, email: &Email) -> Result<Option<UserLock>, SessionError> {
+        let lock = UserLock::new();
+        let taken = self
+            .store
+            .try_lock_user(email, lock.holder(), USER_LOCK_TTL_SECONDS)
+            .await?;
+        Ok(taken.then_some(lock))
+    }
+
+    async fn unlock_user(&self, email: &Email, lock: UserLock) -> Result<(), SessionError> {
+        Ok(self.store.unlock_user(email, lock.holder()).await?)
     }
 
     fn validator(&self) -> &SessionValidator<S> {
@@ -270,6 +288,8 @@ pub enum SessionError {
     InvalidSession,
     #[error("Sessions were revoked while this login was in progress")]
     Superseded,
+    #[error("The account is being updated")]
+    Locked,
     #[error("Session store error: {0}")]
     Store(#[from] SessionStoreError),
 }
@@ -287,6 +307,7 @@ impl ClassifyError for SessionError {
                 ErrorCategory::Unauthorized,
                 "Sessions were revoked during login; log in again".to_string(),
             ),
+            SessionError::Locked => (ErrorCategory::Conflict, ACCOUNT_BUSY.to_string()),
             SessionError::Store(SessionStoreError::SessionNotFound) => (
                 ErrorCategory::Unauthorized,
                 "Session not found or expired".to_string(),
@@ -340,6 +361,26 @@ mod tests {
         assert_eq!(store.get_session(&token.0).await.unwrap(), email);
         tokens.revoke_all_for_user(&email).await.unwrap();
         assert!(store.get_session(&token.0).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn no_session_login_begins_while_the_user_is_locked() {
+        use super::SessionTokens;
+        use crate::authentication::token_strategy::TokenStrategy;
+
+        let tokens = SessionTokens::new(HashMapSessionStore::new(), config());
+        let email = Email::try_from(Secret::new("user@example.com".to_string())).unwrap();
+
+        let lock = tokens.lock_user(&email).await.unwrap().expect("free");
+        assert!(tokens.lock_user(&email).await.unwrap().is_none());
+        assert!(matches!(
+            tokens.begin(&email).await,
+            Err(SessionError::Locked)
+        ));
+
+        tokens.unlock_user(&email, lock).await.unwrap();
+        let ticket = tokens.begin(&email).await.unwrap();
+        assert!(tokens.issue(&email, ticket).await.is_ok());
     }
 
     async fn scheme_with_user(

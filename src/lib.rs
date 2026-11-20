@@ -106,7 +106,9 @@ pub use tempered_adapters::{
         SessionClaims, SessionConfig, SessionError, SessionScheme, SessionTicket, SessionToken,
         SessionTokens,
     },
-    authentication::token_strategy::{JwtTicket, JwtToken, JwtTokens, TokenStrategy},
+    authentication::token_strategy::{
+        JwtTicket, JwtToken, JwtTokens, TokenStrategy, USER_LOCK_TTL_SECONDS, UserLock,
+    },
     email::MockEmailClient,
     oauth::{OAuthFlow, OAuthFlowError, VerifiedIdentity, pkce_challenge_s256},
     passkey::{PasskeyFlow, PasskeyFlowError},

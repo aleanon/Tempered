@@ -15,6 +15,7 @@ use tempered_core::{Email, TokenEpochStore, TokenEpochStoreError};
 #[derive(Default, Clone)]
 pub struct HashMapTokenEpochStore {
     cutoffs: Arc<RwLock<HashMap<Email, i64>>>,
+    locks: super::user_locks::UserLocks,
 }
 
 impl HashMapTokenEpochStore {
@@ -35,6 +36,24 @@ impl TokenEpochStore for HashMapTokenEpochStore {
         // Never lower an existing cutoff (contract).
         *entry = (*entry).max(cutoff);
         Ok(())
+    }
+
+    async fn try_lock_user(
+        &self,
+        email: &Email,
+        holder: &str,
+        ttl_seconds: u64,
+    ) -> Result<bool, TokenEpochStoreError> {
+        Ok(self.locks.try_lock(email, holder, ttl_seconds).await)
+    }
+
+    async fn unlock_user(&self, email: &Email, holder: &str) -> Result<(), TokenEpochStoreError> {
+        self.locks.unlock(email, holder).await;
+        Ok(())
+    }
+
+    async fn is_user_locked(&self, email: &Email) -> Result<bool, TokenEpochStoreError> {
+        Ok(self.locks.is_locked(email).await)
     }
 }
 

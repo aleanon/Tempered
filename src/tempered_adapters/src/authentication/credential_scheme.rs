@@ -32,7 +32,7 @@ use tempered_core::{
 };
 use thiserror::Error;
 
-use crate::authentication::token_strategy::TokenStrategy;
+use crate::authentication::token_strategy::{ACCOUNT_BUSY, TokenStrategy, UserLock};
 use crate::oauth::{OAuthFlow, OAuthFlowError};
 use crate::passkey::{PasskeyFlow, PasskeyFlowError};
 
@@ -641,6 +641,49 @@ impl ElevatedCapabilities {
 
 impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
 where
+    U: Send + Sync,
+    T: TokenStrategy,
+    F: Send + Sync,
+    L: Send + Sync,
+    R: Send + Sync,
+    M: Send + Sync,
+    O: Send + Sync,
+    K: Send + Sync,
+{
+    /// Take the user's credential lock (see [`TokenStrategy::lock_user`]),
+    /// waiting briefly if it is held: the work done under it is a few store
+    /// calls, so it is normally free again within milliseconds.
+    async fn lock_credentials(&self, email: &Email) -> Result<UserLock, CredentialError<T::Error>> {
+        for attempt in 0..LOCK_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(LOCK_RETRY_DELAY).await;
+            }
+            if let Some(lock) = self
+                .tokens
+                .lock_user(email)
+                .await
+                .map_err(CredentialError::Token)?
+            {
+                return Ok(lock);
+            }
+        }
+        Err(CredentialError::AccountBusy)
+    }
+
+    /// Release the lock. A failure is logged, not returned: the work under the
+    /// lock has its own result, and the lock expires by itself.
+    async fn unlock_credentials(&self, email: &Email, lock: UserLock) {
+        if let Err(e) = self.tokens.unlock_user(email, lock).await {
+            tracing::error!(error = %e, "failed to release the credential lock; it will expire");
+        }
+    }
+}
+
+const LOCK_ATTEMPTS: u32 = 20;
+const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
     T: TokenStrategy,
 {
     pub fn cookie_name(&self) -> &str {
@@ -876,38 +919,46 @@ where
 
     #[tracing::instrument(name = "CredentialScheme::delete_account", skip(self))]
     async fn delete_account(&self, email: Email) -> Result<(), Self::AccountDeletionError> {
-        // Order matters: everything that can log in as this user goes first,
-        // the account last. If a step fails, what remains is an account with
-        // fewer credentials — never credentials or sessions without an account.
+        // Under the credential lock: no login begins and no passkey is
+        // enrolled for this user until the account is gone.
+        let lock = self.lock_credentials(&email).await?;
+        let result: Result<(), Self::AccountDeletionError> = async {
+            // Order matters: everything that can log in as this user goes first,
+            // the account last. If a step fails, what remains is an account with
+            // fewer credentials — never credentials or sessions without an account.
 
-        // Passkeys are a login credential for this account: remove them, so
-        // they cannot outlive it or be inherited by a later account that
-        // reuses the address.
-        self.passkeys.forget_user(&email).await?;
-        // So are its provider links, which also count as proof of the address.
-        self.oauth.forget_user(&email).await?;
-        // Proof that the address was verified belongs to this account, not to
-        // the address: a later account that reuses it must prove it again.
-        self.email_verify.forget(&email).await?;
-        // A deleted user's token would otherwise keep validating until it
-        // expires (JWT validation is signature-based, not a user-store read).
-        self.two_fa.cancel_pending(&email).await?;
-        self.tokens
-            .revoke_all_for_user(&email)
-            .await
-            .map_err(CredentialError::Token)?;
-        self.user_store.delete_user(&email).await?;
-        // Both once more now that the account is gone. A password login that
-        // began after the first pass, while the account still existed, may
-        // have left a pending 2FA attempt or be about to get a token: the
-        // attempt is cancelled and the token voided. A login that begins
-        // after this finds no account.
-        self.two_fa.cancel_pending(&email).await?;
-        self.tokens
-            .revoke_all_for_user(&email)
-            .await
-            .map_err(CredentialError::Token)?;
-        Ok(())
+            // Passkeys are a login credential for this account: remove them, so
+            // they cannot outlive it or be inherited by a later account that
+            // reuses the address.
+            self.passkeys.forget_user(&email).await?;
+            // So are its provider links, which also count as proof of the address.
+            self.oauth.forget_user(&email).await?;
+            // Proof that the address was verified belongs to this account, not to
+            // the address: a later account that reuses it must prove it again.
+            self.email_verify.forget(&email).await?;
+            // A deleted user's token would otherwise keep validating until it
+            // expires (JWT validation is signature-based, not a user-store read).
+            self.two_fa.cancel_pending(&email).await?;
+            self.tokens
+                .revoke_all_for_user(&email)
+                .await
+                .map_err(CredentialError::Token)?;
+            self.user_store.delete_user(&email).await?;
+            // Both once more now that the account is gone. A password login that
+            // began after the first pass, while the account still existed, may
+            // have left a pending 2FA attempt or be about to get a token: the
+            // attempt is cancelled and the token voided. A login that begins
+            // after this finds no account.
+            self.two_fa.cancel_pending(&email).await?;
+            self.tokens
+                .revoke_all_for_user(&email)
+                .await
+                .map_err(CredentialError::Token)?;
+            Ok(())
+        }
+        .await;
+        self.unlock_credentials(&email, lock).await;
+        result
     }
 }
 
@@ -1371,30 +1422,38 @@ where
     /// chosen by whoever signed up, and the owner should not be held to a
     /// second factor they did not set up (or cannot pass).
     ///
-    /// The order closes the ways one credential can mint another while this
-    /// runs: the password first (no new password logins), then passkeys (no
-    /// new passkey logins), then sessions (which could still enrol a passkey),
-    /// then passkeys once more for one enrolled by a session that was still
-    /// alive a moment ago.
+    /// It all happens under the user's credential lock, so one credential
+    /// cannot mint another while this runs: no login begins, and a session
+    /// that is about to be revoked cannot enrol a passkey (enrolment takes the
+    /// same lock, and enrolments already started are dropped with the
+    /// passkeys). The order and the second passkey pass are what remains if
+    /// the lock expires under a stalled store: password first (no new password
+    /// logins), then passkeys, then sessions, then passkeys once more.
     async fn secure_unproven_account(
         &self,
         email: &Email,
         drop_two_fa: bool,
     ) -> Result<(), CredentialError<T::Error>> {
-        self.user_store
-            .set_new_password(email, unknowable_password())
-            .await?;
-        if drop_two_fa {
-            self.user_store.set_requires_2fa(email, false).await?;
+        let lock = self.lock_credentials(email).await?;
+        let result: Result<(), CredentialError<T::Error>> = async {
+            self.user_store
+                .set_new_password(email, unknowable_password())
+                .await?;
+            if drop_two_fa {
+                self.user_store.set_requires_2fa(email, false).await?;
+            }
+            self.passkeys.forget_user(email).await?;
+            self.two_fa.cancel_pending(email).await?;
+            self.tokens
+                .revoke_all_for_user(email)
+                .await
+                .map_err(CredentialError::Token)?;
+            self.passkeys.forget_user(email).await?;
+            Ok(())
         }
-        self.passkeys.forget_user(email).await?;
-        self.two_fa.cancel_pending(email).await?;
-        self.tokens
-            .revoke_all_for_user(email)
-            .await
-            .map_err(CredentialError::Token)?;
-        self.passkeys.forget_user(email).await?;
-        Ok(())
+        .await;
+        self.unlock_credentials(email, lock).await;
+        result
     }
 }
 
@@ -1551,10 +1610,18 @@ where
         ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<(), Self::PasskeyError> {
-        self.passkeys
+        // Storing a credential and removing a user's credentials exclude each
+        // other. The session that authorised this request may have been
+        // revoked since the middleware checked it; if so, the same cleanup
+        // dropped the ceremony, and the flow finds none under the lock.
+        let lock = self.lock_credentials(&email).await?;
+        let result = self
+            .passkeys
             .flow
             .finish_registration(&email, ceremony_id, response)
-            .await?;
+            .await;
+        self.unlock_credentials(&email, lock).await;
+        result?;
         Ok(())
     }
 
@@ -1665,6 +1732,9 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
 
     #[error("Passkey error: {0}")]
     Passkey(#[from] PasskeyFlowError),
+
+    #[error("The account is being updated")]
+    AccountBusy,
 }
 
 impl<TE> ClassifyError for CredentialError<TE>
@@ -1735,6 +1805,8 @@ where
                 tracing::error!(error = %e, "email verification store error");
                 (ErrorCategory::Internal, "Internal error".to_string())
             }
+
+            CredentialError::AccountBusy => (ErrorCategory::Conflict, ACCOUNT_BUSY.to_string()),
 
             CredentialError::OAuth(e) => e.classify(),
             CredentialError::Passkey(e) => e.classify(),

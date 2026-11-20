@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use tempered_core::{CeremonyId, ChallengeStore, ChallengeStoreError, PendingCeremony};
+use tempered_core::{CeremonyId, ChallengeStore, ChallengeStoreError, Email, PendingCeremony};
 
 /// In-memory single-use store for in-flight WebAuthn ceremonies.
 ///
@@ -38,5 +38,13 @@ impl ChallengeStore for HashMapChallengeStore {
             .await
             .remove(id)
             .ok_or(ChallengeStoreError::ChallengeNotFound)
+    }
+
+    async fn delete_all_for_user(&self, user: &Email) -> Result<(), ChallengeStoreError> {
+        self.ceremonies
+            .write()
+            .await
+            .retain(|_, ceremony| ceremony.user.as_ref() != Some(user));
+        Ok(())
     }
 }
