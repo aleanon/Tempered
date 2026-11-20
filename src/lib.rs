@@ -129,7 +129,8 @@ pub use tempered_adapters::oauth::ReqwestOAuthHttpClient;
 pub use tempered_adapters::persistence::PostgresUserStore;
 #[cfg(feature = "redis")]
 pub use tempered_adapters::persistence::{
-    RedisBannedTokenStore, RedisPasswordResetTokenStore, RedisSessionStore, RedisTokenEpochStore,
+    RedisBannedTokenStore,
+    RedisOAuthStateStore, RedisPasswordResetTokenStore, RedisSessionStore, RedisTokenEpochStore,
     RedisTwoFaCodeStore,
 };
 

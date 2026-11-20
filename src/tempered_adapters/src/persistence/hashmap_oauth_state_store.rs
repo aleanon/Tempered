@@ -45,38 +45,9 @@ impl OAuthStateStore for HashMapOAuthStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secrecy::{ExposeSecret, Secret};
-
-    fn pending(provider: &str, verifier: &str) -> PendingAuthorization {
-        PendingAuthorization {
-            provider: provider.to_string(),
-            code_verifier: Secret::new(verifier.to_string()),
-        }
-    }
 
     #[tokio::test]
-    async fn consume_returns_the_pending_request_exactly_once() {
-        let store = HashMapOAuthStateStore::new();
-        store
-            .store_state("s1".to_string(), pending("google", "verifier-1"))
-            .await
-            .unwrap();
-
-        let found = store.consume_state("s1").await.unwrap();
-        assert_eq!(found.provider, "google");
-        assert_eq!(found.code_verifier.expose_secret(), "verifier-1");
-        assert!(matches!(
-            store.consume_state("s1").await,
-            Err(OAuthStateStoreError::UnknownState)
-        ));
-    }
-
-    #[tokio::test]
-    async fn unknown_state_is_rejected() {
-        let store = HashMapOAuthStateStore::new();
-        assert!(matches!(
-            store.consume_state("never-stored").await,
-            Err(OAuthStateStoreError::UnknownState)
-        ));
+    async fn meets_the_oauth_state_store_contract() {
+        crate::persistence::contract::oauth_state_store(HashMapOAuthStateStore::new()).await;
     }
 }
