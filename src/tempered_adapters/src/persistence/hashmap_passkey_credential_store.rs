@@ -75,6 +75,13 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
         let cred = map
             .get_mut(id)
             .ok_or(PasskeyStoreError::CredentialNotFound)?;
+        // Checked under the same write lock as the update (the port's
+        // contract).
+        let advances =
+            new_sign_count > cred.sign_count || (new_sign_count == 0 && cred.sign_count == 0);
+        if !advances {
+            return Err(PasskeyStoreError::SignCountNotAdvanced);
+        }
         cred.sign_count = new_sign_count;
         if let Some(data) = credential_data {
             cred.credential_data = data;
@@ -88,5 +95,15 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
             .await
             .retain(|_, cred| &cred.owner != owner);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn meets_the_passkey_credential_store_contract() {
+        crate::persistence::contract::passkey_credential_store(HashMapPasskeyCredentialStore::new()).await;
     }
 }

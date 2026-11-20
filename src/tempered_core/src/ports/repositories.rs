@@ -234,6 +234,10 @@ pub enum PasskeyStoreError {
     CredentialNotFound,
     #[error("Credential id is already registered")]
     CredentialAlreadyExists,
+    /// The new signature counter does not advance the stored one: a replayed
+    /// or cloned authenticator's assertion, or one that lost a race.
+    #[error("Signature counter did not advance")]
+    SignCountNotAdvanced,
     #[error("Unexpected error: {0}")]
     UnexpectedError(String),
 }
@@ -257,6 +261,12 @@ pub trait PasskeyCredentialStore: Send + Sync {
 
     /// Record a successful authentication: set the signature counter and, when
     /// `credential_data` is `Some`, replace the stored opaque credential data.
+    ///
+    /// Only if `new_sign_count` is greater than the stored counter, or both
+    /// are 0 (an authenticator without a counter); otherwise fail with
+    /// [`PasskeyStoreError::SignCountNotAdvanced`] and change nothing. The
+    /// check and the write MUST be one atomic step (a conditional `UPDATE`),
+    /// so two concurrent logins with the same assertion cannot both succeed.
     async fn update_after_authentication(
         &self,
         id: &CredentialId,

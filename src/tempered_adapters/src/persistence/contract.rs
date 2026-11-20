@@ -191,3 +191,197 @@ pub(crate) async fn email_verification_token_store(
     assert!(store.is_verified(&bob).await.unwrap());
     assert_eq!(store.consume_token(&bobs).await.unwrap(), bob);
 }
+
+/// [`OAuthIdentityStore`]: links never move between accounts, and one
+/// account's links can be removed.
+pub(crate) async fn oauth_identity_store(store: impl tempered_core::OAuthIdentityStore) {
+    use tempered_core::OAuthIdentityStoreError;
+
+    let alice = email("alice@example.com");
+    let bob = email("bob@example.com");
+    let link = |provider: &str, subject: &str, to: &Email| {
+        store.link_identity(provider.to_string(), subject.to_string(), to.clone())
+    };
+
+    assert_eq!(store.find_email("google", "g-1").await.unwrap(), None);
+    assert!(!store.has_identity_for_email(&alice).await.unwrap());
+
+    link("google", "g-1", &alice).await.unwrap();
+    link("google", "g-1", &alice).await.unwrap(); // idempotent
+    assert_eq!(
+        store.find_email("google", "g-1").await.unwrap(),
+        Some(alice.clone())
+    );
+    assert!(store.has_identity_for_email(&alice).await.unwrap());
+    // Same subject at another provider is another identity.
+    assert_eq!(store.find_email("github", "g-1").await.unwrap(), None);
+
+    assert!(matches!(
+        link("google", "g-1", &bob).await,
+        Err(OAuthIdentityStoreError::AlreadyLinked)
+    ));
+    assert_eq!(
+        store.find_email("google", "g-1").await.unwrap(),
+        Some(alice.clone())
+    );
+
+    link("github", "h-1", &alice).await.unwrap();
+    link("github", "h-2", &bob).await.unwrap();
+    store.unlink_all_for_email(&alice).await.unwrap();
+    store.unlink_all_for_email(&alice).await.unwrap();
+    assert!(!store.has_identity_for_email(&alice).await.unwrap());
+    assert_eq!(store.find_email("google", "g-1").await.unwrap(), None);
+    assert_eq!(store.find_email("github", "h-1").await.unwrap(), None);
+    assert_eq!(
+        store.find_email("github", "h-2").await.unwrap(),
+        Some(bob.clone())
+    );
+    // Unlinked, the identity can be linked again (to a new account).
+    link("google", "g-1", &bob).await.unwrap();
+}
+
+/// [`PasskeyCredentialStore`]: insert-only ids, the sign-count rule, and
+/// removing one owner's credentials.
+pub(crate) async fn passkey_credential_store(store: impl tempered_core::PasskeyCredentialStore) {
+    use tempered_core::{CredentialId, PasskeyCredential, PasskeyStoreError};
+
+    let alice = email("alice@example.com");
+    let bob = email("bob@example.com");
+    let cred = |id: &str, owner: &Email, count: u32| PasskeyCredential {
+        credential_id: CredentialId(id.to_string()),
+        credential_data: vec![0, 1, 2, 255],
+        sign_count: count,
+        owner: owner.clone(),
+    };
+    let id = |s: &str| CredentialId(s.to_string());
+
+    store.add_credential(cred("a1", &alice, 5)).await.unwrap();
+    let found = store.get_credential(&id("a1")).await.unwrap();
+    assert_eq!(found.owner, alice);
+    assert_eq!(found.sign_count, 5);
+    assert_eq!(found.credential_data, vec![0, 1, 2, 255]);
+    assert!(matches!(
+        store.get_credential(&id("nope")).await,
+        Err(PasskeyStoreError::CredentialNotFound)
+    ));
+
+    // Insert-only, for any owner.
+    assert!(matches!(
+        store.add_credential(cred("a1", &bob, 0)).await,
+        Err(PasskeyStoreError::CredentialAlreadyExists)
+    ));
+    assert_eq!(store.get_credential(&id("a1")).await.unwrap().owner, alice);
+
+    // The counter must advance; data is replaced only when given.
+    store
+        .update_after_authentication(&id("a1"), 6, None)
+        .await
+        .unwrap();
+    let found = store.get_credential(&id("a1")).await.unwrap();
+    assert_eq!(found.sign_count, 6);
+    assert_eq!(found.credential_data, vec![0, 1, 2, 255]);
+    for stale in [6, 3] {
+        assert!(matches!(
+            store
+                .update_after_authentication(&id("a1"), stale, Some(vec![9]))
+                .await,
+            Err(PasskeyStoreError::SignCountNotAdvanced)
+        ));
+    }
+    store
+        .update_after_authentication(&id("a1"), 7, Some(vec![7, 7]))
+        .await
+        .unwrap();
+    let found = store.get_credential(&id("a1")).await.unwrap();
+    assert_eq!((found.sign_count, found.credential_data), (7, vec![7, 7]));
+    assert!(matches!(
+        store
+            .update_after_authentication(&id("nope"), 1, None)
+            .await,
+        Err(PasskeyStoreError::CredentialNotFound)
+    ));
+
+    // No counter at all: 0 stays 0.
+    store.add_credential(cred("a0", &alice, 0)).await.unwrap();
+    store
+        .update_after_authentication(&id("a0"), 0, None)
+        .await
+        .unwrap();
+    // A large counter survives the round trip.
+    store
+        .update_after_authentication(&id("a0"), u32::MAX, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_credential(&id("a0")).await.unwrap().sign_count,
+        u32::MAX
+    );
+
+    store.add_credential(cred("b1", &bob, 0)).await.unwrap();
+    let mut alices: Vec<String> = store
+        .list_for_user(&alice)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.credential_id.0)
+        .collect();
+    alices.sort();
+    assert_eq!(alices, ["a0", "a1"]);
+
+    store.delete_all_for_user(&alice).await.unwrap();
+    store.delete_all_for_user(&alice).await.unwrap();
+    assert!(store.list_for_user(&alice).await.unwrap().is_empty());
+    assert!(store.get_credential(&id("a1")).await.is_err());
+    assert_eq!(store.get_credential(&id("b1")).await.unwrap().owner, bob);
+}
+
+/// [`ApiKeyStore`]: lookup by prefix, per-owner listing, revocation.
+pub(crate) async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
+    use tempered_core::{ApiKeyId, ApiKeyRecord, ApiKeyStoreError};
+
+    let alice = email("alice@example.com");
+    let bob = email("bob@example.com");
+    let record = |prefix: &str, owner: &Email, scopes: &[&str]| ApiKeyRecord {
+        id: ApiKeyId::new(),
+        prefix: prefix.to_string(),
+        secret_hash: format!("hash-of-{prefix}"),
+        owner: owner.clone(),
+        scopes: scopes.iter().map(|s| s.to_string()).collect(),
+    };
+
+    let a1 = record("pa1", &alice, &["read", "write"]);
+    let a2 = record("pa2", &alice, &[]);
+    let b1 = record("pb1", &bob, &["read"]);
+    for r in [&a1, &a2, &b1] {
+        store.create_key(r.clone()).await.unwrap();
+    }
+
+    let found = store.find_by_prefix("pa1").await.unwrap();
+    assert_eq!(found.id, a1.id);
+    assert_eq!(found.secret_hash, "hash-of-pa1");
+    assert_eq!(found.owner, alice);
+    assert_eq!(found.scopes, ["read", "write"]);
+    assert!(matches!(
+        store.find_by_prefix("nope").await,
+        Err(ApiKeyStoreError::NotFound)
+    ));
+
+    let mut listed: Vec<String> = store
+        .list_for_user(&alice)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.prefix)
+        .collect();
+    listed.sort();
+    assert_eq!(listed, ["pa1", "pa2"]);
+
+    store.revoke_key(&a1.id).await.unwrap();
+    assert!(store.find_by_prefix("pa1").await.is_err());
+    assert!(matches!(
+        store.revoke_key(&a1.id).await,
+        Err(ApiKeyStoreError::NotFound)
+    ));
+    assert_eq!(store.list_for_user(&alice).await.unwrap().len(), 1);
+    assert_eq!(store.find_by_prefix("pb1").await.unwrap().owner, bob);
+}

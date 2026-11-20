@@ -1,5 +1,7 @@
 // Production persistence adapters (feature-gated)
 #[cfg(feature = "postgres")]
+pub mod postgres_passkey_credential_store;
+#[cfg(feature = "postgres")]
 pub mod postgres_user_store;
 #[cfg(feature = "redis")]
 pub mod redis_banned_token_store;
@@ -41,6 +43,8 @@ pub(crate) mod contract;
 pub(crate) mod test_support;
 
 // Re-exports
+#[cfg(feature = "postgres")]
+pub use postgres_passkey_credential_store::PostgresPasskeyCredentialStore;
 #[cfg(feature = "postgres")]
 pub use postgres_user_store::PostgresUserStore;
 #[cfg(feature = "redis")]

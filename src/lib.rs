@@ -126,7 +126,10 @@ pub use tempered_adapters::email::PostmarkEmailClient;
 #[cfg(feature = "oauth-client")]
 pub use tempered_adapters::oauth::ReqwestOAuthHttpClient;
 #[cfg(feature = "postgres")]
-pub use tempered_adapters::persistence::PostgresUserStore;
+pub use tempered_adapters::persistence::{
+    PostgresPasskeyCredentialStore,
+    PostgresUserStore,
+};
 #[cfg(feature = "redis")]
 pub use tempered_adapters::persistence::{
     RedisBannedTokenStore, RedisChallengeStore, RedisEmailVerificationTokenStore,

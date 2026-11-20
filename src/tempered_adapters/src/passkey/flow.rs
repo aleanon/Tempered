@@ -176,7 +176,12 @@ where
                 verified.new_sign_count,
                 verified.updated_credential_data,
             )
-            .await?;
+            .await
+            .map_err(|e| match e {
+                // Another login with the same counter got there first.
+                PasskeyStoreError::SignCountNotAdvanced => PasskeyFlowError::SignCountRegression,
+                other => other.into(),
+            })?;
 
         Ok((stored.owner, stored.credential_id))
     }

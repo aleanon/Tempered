@@ -34,7 +34,6 @@ pub(crate) mod redis {
 }
 
 #[cfg(feature = "postgres")]
-#[allow(dead_code)]
 pub(crate) mod postgres {
     use sqlx::PgPool;
     use testcontainers_modules::{
