@@ -370,6 +370,25 @@ Options that were considered and not taken: refuse OAuth login to a
 never-linked account (needs a "link a provider while logged in" route that
 does not exist yet); keep as is and document the risk.
 
+## Verified route tier (raised 2026-11-19, built 2026-11-20)
+
+The user asked for nested tiers: login → verified → elevated. Built:
+- `Routers::verified_router` sits inside the login bucket; with email
+  verification, `require_verified_email` (403 if unverified) runs after the
+  login middleware and looks the address up per request. Without email
+  verification the bucket is plain login routes.
+- `AuthService::verified_router(..)` exists only for schemes with email
+  verification.
+- Library routes in the verified tier: password change (login level), passkey
+  enrolment (login level), `/elevate`. Account deletion, logout,
+  `/verify-token` and the new `POST /verify-email/resend` stay in the login
+  tier; `/verify-email` stays public.
+- Signup sends the verification link (a failed send is logged; the account
+  exists and the user can resend). Resending to a verified address sends
+  nothing.
+- A provider login marks the address verified, under the credential lock so a
+  concurrent deletion cannot leave the mark behind.
+
 ## Decisions (settled 2026-11-16)
 
 1. **History rewrite (0.4)** — no. Rotate the secrets instead.

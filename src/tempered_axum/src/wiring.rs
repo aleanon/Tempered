@@ -25,7 +25,9 @@ use tempered_core::{
     SupportsPasswordReset, SupportsRegistration, SupportsTwoFactor,
 };
 
-use crate::route_config::{Routers, apply_elevated_validation, register_logout_with_elevation};
+use crate::route_config::{
+    Routers, apply_elevated_validation, apply_verified_email, register_logout_with_elevation,
+};
 
 /// Per-route path overrides. `None` → the route's default path.
 #[derive(Default)]
@@ -42,6 +44,7 @@ pub struct PathOverrides {
     pub password_reset_initiate: Option<String>,
     pub password_reset_complete: Option<String>,
     pub verify_email: Option<String>,
+    pub resend_verification: Option<String>,
     pub oauth_start: Option<String>,
     pub oauth_callback: Option<String>,
     pub passkey_prefix: Option<String>,
@@ -139,8 +142,13 @@ where
 
         // Password change / account deletion — login or elevation gated, or
         // off. Each bucket's handler reads the user from that bucket's claims.
+        // Changing a credential needs a verified address (at login level; the
+        // elevated bucket is reached through `/elevate`, which needs one too).
+        // Deleting the account does not: whoever signed up with a mistyped
+        // address can still remove it.
         routers = wire_sensitive(
             routers,
+            Tier::Verified,
             self.route_flags().password_change,
             &o.change_password,
             "/change-password",
@@ -165,6 +173,7 @@ where
         );
         routers = wire_sensitive(
             routers,
+            Tier::Login,
             self.route_flags().account_deletion,
             &o.delete_account,
             "/delete-account",
@@ -192,11 +201,24 @@ where
     }
 }
 
-/// Place a sensitive-op route on the validated or elevated bucket per its [`Authz`].
-/// The path override (if any) applies to whichever level the op is at.
-/// `add_login` / `add_elevated` mount the handler for the respective bucket.
+/// Which login-level bucket a route goes in.
+#[derive(Clone, Copy)]
+enum Tier {
+    /// Any logged-in user.
+    Login,
+    /// A logged-in user whose address is verified (when the scheme has email
+    /// verification; otherwise the same as `Login`).
+    Verified,
+}
+
+/// Place a sensitive-op route on a login-level bucket (`tier`) or the elevated
+/// bucket per its [`Authz`]. The path override (if any) applies to whichever
+/// level the op is at. `add_login` / `add_elevated` mount the handler for the
+/// respective bucket.
+#[allow(clippy::too_many_arguments)]
 fn wire_sensitive<S>(
     mut routers: Routers<S>,
+    tier: Tier,
     authz: Option<Authz>,
     override_path: &Option<String>,
     login_default: &str,
@@ -211,7 +233,11 @@ where
         None => {}
         Some(Authz::Login) => {
             let path = or(override_path, login_default);
-            routers.validated_router = add_login(routers.validated_router, path);
+            let bucket = match tier {
+                Tier::Login => &mut routers.validated_router,
+                Tier::Verified => &mut routers.verified_router,
+            };
+            *bucket = add_login(std::mem::take(bucket), path);
         }
         Some(Authz::Elevated) => {
             let path = or(override_path, elevated_default);
@@ -292,8 +318,10 @@ where
     TE: TokenStrategy,
 {
     fn wire_elevation(&self, mut routers: Routers<Self>, o: &PathOverrides) -> Routers<Self> {
-        // `/elevate` (become elevated) needs a normal session → validated bucket.
-        routers.validated_router = routers.validated_router.route(
+        // `/elevate` (become elevated) needs a normal session and, like every
+        // credential change, a verified address → verified bucket. Everything
+        // behind the elevated middleware is reached through it.
+        routers.verified_router = routers.verified_router.route(
             or(&o.elevate, "/elevate"),
             post(crate::routes::elevate::<Self>),
         );
@@ -360,12 +388,24 @@ impl<U, T, F, L, R, V, E, O, K> WireEmailVerify
 where
     Self: HttpAuthenticationScheme + RequiresEmailVerification,
     <Self as RequiresEmailVerification>::EmailVerificationError: IntoStatusMessage,
+    <Self as AuthenticationScheme>::Validator: AuthValidator<RequestParts = http::request::Parts>,
+    LoginClaims<Self>: IdentityClaims,
 {
     fn wire_email_verify(&self, mut routers: Routers<Self>, o: &PathOverrides) -> Routers<Self> {
+        // The link in the email is opened without a session → public.
         routers.main_router = routers.main_router.route(
             or(&o.verify_email, "/verify-email"),
             post(crate::routes::verify_email::<Self>),
         );
+        // Another link, for a logged-in user who has not verified yet.
+        routers.validated_router = routers.validated_router.route(
+            or(&o.resend_verification, "/verify-email/resend"),
+            post(crate::routes::resend_verification::<Self, LoginClaims<Self>>),
+        );
+        // From here on the verified bucket checks the address.
+        routers
+            .verified_layer
+            .get_or_insert(apply_verified_email::<Self>);
         routers
     }
 }
@@ -429,9 +469,10 @@ where
         // authenticated caller: a login session by default, an elevated token
         // if the scheme asked for step-up. Never mount these on `main_router`.
         match self.route_flags().passkey_enrollment {
+            // A passkey is a credential: a verified address is needed.
             Authz::Login => {
-                routers.validated_router = routers
-                    .validated_router
+                routers.verified_router = routers
+                    .verified_router
                     .route(
                         &format!("{prefix}/register/start"),
                         post(crate::routes::passkey_register_start::<Self, LoginClaims<Self>>),

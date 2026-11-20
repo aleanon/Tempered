@@ -10,7 +10,10 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use tempered_core::{AuthValidator, AuthenticationScheme, HttpElevationScheme, SupportsElevation};
+use tempered_core::{
+    AuthValidator, AuthenticationScheme, Email, HttpElevationScheme, IdentityClaims,
+    RequiresEmailVerification, SupportsElevation,
+};
 
 /// Middleware that validates a regular token and extracts claims into the request extensions.
 ///
@@ -105,4 +108,48 @@ where
 
     // Continue to the next handler
     Ok(next.run(req).await)
+}
+
+/// Middleware that admits only users whose email address is verified.
+///
+/// Runs inside the login middleware (it reads the claims that one inserted) on
+/// the verified bucket. The address is looked up on every request, so a
+/// verification takes effect at once, without a new login.
+///
+/// Rejects with 403 if the address is not verified, 401 if there are no
+/// claims (the route was mounted without the login middleware in front).
+#[allow(clippy::result_large_err)]
+pub async fn require_verified_email<S>(
+    State(scheme): State<S>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, Response>
+where
+    S: AuthenticationScheme + RequiresEmailVerification + Clone + Send + Sync + 'static,
+    S::Validator: AuthValidator<RequestParts = http::request::Parts>,
+    <S::Validator as AuthValidator>::Claims: IdentityClaims,
+    S::EmailVerificationError: IntoStatusMessage,
+{
+    let reject = |status: http::StatusCode, message: &str| {
+        (status, Json(serde_json::json!({ "error": message }))).into_response()
+    };
+
+    let claims = req
+        .extensions()
+        .get::<<S::Validator as AuthValidator>::Claims>()
+        .ok_or_else(|| reject(http::StatusCode::UNAUTHORIZED, "Not logged in"))?;
+    let email = Email::try_from(claims.subject().clone())
+        .map_err(|_| reject(http::StatusCode::UNAUTHORIZED, "Not logged in"))?;
+
+    match scheme.is_email_verified(&email).await {
+        Ok(true) => Ok(next.run(req).await),
+        Ok(false) => Err(reject(
+            http::StatusCode::FORBIDDEN,
+            "Email address not verified",
+        )),
+        Err(e) => {
+            let (status, message) = e.into_status_message();
+            Err(reject(status, &message))
+        }
+    }
 }

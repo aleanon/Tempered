@@ -420,6 +420,19 @@ mod oauth_tests {
     }
 
     #[tokio::test]
+    async fn a_provider_login_marks_the_address_verified() {
+        let account = Account::signed_up().await;
+        let scheme = account.scheme().await;
+        assert!(!account.verified.is_verified(&email()).await.unwrap());
+
+        // The provider vouches for the address, so the account is proven
+        // from now on (and a later first link to another provider leaves it
+        // alone).
+        oauth_login(&scheme).await.unwrap();
+        assert!(account.verified.is_verified(&email()).await.unwrap());
+    }
+
+    #[tokio::test]
     async fn first_oauth_login_to_a_verified_account_leaves_it_untouched() {
         // The owner proved the address through email verification, so the
         // password, passkey and sessions are theirs.
@@ -1115,5 +1128,79 @@ mod passkey_tests {
             )
             .await;
         assert!(outcome.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod email_verification_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::JwtScheme;
+    use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
+    use crate::authentication::credential_scheme::RegistrationData;
+    use crate::persistence::{
+        HashMapEmailVerificationTokenStore, HashMapTokenEpochStore, HashMapUserStore,
+        HashSetBannedTokenStore,
+    };
+    use secrecy::Secret;
+    use tempered_core::{
+        Email, EmailClient, Password, RequiresEmailVerification,
+        strategies::authenticator::SupportsRegistration,
+    };
+
+    /// Keeps every message it is asked to send.
+    #[derive(Clone, Default)]
+    struct Outbox(Arc<Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl EmailClient for Outbox {
+        async fn send_email(&self, _: &Email, _: &str, content: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push(content.to_string());
+            Ok(())
+        }
+    }
+
+    fn email() -> Email {
+        Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn signup_sends_the_verification_link_and_resending_stops_once_verified() {
+        let outbox = Outbox::default();
+        let scheme = JwtScheme::new(
+            HashMapUserStore::new(),
+            JwtAuthConfig {
+                jwt_cookie_name: "jwt".to_string(),
+                jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+                token_ttl_in_seconds: 3600,
+                audience: None,
+                issuer: None,
+            },
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_registration()
+        .supports_email_verification(HashMapEmailVerificationTokenStore::new(), outbox.clone());
+
+        let password = Password::try_from(Secret::new("a-long-password".to_string())).unwrap();
+        scheme
+            .register(
+                email(),
+                password,
+                RegistrationData {
+                    requires_2fa: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let sent = outbox.0.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "signup sends one verification link");
+        scheme.verify_email(sent[0].clone()).await.unwrap();
+        assert!(scheme.is_email_verified(&email()).await.unwrap());
+
+        // Asking again for a verified address sends nothing.
+        scheme.initiate_email_verification(email()).await.unwrap();
+        assert_eq!(outbox.0.lock().unwrap().len(), 1);
     }
 }

@@ -213,6 +213,29 @@ enum AddressProof {
 trait EmailProof {
     async fn proof(&self, email: &Email) -> Result<AddressProof, EmailVerificationStoreError>;
     async fn forget(&self, email: &Email) -> Result<(), EmailVerificationStoreError>;
+    /// Record that the address is proven by other means (a provider that
+    /// vouches for it).
+    async fn mark_verified(&self, email: &Email) -> Result<(), EmailVerificationStoreError>;
+    /// Send a verification link, unless the address is already verified.
+    async fn send_verification(&self, email: &Email) -> Result<(), VerificationSendError>;
+}
+
+/// Why a verification email could not be sent.
+#[derive(Debug)]
+enum VerificationSendError {
+    Store(EmailVerificationStoreError),
+    Email(String),
+}
+
+impl<TE: std::error::Error + Send + Sync + 'static> From<VerificationSendError>
+    for CredentialError<TE>
+{
+    fn from(e: VerificationSendError) -> Self {
+        match e {
+            VerificationSendError::Store(e) => CredentialError::EmailVerificationStoreError(e),
+            VerificationSendError::Email(e) => CredentialError::EmailError(e),
+        }
+    }
 }
 
 #[async_trait]
@@ -224,14 +247,46 @@ impl EmailProof for () {
     async fn forget(&self, _email: &Email) -> Result<(), EmailVerificationStoreError> {
         Ok(())
     }
+
+    async fn mark_verified(&self, _email: &Email) -> Result<(), EmailVerificationStoreError> {
+        Ok(())
+    }
+
+    async fn send_verification(&self, _email: &Email) -> Result<(), VerificationSendError> {
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl<V, E> EmailProof for EmailVerify<V, E>
 where
     V: EmailVerificationTokenStore + Send + Sync,
-    E: Send + Sync,
+    E: EmailClient + Send + Sync,
 {
+    async fn mark_verified(&self, email: &Email) -> Result<(), EmailVerificationStoreError> {
+        self.store.mark_verified(email).await
+    }
+
+    async fn send_verification(&self, email: &Email) -> Result<(), VerificationSendError> {
+        if self
+            .store
+            .is_verified(email)
+            .await
+            .map_err(VerificationSendError::Store)?
+        {
+            return Ok(());
+        }
+        let token = EmailVerificationToken::new();
+        self.store
+            .store_pending_verification(token.clone(), email.clone())
+            .await
+            .map_err(VerificationSendError::Store)?;
+        self.email
+            .send_email(email, "Verify your email", &token.to_string())
+            .await
+            .map_err(VerificationSendError::Email)
+    }
+
     async fn proof(&self, email: &Email) -> Result<AddressProof, EmailVerificationStoreError> {
         Ok(if self.store.is_verified(email).await? {
             AddressProof::Verified
@@ -849,7 +904,7 @@ where
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
-    M: Clone + Send + Sync + 'static,
+    M: EmailProof + Clone + Send + Sync + 'static,
     O: Clone + Send + Sync + 'static,
     K: Clone + Send + Sync + 'static,
 {
@@ -863,8 +918,14 @@ where
         password: Password,
         data: Self::RegistrationData,
     ) -> Result<(), Self::RegistrationError> {
-        let user = User::new(email, password, data.requires_2fa);
+        let user = User::new(email.clone(), password, data.requires_2fa);
         self.user_store.add_user(user).await?;
+        // With email verification, the new account is asked to prove its
+        // address. The account exists either way: a failed send is logged and
+        // the user can ask for another link (`/verify-email/resend`).
+        if let Err(e) = self.email_verify.send_verification(&email).await {
+            tracing::error!(error = ?e, "failed to send the verification email after signup");
+        }
         Ok(())
     }
 }
@@ -1233,17 +1294,8 @@ where
         &self,
         email: Email,
     ) -> Result<(), Self::EmailVerificationError> {
-        let token = EmailVerificationToken::new();
-        self.email_verify
-            .store
-            .store_pending_verification(token.clone(), email.clone())
-            .await?;
-        self.email_verify
-            .email
-            .send_email(&email, "Verify your email", &token.to_string())
-            .await
-            .map_err(CredentialError::EmailError)?;
-        Ok(())
+        // Nothing is sent for an address that is already verified.
+        Ok(self.email_verify.send_verification(&email).await?)
     }
 
     #[tracing::instrument(name = "CredentialScheme::verify_email", skip(self, token))]
@@ -1327,10 +1379,22 @@ where
             .begin(&email)
             .await
             .map_err(CredentialError::Token)?;
-        if !self.oauth.flow.is_linked(&identity).await? {
-            // Unlinked since it was verified: the account was deleted.
-            return Err(UserStoreError::UserNotFound.into());
+        // The provider vouches for the address (the flow refuses one it has
+        // not verified), so the account now counts as proven. Under the
+        // credential lock, so a deletion cannot clear the mark between the
+        // link check and the write and leave it behind for the next account
+        // at this address.
+        let lock = self.lock_credentials(&email).await?;
+        let marked: Result<(), CredentialError<T::Error>> = async {
+            if !self.oauth.flow.is_linked(&identity).await? {
+                // Unlinked since it was verified: the account was deleted.
+                return Err(UserStoreError::UserNotFound.into());
+            }
+            Ok(self.email_verify.mark_verified(&email).await?)
         }
+        .await;
+        self.unlock_credentials(&email, lock).await;
+        marked?;
         let requires_2fa = self.user_store.get_user(&email).await?.requires_2fa;
 
         if requires_2fa {

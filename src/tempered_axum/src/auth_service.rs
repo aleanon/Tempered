@@ -5,14 +5,15 @@
 //! right authz level (see [`crate::wiring`]). You don't opt routes in here — the
 //! scheme is the source of truth. The only reason to call a method on the service
 //! is to **override a default path** (e.g. `.login("/signin")`) or to attach your
-//! own router with [`validated_router`](AuthService::validated_router) /
+//! own router with [`validated_router`](AuthService::validated_router),
+//! [`verified_router`](AuthService::verified_router) or
 //! [`validated_elevated_router`](AuthService::validated_elevated_router).
 
 use crate::IntoStatusMessage;
 use axum::{Router, middleware};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, HttpElevationScheme,
-    SupportsElevation,
+    RequiresEmailVerification, SupportsElevation,
 };
 use tokio::net::TcpListener;
 use tower_http::services::{ServeDir, ServeFile};
@@ -35,6 +36,7 @@ where
         assets_dir,
         overrides: PathOverrides::default(),
         extra_validated: Router::new(),
+        extra_verified: Router::new(),
         extra_elevated: None,
     }
 }
@@ -44,6 +46,7 @@ pub struct AuthService<S> {
     assets_dir: String,
     overrides: PathOverrides,
     extra_validated: Router<S>,
+    extra_verified: Router<S>,
     extra_elevated: Option<Router<S>>,
 }
 
@@ -86,6 +89,8 @@ where
         verify_elevated_token => verify_elevated_token);
     override_path!(/// Override the email-verification path (default `/verify-email`).
         verify_email => verify_email);
+    override_path!(/// Override the resend-verification path (default `/verify-email/resend`).
+        resend_verification => resend_verification);
     override_path!(/// Override the passkey route prefix (default `/passkey`).
         passkeys => passkey_prefix);
 
@@ -133,6 +138,17 @@ where
 
         // 2. Merge any user-supplied routers.
         routers.validated_router = routers.validated_router.merge(self.extra_validated);
+
+        // The verified bucket sits inside the login bucket: the login
+        // middleware (applied below, outermost) validates the token, then the
+        // verified check reads its claims. Without email verification there
+        // is no check and these are plain login routes.
+        let verified = routers.verified_router.merge(self.extra_verified);
+        let verified = match routers.verified_layer {
+            Some(apply) => apply(verified, scheme.clone()),
+            None => verified,
+        };
+        routers.validated_router = routers.validated_router.merge(verified);
         if let Some(extra) = self.extra_elevated {
             routers.elevated_router =
                 Some(routers.elevated_router.unwrap_or_default().merge(extra));
@@ -157,6 +173,36 @@ where
         let assets = ServeDir::new(&self.assets_dir)
             .not_found_service(ServeFile::new(format!("{}/index.html", self.assets_dir)));
         router.with_state(scheme).fallback_service(assets)
+    }
+}
+
+impl<S> AuthService<S>
+where
+    S: HttpAuthenticationScheme<LogoutOutput = String>
+        + RequiresEmailVerification
+        + AutoWire
+        + Send
+        + Sync
+        + Clone
+        + 'static,
+    S::AuthError: IntoStatusMessage,
+    <S as AuthenticationScheme>::Validator: AuthValidator<RequestParts = http::request::Parts>,
+    <<S as AuthenticationScheme>::Validator as AuthValidator>::Error: IntoStatusMessage,
+{
+    /// Protect a user-supplied router with the login middleware **and** a
+    /// verified email address (403 otherwise). Requires the scheme to support
+    /// email verification (`supports_email_verification`), since that is what
+    /// knows whether an address is verified.
+    ///
+    /// The tiers nest: public routes (login, `/verify-email`), then
+    /// [`validated_router`](Self::validated_router) for any logged-in user
+    /// (logout, `/verify-email/resend`), then this, then
+    /// [`validated_elevated_router`](Self::validated_elevated_router) (reached
+    /// through `/elevate`, itself a verified route). The address is looked up
+    /// on every request to these routes.
+    pub fn verified_router(mut self, router: impl Into<Router<S>>) -> Self {
+        self.extra_verified = self.extra_verified.merge(router.into());
+        self
     }
 }
 

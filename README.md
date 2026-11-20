@@ -77,8 +77,19 @@ You don't wire auth into individual handlers. Build a normal `axum::Router` and
 hand it to the service:
 
 - `.validated_router(router)` — protected by the regular login session.
+- `.verified_router(router)` — a login session **and** a verified email
+  address (403 otherwise); requires `.supports_email_verification(...)`. The
+  address is looked up on every request, so verifying takes effect at once.
 - `.validated_elevated_router(router)` — protected by a short-lived elevated
   ("sudo") token; requires the `.supports_elevation(...)` capability.
+
+The tiers nest: public routes (login, signup, `/verify-email`), then any
+logged-in user (logout, `/verify-token`, `/verify-email/resend`, account
+deletion), then verified users, then elevated. With email verification on, the
+library's own credential-changing routes sit in the verified tier: password
+change, passkey enrolment and `/elevate` (so everything elevated is reached by
+a verified user). Without email verification the scheme cannot tell, and those
+routes are plain login routes.
 
 Handlers in those routers read the authenticated identity via
 `Extension<Claims>`. The middleware inserts it after validating the token, so the
@@ -95,7 +106,7 @@ automatically:
 | Two-factor | `.supports_2fa(store, email_client)` | `POST /verify-2fa` |
 | Elevation ("sudo") | `.supports_elevation(ban_store, config, \|e\| ...)` | `POST /elevate`, elevated routes |
 | Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes |
-| Email verification | `.supports_email_verification(...)` | `POST /verify-email` |
+| Email verification | `.supports_email_verification(...)` | `POST /verify-email` (public), `POST /verify-email/resend` (logged in); signup sends the link; credential changes need a verified address |
 | OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes |
 | Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey login routes (public) + enrolment routes (logged-in user only; add `e.supports_passkey_enrollment()` in the elevation closure to require a fresh re-authentication) |
 
@@ -116,7 +127,9 @@ and the address was never confirmed, the account's 2FA requirement is switched
 off as well; without email verification the scheme cannot tell, and 2FA stays.
 Enable `.supports_email_verification(...)` alongside OAuth: without it every
 signup account counts as unproven, and a genuine user loses their password on
-their first provider login.
+their first provider login. A provider login marks the address verified: the
+provider vouches for it (the flow refuses an address the provider has not
+verified).
 
 Login, logout, and verify-token are always present. Every default path can be
 overridden on the service builder (e.g. `.login("/signin")`).

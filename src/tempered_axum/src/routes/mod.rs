@@ -12,6 +12,7 @@ pub mod login;
 pub mod logout;
 pub mod oauth;
 pub mod passkey;
+pub mod resend_verification;
 pub mod signup;
 pub mod verify_2fa;
 pub mod verify_elevated_token;
@@ -29,6 +30,7 @@ pub use oauth::{oauth_callback, oauth_start};
 pub use passkey::{
     passkey_login_finish, passkey_login_start, passkey_register_finish, passkey_register_start,
 };
+pub use resend_verification::resend_verification;
 pub use signup::signup;
 pub use verify_2fa::verify_2fa;
 pub use verify_elevated_token::verify_elevated_token;
