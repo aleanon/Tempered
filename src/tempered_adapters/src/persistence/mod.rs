@@ -6,6 +6,10 @@ pub mod redis_banned_token_store;
 #[cfg(feature = "redis")]
 pub mod redis_password_reset_token_store;
 #[cfg(feature = "redis")]
+pub mod redis_session_store;
+#[cfg(feature = "redis")]
+mod redis_support;
+#[cfg(feature = "redis")]
 pub mod redis_token_epoch_store;
 #[cfg(feature = "redis")]
 pub mod redis_two_fa_code_store;
@@ -25,6 +29,11 @@ pub mod hashmap_user_store;
 pub mod hashset_banned_token_store;
 mod user_locks;
 
+#[cfg(test)]
+pub(crate) mod contract;
+#[cfg(test)]
+pub(crate) mod test_support;
+
 // Re-exports
 #[cfg(feature = "postgres")]
 pub use postgres_user_store::PostgresUserStore;
@@ -32,6 +41,8 @@ pub use postgres_user_store::PostgresUserStore;
 pub use redis_banned_token_store::RedisBannedTokenStore;
 #[cfg(feature = "redis")]
 pub use redis_password_reset_token_store::RedisPasswordResetTokenStore;
+#[cfg(feature = "redis")]
+pub use redis_session_store::RedisSessionStore;
 #[cfg(feature = "redis")]
 pub use redis_token_epoch_store::RedisTokenEpochStore;
 #[cfg(feature = "redis")]

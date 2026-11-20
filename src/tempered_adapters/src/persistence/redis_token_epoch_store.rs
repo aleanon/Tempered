@@ -6,8 +6,9 @@ use tokio::sync::RwLock;
 
 use tempered_core::{Email, TokenEpochStore, TokenEpochStoreError};
 
+use super::redis_support;
+
 const TOKEN_EPOCH_PREFIX: &str = "token_epoch:";
-const USER_LOCK_PREFIX: &str = "user_lock:";
 
 /// Redis-backed [`TokenEpochStore`], keyed `token_epoch:{email}`.
 #[derive(Clone)]
@@ -64,45 +65,19 @@ impl TokenEpochStore for RedisTokenEpochStore {
         holder: &str,
         ttl_seconds: u64,
     ) -> Result<bool, TokenEpochStoreError> {
-        // SET NX EX: atomic take with an expiry. Replies OK, or nil if held.
-        let reply: Option<String> = redis::cmd("SET")
-            .arg(lock_key(email))
-            .arg(holder)
-            .arg("NX")
-            .arg("EX")
-            .arg(ttl_seconds)
-            .query(&mut *self.client.write().await)
-            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))?;
-        Ok(reply.is_some())
+        redis_support::try_lock_user(&mut *self.client.write().await, email, holder, ttl_seconds)
+            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
     }
 
     async fn unlock_user(&self, email: &Email, holder: &str) -> Result<(), TokenEpochStoreError> {
-        // Compare-and-delete in one step, so an expired holder cannot release
-        // a lock someone else has taken since.
-        let script = redis::Script::new(
-            "if redis.call('get', KEYS[1]) == ARGV[1] then \
-                 return redis.call('del', KEYS[1]) \
-             else return 0 end",
-        );
-        let _: i64 = script
-            .key(lock_key(email))
-            .arg(holder)
-            .invoke(&mut *self.client.write().await)
-            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))?;
-        Ok(())
+        redis_support::unlock_user(&mut *self.client.write().await, email, holder)
+            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
     }
 
     async fn is_user_locked(&self, email: &Email) -> Result<bool, TokenEpochStoreError> {
-        self.client
-            .write()
-            .await
-            .exists(lock_key(email))
+        redis_support::is_user_locked(&mut *self.client.write().await, email)
             .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
     }
-}
-
-fn lock_key(email: &Email) -> String {
-    format!("{}{}", USER_LOCK_PREFIX, email.as_ref().expose_secret())
 }
 
 fn get_key(email: &Email) -> String {

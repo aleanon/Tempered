@@ -96,3 +96,13 @@ impl SessionStore for HashMapSessionStore {
         Ok(self.locks.is_locked(email).await)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn meets_the_session_store_contract() {
+        crate::persistence::contract::session_store(HashMapSessionStore::new()).await;
+    }
+}
