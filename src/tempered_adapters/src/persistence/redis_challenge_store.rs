@@ -10,7 +10,7 @@ use tempered_core::{
     CeremonyId, CeremonyState, ChallengeStore, ChallengeStoreError, Email, PendingCeremony,
 };
 
-use super::redis_support::user_key;
+use super::redis_support::{purge_index, user_key};
 
 const CEREMONY_PREFIX: &str = "passkey_ceremony:";
 const USER_CEREMONIES_PREFIX: &str = "passkey_ceremonies:";
@@ -111,16 +111,13 @@ impl ChallengeStore for RedisChallengeStore {
     }
 
     async fn delete_all_for_user(&self, user: &Email) -> Result<(), ChallengeStoreError> {
-        let mut client = self.client.write().await;
-        let set = user_key(USER_CEREMONIES_PREFIX, user);
-        let ids: Vec<String> = client.smembers(&set).map_err(unexpected)?;
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        for id in &ids {
-            pipe.del(ceremony_key(id)).ignore();
-        }
-        pipe.del(&set).ignore();
-        pipe.query::<()>(&mut *client).map_err(unexpected)
+        purge_index(
+            &mut *self.client.write().await,
+            &user_key(USER_CEREMONIES_PREFIX, user),
+            CEREMONY_PREFIX,
+            &[],
+        )
+        .map_err(unexpected)
     }
 }
 

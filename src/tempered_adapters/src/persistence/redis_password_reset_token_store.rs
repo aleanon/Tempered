@@ -8,7 +8,7 @@ use tempered_core::{
     Email, PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
 };
 
-use super::redis_support::user_key;
+use super::redis_support::{purge_index, user_key};
 
 const ONE_HOUR_IN_SECONDS: u64 = 3600;
 const RESET_TOKEN_PREFIX: &str = "password_reset:";
@@ -102,16 +102,13 @@ impl PasswordResetTokenStore for RedisPasswordResetTokenStore {
     }
 
     async fn delete_all_for_user(&self, email: &Email) -> Result<(), PasswordResetTokenStoreError> {
-        let mut client = self.client.write().await;
-        let pending = user_key(PENDING_PREFIX, email);
-        let tokens: Vec<String> = client.smembers(&pending).map_err(unexpected)?;
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        for token in &tokens {
-            pipe.del(format!("{RESET_TOKEN_PREFIX}{token}")).ignore();
-        }
-        pipe.del(&pending).ignore();
-        pipe.query::<()>(&mut *client).map_err(unexpected)
+        purge_index(
+            &mut *self.client.write().await,
+            &user_key(PENDING_PREFIX, email),
+            RESET_TOKEN_PREFIX,
+            &[],
+        )
+        .map_err(unexpected)
     }
 }
 

@@ -8,7 +8,7 @@ use tempered_core::{
     Email, EmailVerificationStoreError, EmailVerificationToken, EmailVerificationTokenStore,
 };
 
-use super::redis_support::user_key;
+use super::redis_support::{purge_index, user_key};
 
 const TOKEN_PREFIX: &str = "email_verification:";
 const PENDING_PREFIX: &str = "email_verification_pending:";
@@ -108,19 +108,13 @@ impl EmailVerificationTokenStore for RedisEmailVerificationTokenStore {
     }
 
     async fn forget_email(&self, email: &Email) -> Result<(), EmailVerificationStoreError> {
-        let mut client = self.client.write().await;
-        let pending = user_key(PENDING_PREFIX, email);
-        let tokens: Vec<String> = client.smembers(&pending).map_err(unexpected)?;
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        for token in &tokens {
-            pipe.del(token_key(token)).ignore();
-        }
-        pipe.del(&pending)
-            .ignore()
-            .del(user_key(VERIFIED_PREFIX, email))
-            .ignore();
-        pipe.query::<()>(&mut *client).map_err(unexpected)
+        purge_index(
+            &mut *self.client.write().await,
+            &user_key(PENDING_PREFIX, email),
+            TOKEN_PREFIX,
+            &[user_key(VERIFIED_PREFIX, email)],
+        )
+        .map_err(unexpected)
     }
 }
 

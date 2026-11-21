@@ -51,3 +51,35 @@ pub(crate) fn unlock_user(
 pub(crate) fn is_user_locked(conn: &mut redis::Connection, email: &Email) -> RedisResult<bool> {
     conn.exists(user_key(USER_LOCK_PREFIX, email))
 }
+
+/// Delete an index set, every `{member_prefix}{member}` key it names, and
+/// `also` (more keys to drop in the same step), atomically on the server.
+///
+/// Reading the set and deleting in a later `MULTI` leaves a gap: another
+/// instance can add a member in between, and deleting the set then leaves
+/// that member's key alive and no longer indexed, so a later purge misses
+/// it. A script runs as one step, so nothing lands in between.
+///
+/// The member keys are built inside the script, so they are not declared in
+/// `KEYS`. That is fine on a single Redis; on Redis Cluster the stores
+/// would need hash tags to keep a user's keys in one slot.
+pub(crate) fn purge_index(
+    conn: &mut redis::Connection,
+    index: &str,
+    member_prefix: &str,
+    also: &[String],
+) -> RedisResult<()> {
+    let script = redis::Script::new(
+        "for _, member in ipairs(redis.call('smembers', KEYS[1])) do \
+             redis.call('del', ARGV[1] .. member) \
+         end \
+         for i = 1, #KEYS do redis.call('del', KEYS[i]) end \
+         return 0",
+    );
+    let mut invocation = script.key(index);
+    for key in also {
+        invocation.key(key);
+    }
+    let _: i64 = invocation.arg(member_prefix).invoke(conn)?;
+    Ok(())
+}
