@@ -74,4 +74,20 @@ impl PasswordResetTokenStore for HashMapPasswordResetTokenStore {
             .remove(token)
             .ok_or(PasswordResetTokenStoreError::TokenNotFound)
     }
+
+    async fn delete_all_for_user(&self, email: &Email) -> Result<(), PasswordResetTokenStoreError> {
+        self.tokens.write().await.retain(|_, owner| owner != email);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::contract;
+
+    #[tokio::test]
+    async fn meets_the_password_reset_token_store_contract() {
+        contract::password_reset_token_store(HashMapPasswordResetTokenStore::new()).await;
+    }
 }

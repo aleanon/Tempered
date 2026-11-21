@@ -408,6 +408,31 @@ trait ElevationRevoke {
     async fn revoke_all_elevated(&self, email: &Email) -> Result<(), ElevatedRevokeError>;
 }
 
+/// Drops a user's outstanding password-reset tokens wherever their tokens
+/// are revoked. `()` (no password reset) has none.
+#[async_trait]
+trait ResetCleanup {
+    async fn forget_resets(&self, email: &Email) -> Result<(), PasswordResetTokenStoreError>;
+}
+
+#[async_trait]
+impl ResetCleanup for () {
+    async fn forget_resets(&self, _email: &Email) -> Result<(), PasswordResetTokenStoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<P, E> ResetCleanup for PasswordReset<P, E>
+where
+    P: PasswordResetTokenStore + Send + Sync,
+    E: Send + Sync,
+{
+    async fn forget_resets(&self, email: &Email) -> Result<(), PasswordResetTokenStoreError> {
+        self.store.delete_all_for_user(email).await
+    }
+}
+
 /// An elevated strategy's revocation error, boxed: its type is the elevation
 /// slot's, not the scheme's primary token error.
 pub type ElevatedRevokeError = Box<dyn std::error::Error + Send + Sync>;
@@ -774,8 +799,10 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
 where
     T: TokenStrategy,
     L: ElevationRevoke + Sync,
+    R: ResetCleanup + Sync,
 {
-    /// Void every token the user holds, primary and elevated, on every device.
+    /// Void every token the user holds: primary and elevated, on every
+    /// device, and any password-reset link still in their mailbox.
     async fn revoke_all_tokens(&self, email: &Email) -> Result<(), CredentialError<T::Error>> {
         self.tokens
             .revoke_all_for_user(email)
@@ -784,7 +811,9 @@ where
         self.elevation
             .revoke_all_elevated(email)
             .await
-            .map_err(CredentialError::ElevatedToken)
+            .map_err(CredentialError::ElevatedToken)?;
+        self.password_reset.forget_resets(email).await?;
+        Ok(())
     }
 }
 
@@ -991,7 +1020,7 @@ where
     T: TokenStrategy,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     L: ElevationRevoke + Clone + Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
+    R: ResetCleanup + Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
     O: Clone + Send + Sync + 'static,
     K: Clone + Send + Sync + 'static,
@@ -1022,7 +1051,7 @@ where
     T: TokenStrategy,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     L: ElevationRevoke + Clone + Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
+    R: ResetCleanup + Clone + Send + Sync + 'static,
     M: EmailProof + Clone + Send + Sync + 'static,
     O: OAuthCleanup + Clone + Send + Sync + 'static,
     K: PasskeyCleanup + Clone + Send + Sync + 'static,
@@ -1383,7 +1412,7 @@ where
     T: TokenStrategy,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     L: ElevationRevoke + Clone + Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
+    R: ResetCleanup + Clone + Send + Sync + 'static,
     M: EmailProof + Clone + Send + Sync + 'static,
     ST: OAuthStateStore + Clone + Send + Sync + 'static,
     ID: OAuthIdentityStore + Clone + Send + Sync + 'static,
@@ -1478,7 +1507,7 @@ where
     K: PasskeyCleanup + Send + Sync,
     F: TwoFaChallenge + Send + Sync,
     L: ElevationRevoke + Send + Sync,
-    R: Send + Sync,
+    R: ResetCleanup + Send + Sync,
 {
     /// Get `email`'s account ready for the first login through a provider
     /// identity that is not linked to it yet.
@@ -1587,7 +1616,7 @@ where
     T: TokenStrategy,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
     L: ElevatedCookieName + ElevationRevoke + Clone + Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
+    R: ResetCleanup + Clone + Send + Sync + 'static,
     M: EmailProof + Clone + Send + Sync + 'static,
     ST: OAuthStateStore + Clone + Send + Sync + 'static,
     ID: OAuthIdentityStore + Clone + Send + Sync + 'static,

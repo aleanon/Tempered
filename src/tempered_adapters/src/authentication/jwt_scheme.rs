@@ -1270,3 +1270,146 @@ mod email_verification_tests {
         assert!(scheme.verify_email(&email(), token).await.is_err());
     }
 }
+
+#[cfg(test)]
+mod password_reset_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::JwtScheme;
+    use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
+    use crate::authentication::credential_scheme::RegistrationData;
+    use crate::persistence::{
+        HashMapPasswordResetTokenStore, HashMapTokenEpochStore, HashMapUserStore,
+        HashSetBannedTokenStore,
+    };
+    use secrecy::Secret;
+    use tempered_core::{
+        Email, EmailClient, Password, SupportsAccountDeletion, SupportsPasswordChange,
+        SupportsPasswordReset, strategies::authenticator::SupportsRegistration,
+    };
+
+    /// Keeps every message it is asked to send (the reset token is the body).
+    #[derive(Clone, Default)]
+    struct Outbox(Arc<Mutex<Vec<String>>>);
+
+    impl Outbox {
+        fn last(&self) -> String {
+            self.0
+                .lock()
+                .unwrap()
+                .last()
+                .cloned()
+                .expect("a mail was sent")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EmailClient for Outbox {
+        async fn send_email(&self, _: &Email, _: &str, content: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push(content.to_string());
+            Ok(())
+        }
+    }
+
+    fn email() -> Email {
+        Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
+    }
+
+    fn password(p: &str) -> Password {
+        Password::try_from(Secret::new(p.to_string())).unwrap()
+    }
+
+    fn scheme(
+        outbox: &Outbox,
+    ) -> impl SupportsRegistration<RegistrationData = RegistrationData>
+    + SupportsPasswordReset
+    + SupportsPasswordChange
+    + SupportsAccountDeletion {
+        JwtScheme::new(
+            HashMapUserStore::new(),
+            JwtAuthConfig {
+                jwt_cookie_name: "jwt".to_string(),
+                jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+                token_ttl_in_seconds: 3600,
+                audience: None,
+                issuer: None,
+            },
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_registration()
+        .supports_password_reset(HashMapPasswordResetTokenStore::new(), outbox.clone())
+    }
+
+    async fn sign_up(
+        scheme: &impl SupportsRegistration<RegistrationData = RegistrationData>,
+        with: &str,
+    ) {
+        let data = RegistrationData {
+            requires_2fa: false,
+        };
+        scheme
+            .register(email(), password(with), data)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reset_link_dies_with_the_account() {
+        // The old owner asks for a reset, then deletes the account; someone
+        // else signs up with the address. The link in the old mailbox must
+        // not set the new account's password.
+        let outbox = Outbox::default();
+        let scheme = scheme(&outbox);
+        sign_up(&scheme, "the-first-owners-password").await;
+        scheme.initiate_password_reset(email()).await.unwrap();
+        let link = outbox.last();
+
+        scheme.delete_account(email()).await.unwrap();
+        sign_up(&scheme, "the-new-owners-password").await;
+
+        let result = scheme
+            .complete_password_reset(link, password("chosen-by-the-old-owner"))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_password_change_voids_outstanding_reset_links() {
+        let outbox = Outbox::default();
+        let scheme = scheme(&outbox);
+        sign_up(&scheme, "the-original-password").await;
+        scheme.initiate_password_reset(email()).await.unwrap();
+        let link = outbox.last();
+
+        scheme
+            .change_password(email(), password("a-fresh-password"))
+            .await
+            .unwrap();
+
+        let result = scheme
+            .complete_password_reset(link, password("an-intruders-password"))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_completed_reset_voids_the_other_links() {
+        let outbox = Outbox::default();
+        let scheme = scheme(&outbox);
+        sign_up(&scheme, "the-original-password").await;
+        scheme.initiate_password_reset(email()).await.unwrap();
+        let first = outbox.last();
+        scheme.initiate_password_reset(email()).await.unwrap();
+        let second = outbox.last();
+
+        scheme
+            .complete_password_reset(second, password("the-new-password"))
+            .await
+            .unwrap();
+        let result = scheme
+            .complete_password_reset(first, password("another-password"))
+            .await;
+        assert!(result.is_err());
+    }
+}

@@ -192,6 +192,66 @@ pub(crate) async fn email_verification_token_store(
     assert_eq!(store.consume_token(&bobs).await.unwrap(), bob);
 }
 
+/// [`PasswordResetTokenStore`]: single-use tokens, and dropping every token
+/// of one address.
+pub(crate) async fn password_reset_token_store(store: impl tempered_core::PasswordResetTokenStore) {
+    use tempered_core::{PasswordResetToken, PasswordResetTokenStoreError};
+
+    let alice = email("alice@example.com");
+    let bob = email("bob@example.com");
+
+    let token = PasswordResetToken::new();
+    store
+        .store_token(token.clone(), alice.clone())
+        .await
+        .unwrap();
+    assert_eq!(store.get_email_for_token(&token).await.unwrap(), alice);
+    assert_eq!(store.consume_token(&token).await.unwrap(), alice);
+    assert!(matches!(
+        store.consume_token(&token).await,
+        Err(PasswordResetTokenStoreError::TokenNotFound)
+    ));
+    assert!(matches!(
+        store.get_email_for_token(&token).await,
+        Err(PasswordResetTokenStoreError::TokenNotFound)
+    ));
+
+    let deleted = PasswordResetToken::new();
+    store
+        .store_token(deleted.clone(), alice.clone())
+        .await
+        .unwrap();
+    store.delete_token(&deleted).await.unwrap();
+    assert!(store.consume_token(&deleted).await.is_err());
+
+    // Dropping Alice's tokens takes all of them, and none of Bob's.
+    let first = PasswordResetToken::new();
+    let second = PasswordResetToken::new();
+    let bobs = PasswordResetToken::new();
+    store
+        .store_token(first.clone(), alice.clone())
+        .await
+        .unwrap();
+    store
+        .store_token(second.clone(), alice.clone())
+        .await
+        .unwrap();
+    store.store_token(bobs.clone(), bob.clone()).await.unwrap();
+    store.delete_all_for_user(&alice).await.unwrap();
+    store.delete_all_for_user(&alice).await.unwrap();
+    assert!(store.consume_token(&first).await.is_err());
+    assert!(store.consume_token(&second).await.is_err());
+    assert_eq!(store.consume_token(&bobs).await.unwrap(), bob);
+
+    // A token stored after the purge works again.
+    let later = PasswordResetToken::new();
+    store
+        .store_token(later.clone(), alice.clone())
+        .await
+        .unwrap();
+    assert_eq!(store.consume_token(&later).await.unwrap(), alice);
+}
+
 /// [`OAuthIdentityStore`]: links never move between accounts, and one
 /// account's links can be removed.
 pub(crate) async fn oauth_identity_store(store: impl tempered_core::OAuthIdentityStore) {

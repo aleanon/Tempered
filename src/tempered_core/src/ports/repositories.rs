@@ -187,6 +187,17 @@ pub trait PasswordResetTokenStore: Send + Sync {
         &self,
         token: &PasswordResetToken,
     ) -> Result<Email, PasswordResetTokenStoreError>;
+
+    /// Remove every outstanding reset token for `email`, succeeding when
+    /// there are none.
+    ///
+    /// Called when the account's credentials change or the account is
+    /// deleted. A token mailed before then must not survive it: otherwise
+    /// whoever re-registers a deleted address within the token's lifetime
+    /// has their password reset by the old link, and a link sitting in a
+    /// compromised mailbox outlives the password change meant to lock the
+    /// intruder out.
+    async fn delete_all_for_user(&self, email: &Email) -> Result<(), PasswordResetTokenStoreError>;
 }
 
 // EmailVerificationTokenStore port trait and errors
