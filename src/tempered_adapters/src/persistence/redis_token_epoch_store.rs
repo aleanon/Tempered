@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
-use redis::Commands;
+use redis::{AsyncCommands, aio::ConnectionManager};
 use secrecy::ExposeSecret;
-use tokio::sync::RwLock;
 
 use tempered_core::{Email, TokenEpochStore, TokenEpochStoreError};
 
@@ -13,7 +10,7 @@ const TOKEN_EPOCH_PREFIX: &str = "token_epoch:";
 /// Redis-backed [`TokenEpochStore`], keyed `token_epoch:{email}`.
 #[derive(Clone)]
 pub struct RedisTokenEpochStore {
-    client: Arc<RwLock<redis::Connection>>,
+    client: ConnectionManager,
     ttl_seconds: u64,
 }
 
@@ -22,7 +19,7 @@ impl RedisTokenEpochStore {
     /// longest TTL of any token this store guards (the trait contract): if the
     /// cutoff expires while a revoked token is still within its `exp`, that
     /// token becomes valid again.
-    pub fn new(client: Arc<RwLock<redis::Connection>>, ttl_seconds: u64) -> Self {
+    pub fn new(client: ConnectionManager, ttl_seconds: u64) -> Self {
         Self {
             client,
             ttl_seconds,
@@ -35,9 +32,9 @@ impl TokenEpochStore for RedisTokenEpochStore {
     async fn min_valid_iat(&self, email: &Email) -> Result<Option<i64>, TokenEpochStoreError> {
         let key = get_key(email);
         self.client
-            .write()
-            .await
+            .clone()
             .get(key)
+            .await
             .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
     }
 
@@ -57,7 +54,8 @@ impl TokenEpochStore for RedisTokenEpochStore {
             .key(get_key(email))
             .arg(cutoff)
             .arg(self.ttl_seconds)
-            .invoke(&mut *self.client.write().await)
+            .invoke_async(&mut self.client.clone())
+            .await
             .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))?;
         Ok(())
     }
@@ -68,17 +66,20 @@ impl TokenEpochStore for RedisTokenEpochStore {
         holder: &str,
         ttl_seconds: u64,
     ) -> Result<bool, TokenEpochStoreError> {
-        redis_support::try_lock_user(&mut *self.client.write().await, email, holder, ttl_seconds)
+        redis_support::try_lock_user(&mut self.client.clone(), email, holder, ttl_seconds)
+            .await
             .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
     }
 
     async fn unlock_user(&self, email: &Email, holder: &str) -> Result<(), TokenEpochStoreError> {
-        redis_support::unlock_user(&mut *self.client.write().await, email, holder)
+        redis_support::unlock_user(&mut self.client.clone(), email, holder)
+            .await
             .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
     }
 
     async fn is_user_locked(&self, email: &Email) -> Result<bool, TokenEpochStoreError> {
-        redis_support::is_user_locked(&mut *self.client.write().await, email)
+        redis_support::is_user_locked(&mut self.client.clone(), email)
+            .await
             .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
     }
 }

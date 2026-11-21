@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
-use redis::Commands;
+use redis::{AsyncCommands, aio::ConnectionManager};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 
 use tempered_core::{OAuthStateStore, OAuthStateStoreError, PendingAuthorization};
 
@@ -15,12 +12,12 @@ const STATE_PREFIX: &str = "oauth_state:";
 /// `GETDEL`, so a state is redeemed at most once across all instances.
 #[derive(Clone)]
 pub struct RedisOAuthStateStore {
-    client: Arc<RwLock<redis::Connection>>,
+    client: ConnectionManager,
     ttl_seconds: u64,
 }
 
 impl RedisOAuthStateStore {
-    pub fn new(client: Arc<RwLock<redis::Connection>>, ttl_seconds: u64) -> Self {
+    pub fn new(client: ConnectionManager, ttl_seconds: u64) -> Self {
         Self {
             client,
             ttl_seconds,
@@ -51,9 +48,9 @@ impl OAuthStateStore for RedisOAuthStateStore {
         })
         .map_err(unexpected)?;
         self.client
-            .write()
-            .await
+            .clone()
             .set_ex(format!("{STATE_PREFIX}{state}"), value, self.ttl_seconds)
+            .await
             .map_err(unexpected)
     }
 
@@ -63,9 +60,9 @@ impl OAuthStateStore for RedisOAuthStateStore {
     ) -> Result<PendingAuthorization, OAuthStateStoreError> {
         let value: Option<String> = self
             .client
-            .write()
-            .await
+            .clone()
             .get_del(format!("{STATE_PREFIX}{state}"))
+            .await
             .map_err(unexpected)?;
         let stored: Stored =
             serde_json::from_str(&value.ok_or(OAuthStateStoreError::UnknownState)?)

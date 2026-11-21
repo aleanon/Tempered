@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
-use redis::Commands;
+use redis::{AsyncCommands, aio::ConnectionManager};
 use secrecy::{ExposeSecret, Secret};
-use tokio::sync::RwLock;
 
 use tempered_core::{
     Email, EmailVerificationStoreError, EmailVerificationToken, EmailVerificationTokenStore,
@@ -28,12 +25,12 @@ const VERIFIED_PREFIX: &str = "email_verified:";
 ///   login.
 #[derive(Clone)]
 pub struct RedisEmailVerificationTokenStore {
-    client: Arc<RwLock<redis::Connection>>,
+    client: ConnectionManager,
     token_ttl_seconds: u64,
 }
 
 impl RedisEmailVerificationTokenStore {
-    pub fn new(client: Arc<RwLock<redis::Connection>>, token_ttl_seconds: u64) -> Self {
+    pub fn new(client: ConnectionManager, token_ttl_seconds: u64) -> Self {
         Self {
             client,
             token_ttl_seconds,
@@ -69,7 +66,8 @@ impl EmailVerificationTokenStore for RedisEmailVerificationTokenStore {
             .ignore()
             .expire(&pending, self.token_ttl_seconds as i64)
             .ignore()
-            .query::<()>(&mut *self.client.write().await)
+            .query_async::<()>(&mut self.client.clone())
+            .await
             .map_err(unexpected)
     }
 
@@ -77,9 +75,10 @@ impl EmailVerificationTokenStore for RedisEmailVerificationTokenStore {
         &self,
         token: &EmailVerificationToken,
     ) -> Result<Email, EmailVerificationStoreError> {
-        let mut client = self.client.write().await;
+        let mut client = self.client.clone();
         let value: Option<String> = client
             .get_del(token_key(&token.to_string()))
+            .await
             .map_err(unexpected)?;
         let email = Email::try_from(Secret::new(
             value.ok_or(EmailVerificationStoreError::TokenNotFound)?,
@@ -87,33 +86,35 @@ impl EmailVerificationTokenStore for RedisEmailVerificationTokenStore {
         .map_err(unexpected)?;
         let _: i64 = client
             .srem(user_key(PENDING_PREFIX, &email), token.to_string())
+            .await
             .map_err(unexpected)?;
         Ok(email)
     }
 
     async fn mark_verified(&self, email: &Email) -> Result<(), EmailVerificationStoreError> {
         self.client
-            .write()
-            .await
+            .clone()
             .set(user_key(VERIFIED_PREFIX, email), 1)
+            .await
             .map_err(unexpected)
     }
 
     async fn is_verified(&self, email: &Email) -> Result<bool, EmailVerificationStoreError> {
         self.client
-            .write()
-            .await
+            .clone()
             .exists(user_key(VERIFIED_PREFIX, email))
+            .await
             .map_err(unexpected)
     }
 
     async fn forget_email(&self, email: &Email) -> Result<(), EmailVerificationStoreError> {
         purge_index(
-            &mut *self.client.write().await,
+            &mut self.client.clone(),
             &user_key(PENDING_PREFIX, email),
             TOKEN_PREFIX,
             &[user_key(VERIFIED_PREFIX, email)],
         )
+        .await
         .map_err(unexpected)
     }
 }

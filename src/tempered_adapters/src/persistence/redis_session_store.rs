@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
-use redis::Commands;
+use redis::{AsyncCommands, aio::ConnectionManager};
 use secrecy::{ExposeSecret, Secret};
-use tokio::sync::RwLock;
 
 use tempered_core::{Email, SessionId, SessionStore, SessionStoreError};
 
@@ -27,12 +24,12 @@ const REVOCATIONS_PREFIX: &str = "session_revocations:";
 /// cookie and the session expire together.
 #[derive(Clone)]
 pub struct RedisSessionStore {
-    client: Arc<RwLock<redis::Connection>>,
+    client: ConnectionManager,
     ttl_seconds: u64,
 }
 
 impl RedisSessionStore {
-    pub fn new(client: Arc<RwLock<redis::Connection>>, ttl_seconds: u64) -> Self {
+    pub fn new(client: ConnectionManager, ttl_seconds: u64) -> Self {
         Self {
             client,
             ttl_seconds,
@@ -71,24 +68,26 @@ impl SessionStore for RedisSessionStore {
             .ignore()
             .expire(&user_sessions, self.ttl_seconds as i64)
             .ignore()
-            .query::<()>(&mut *self.client.write().await)
+            .query_async::<()>(&mut self.client.clone())
+            .await
             .map_err(unexpected)
     }
 
     async fn get_session(&self, id: &SessionId) -> Result<Email, SessionStoreError> {
         let email: Option<String> = self
             .client
-            .write()
-            .await
+            .clone()
             .get(session_key(id))
+            .await
             .map_err(unexpected)?;
         parse_email(email.ok_or(SessionStoreError::SessionNotFound)?)
     }
 
     async fn touch_session(&self, id: &SessionId) -> Result<(), SessionStoreError> {
-        let mut client = self.client.write().await;
+        let mut client = self.client.clone();
         let email: Option<String> = client
             .get_ex(session_key(id), redis::Expiry::EX(self.ttl_seconds))
+            .await
             .map_err(unexpected)?;
         let email = parse_email(email.ok_or(SessionStoreError::SessionNotFound)?)?;
         // The user's set must live as long as their longest session.
@@ -97,31 +96,34 @@ impl SessionStore for RedisSessionStore {
                 user_key(USER_SESSIONS_PREFIX, &email),
                 self.ttl_seconds as i64,
             )
+            .await
             .map_err(unexpected)?;
         Ok(())
     }
 
     async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError> {
-        let mut client = self.client.write().await;
-        let email: Option<String> = client.get_del(session_key(id)).map_err(unexpected)?;
+        let mut client = self.client.clone();
+        let email: Option<String> = client.get_del(session_key(id)).await.map_err(unexpected)?;
         let email = parse_email(email.ok_or(SessionStoreError::SessionNotFound)?)?;
         let _: i64 = client
             .srem(user_key(USER_SESSIONS_PREFIX, &email), id.to_string())
+            .await
             .map_err(unexpected)?;
         Ok(())
     }
 
     async fn delete_all_for_user(&self, email: &Email) -> Result<(), SessionStoreError> {
-        let mut client = self.client.write().await;
+        let mut client = self.client.clone();
         // Count first (the port's contract): a session created after this
         // sees the new count and discards itself, so the listing below may
         // miss it safely.
         let _: u64 = client
             .incr(user_key(REVOCATIONS_PREFIX, email), 1)
+            .await
             .map_err(unexpected)?;
 
         let user_sessions = user_key(USER_SESSIONS_PREFIX, email);
-        let ids: Vec<String> = client.smembers(&user_sessions).map_err(unexpected)?;
+        let ids: Vec<String> = client.smembers(&user_sessions).await.map_err(unexpected)?;
         if ids.is_empty() {
             return Ok(());
         }
@@ -131,15 +133,17 @@ impl SessionStore for RedisSessionStore {
             pipe.del(format!("{SESSION_PREFIX}{id}")).ignore();
         }
         pipe.srem(&user_sessions, ids).ignore();
-        pipe.query::<()>(&mut *client).map_err(unexpected)
+        pipe.query_async::<()>(&mut client)
+            .await
+            .map_err(unexpected)
     }
 
     async fn revocation_count(&self, email: &Email) -> Result<u64, SessionStoreError> {
         let count: Option<u64> = self
             .client
-            .write()
-            .await
+            .clone()
             .get(user_key(REVOCATIONS_PREFIX, email))
+            .await
             .map_err(unexpected)?;
         Ok(count.unwrap_or(0))
     }
@@ -150,17 +154,21 @@ impl SessionStore for RedisSessionStore {
         holder: &str,
         ttl_seconds: u64,
     ) -> Result<bool, SessionStoreError> {
-        redis_support::try_lock_user(&mut *self.client.write().await, email, holder, ttl_seconds)
+        redis_support::try_lock_user(&mut self.client.clone(), email, holder, ttl_seconds)
+            .await
             .map_err(unexpected)
     }
 
     async fn unlock_user(&self, email: &Email, holder: &str) -> Result<(), SessionStoreError> {
-        redis_support::unlock_user(&mut *self.client.write().await, email, holder)
+        redis_support::unlock_user(&mut self.client.clone(), email, holder)
+            .await
             .map_err(unexpected)
     }
 
     async fn is_user_locked(&self, email: &Email) -> Result<bool, SessionStoreError> {
-        redis_support::is_user_locked(&mut *self.client.write().await, email).map_err(unexpected)
+        redis_support::is_user_locked(&mut self.client.clone(), email)
+            .await
+            .map_err(unexpected)
     }
 }
 
@@ -185,14 +193,13 @@ mod tests {
             .await
             .unwrap();
 
-        let ttl = |c: &mut redis::Connection| -> i64 { c.ttl(session_key(&id)).unwrap() };
-        assert!((1..=60).contains(&ttl(&mut *connection.write().await)));
-        let _: bool = connection
-            .write()
-            .await
-            .expire(session_key(&id), 5)
-            .unwrap();
+        let mut connection = connection;
+        let key = session_key(&id);
+        let ttl: i64 = connection.ttl(&key).await.unwrap();
+        assert!((1..=60).contains(&ttl));
+        let _: bool = connection.expire(&key, 5).await.unwrap();
         store.touch_session(&id).await.unwrap();
-        assert!(ttl(&mut *connection.write().await) > 5);
+        let ttl: i64 = connection.ttl(&key).await.unwrap();
+        assert!(ttl > 5);
     }
 }

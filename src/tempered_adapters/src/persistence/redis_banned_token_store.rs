@@ -1,17 +1,14 @@
-use std::sync::Arc;
-
-use redis::{Commands, Connection};
+use redis::{AsyncCommands, aio::ConnectionManager};
 use tempered_core::{BannedTokenStore, BannedTokenStoreError};
-use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub struct RedisBannedTokenStore {
-    conn: Arc<RwLock<Connection>>,
+    conn: ConnectionManager,
     token_ttl: u64,
 }
 
 impl RedisBannedTokenStore {
-    pub fn new(conn: Arc<RwLock<Connection>>, token_ttl: u64) -> Self {
+    pub fn new(conn: ConnectionManager, token_ttl: u64) -> Self {
         Self { conn, token_ttl }
     }
 }
@@ -21,15 +18,17 @@ impl BannedTokenStore for RedisBannedTokenStore {
     async fn ban_token(&self, token: String) -> Result<(), BannedTokenStoreError> {
         let key = get_key(&token);
 
-        let mut conn = self.conn.write().await;
+        let mut conn = self.conn.clone();
         conn.set_ex(key, true, self.token_ttl)
+            .await
             .map_err(|e| BannedTokenStoreError::DatabaseError(e.to_string()))
     }
 
     async fn contains_token(&self, token: &str) -> Result<bool, BannedTokenStoreError> {
         let key = get_key(token);
-        let mut conn = self.conn.write().await;
+        let mut conn = self.conn.clone();
         conn.exists(&key)
+            .await
             .map_err(|e| BannedTokenStoreError::DatabaseError(e.to_string()))
     }
 }

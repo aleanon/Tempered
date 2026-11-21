@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
-use redis::Commands;
+use redis::{AsyncCommands, aio::ConnectionManager};
 use secrecy::ExposeSecret;
 use tempered_core::{Email, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError};
-use tokio::sync::RwLock;
 
 /// Redis-backed [`TwoFaCodeStore`].
 ///
@@ -19,17 +16,17 @@ use tokio::sync::RwLock;
 /// interleave with another request, on this instance or any other.
 #[derive(Clone)]
 pub struct RedisTwoFaCodeStore {
-    client: Arc<RwLock<redis::Connection>>,
+    client: ConnectionManager,
     max_attempts: u32,
 }
 
 impl RedisTwoFaCodeStore {
     /// Default limits: 5 failed codes per 10 minutes, codes live 10 minutes.
-    pub fn new(client: Arc<RwLock<redis::Connection>>) -> Self {
+    pub fn new(client: ConnectionManager) -> Self {
         Self::with_max_attempts(client, DEFAULT_MAX_ATTEMPTS)
     }
 
-    pub fn with_max_attempts(client: Arc<RwLock<redis::Connection>>, max_attempts: u32) -> Self {
+    pub fn with_max_attempts(client: ConnectionManager, max_attempts: u32) -> Self {
         Self {
             client,
             max_attempts,
@@ -96,7 +93,8 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
             .ignore()
             .expire(&key, TEN_MINUTES_IN_SECONDS as i64)
             .ignore()
-            .query::<()>(&mut *self.client.write().await)
+            .query_async::<()>(&mut self.client.clone())
+            .await
             .map_err(unexpected)
     }
 
@@ -113,7 +111,8 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
             .arg(two_fa_code.as_str())
             .arg(self.max_attempts)
             .arg(TEN_MINUTES_IN_SECONDS)
-            .invoke(&mut *self.client.write().await)
+            .invoke_async(&mut self.client.clone())
+            .await
             .map_err(unexpected)?;
         match outcome.as_str() {
             "ok" => Ok(()),
@@ -133,7 +132,8 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
             .arg(get_key(user_id))
             .arg("attempt")
             .arg("code")
-            .query(&mut *self.client.write().await)
+            .query_async(&mut self.client.clone())
+            .await
             .map_err(unexpected)?;
         let (Some(attempt), Some(code)) = (attempt, code) else {
             return Err(TwoFaCodeStoreError::UserNotFound);
@@ -147,9 +147,9 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
     async fn delete(&self, user_id: &Email) -> Result<(), TwoFaCodeStoreError> {
         let removed: i64 = self
             .client
-            .write()
-            .await
+            .clone()
             .del(get_key(user_id))
+            .await
             .map_err(unexpected)?;
         if removed == 0 {
             return Err(TwoFaCodeStoreError::UserNotFound);

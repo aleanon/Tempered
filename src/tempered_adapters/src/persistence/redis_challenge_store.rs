@@ -1,10 +1,7 @@
-use std::sync::Arc;
-
 use base64::{Engine, engine::general_purpose::STANDARD};
-use redis::Commands;
+use redis::{AsyncCommands, aio::ConnectionManager};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 
 use tempered_core::{
     CeremonyId, CeremonyState, ChallengeStore, ChallengeStoreError, Email, PendingCeremony,
@@ -24,12 +21,12 @@ const USER_CEREMONIES_PREFIX: &str = "passkey_ceremonies:";
 /// credentials are removed.
 #[derive(Clone)]
 pub struct RedisChallengeStore {
-    client: Arc<RwLock<redis::Connection>>,
+    client: ConnectionManager,
     ttl_seconds: u64,
 }
 
 impl RedisChallengeStore {
-    pub fn new(client: Arc<RwLock<redis::Connection>>, ttl_seconds: u64) -> Self {
+    pub fn new(client: ConnectionManager, ttl_seconds: u64) -> Self {
         Self {
             client,
             ttl_seconds,
@@ -79,7 +76,8 @@ impl ChallengeStore for RedisChallengeStore {
                 .expire(&set, self.ttl_seconds as i64)
                 .ignore();
         }
-        pipe.query::<()>(&mut *self.client.write().await)
+        pipe.query_async::<()>(&mut self.client.clone())
+            .await
             .map_err(unexpected)
     }
 
@@ -87,9 +85,10 @@ impl ChallengeStore for RedisChallengeStore {
         &self,
         id: &CeremonyId,
     ) -> Result<PendingCeremony, ChallengeStoreError> {
-        let mut client = self.client.write().await;
+        let mut client = self.client.clone();
         let value: Option<String> = client
             .get_del(ceremony_key(id.as_str()))
+            .await
             .map_err(unexpected)?;
         let stored: Stored =
             serde_json::from_str(&value.ok_or(ChallengeStoreError::ChallengeNotFound)?)
@@ -102,6 +101,7 @@ impl ChallengeStore for RedisChallengeStore {
         if let Some(user) = &user {
             let _: i64 = client
                 .srem(user_key(USER_CEREMONIES_PREFIX, user), id.as_str())
+                .await
                 .map_err(unexpected)?;
         }
         Ok(PendingCeremony {
@@ -112,11 +112,12 @@ impl ChallengeStore for RedisChallengeStore {
 
     async fn delete_all_for_user(&self, user: &Email) -> Result<(), ChallengeStoreError> {
         purge_index(
-            &mut *self.client.write().await,
+            &mut self.client.clone(),
             &user_key(USER_CEREMONIES_PREFIX, user),
             CEREMONY_PREFIX,
             &[],
         )
+        .await
         .map_err(unexpected)
     }
 }

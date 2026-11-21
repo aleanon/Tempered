@@ -1,6 +1,6 @@
 //! Pieces shared by the Redis stores.
 
-use redis::{Commands, RedisResult};
+use redis::{AsyncCommands, RedisResult, aio::ConnectionManager};
 use secrecy::ExposeSecret;
 use tempered_core::Email;
 
@@ -12,8 +12,8 @@ pub(crate) fn user_key(prefix: &str, email: &Email) -> String {
 }
 
 /// Take the user's credential lock: `SET NX EX`, atomic, with an expiry.
-pub(crate) fn try_lock_user(
-    conn: &mut redis::Connection,
+pub(crate) async fn try_lock_user(
+    conn: &mut ConnectionManager,
     email: &Email,
     holder: &str,
     ttl_seconds: u64,
@@ -25,14 +25,15 @@ pub(crate) fn try_lock_user(
         .arg("NX")
         .arg("EX")
         .arg(ttl_seconds)
-        .query(conn)?;
+        .query_async(conn)
+        .await?;
     Ok(reply.is_some())
 }
 
 /// Release the lock if `holder` still holds it: compare-and-delete in one
 /// step, so a holder whose lock expired cannot release someone else's.
-pub(crate) fn unlock_user(
-    conn: &mut redis::Connection,
+pub(crate) async fn unlock_user(
+    conn: &mut ConnectionManager,
     email: &Email,
     holder: &str,
 ) -> RedisResult<()> {
@@ -44,12 +45,16 @@ pub(crate) fn unlock_user(
     let _: i64 = script
         .key(user_key(USER_LOCK_PREFIX, email))
         .arg(holder)
-        .invoke(conn)?;
+        .invoke_async(conn)
+        .await?;
     Ok(())
 }
 
-pub(crate) fn is_user_locked(conn: &mut redis::Connection, email: &Email) -> RedisResult<bool> {
-    conn.exists(user_key(USER_LOCK_PREFIX, email))
+pub(crate) async fn is_user_locked(
+    conn: &mut ConnectionManager,
+    email: &Email,
+) -> RedisResult<bool> {
+    conn.exists(user_key(USER_LOCK_PREFIX, email)).await
 }
 
 /// Delete an index set, every `{member_prefix}{member}` key it names, and
@@ -63,8 +68,8 @@ pub(crate) fn is_user_locked(conn: &mut redis::Connection, email: &Email) -> Red
 /// The member keys are built inside the script, so they are not declared in
 /// `KEYS`. That is fine on a single Redis; on Redis Cluster the stores
 /// would need hash tags to keep a user's keys in one slot.
-pub(crate) fn purge_index(
-    conn: &mut redis::Connection,
+pub(crate) async fn purge_index(
+    conn: &mut ConnectionManager,
     index: &str,
     member_prefix: &str,
     also: &[String],
@@ -80,6 +85,6 @@ pub(crate) fn purge_index(
     for key in also {
         invocation.key(key);
     }
-    let _: i64 = invocation.arg(member_prefix).invoke(conn)?;
+    let _: i64 = invocation.arg(member_prefix).invoke_async(conn).await?;
     Ok(())
 }

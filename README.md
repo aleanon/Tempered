@@ -155,6 +155,10 @@ Every moving part is a trait, so you choose the backend:
   - Postgres: `PostgresOAuthIdentityStore`, `PostgresPasskeyCredentialStore`,
     `PostgresApiKeyStore`.
 
+  The Redis stores take a `redis::aio::ConnectionManager`. Build one with
+  `ConnectionManager::new(redis::Client::open(url)?).await?` and clone it into
+  each store: it is one multiplexed, auto-reconnecting connection, so no lock
+  or pool is needed.
   The Redis stores need Redis 6.2 or later (`GETDEL`/`GETEX`), and the one
   holding the email-verified mark must persist (AOF/RDB). The Postgres stores'
   tables are in `src/tempered_adapters/migrations/`; like `PostgresUserStore`,

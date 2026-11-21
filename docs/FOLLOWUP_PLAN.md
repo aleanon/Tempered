@@ -356,7 +356,7 @@ before it is built:
 
 ## Phase 7 — Performance
 
-- **7.1 Async Redis.** All nine Redis stores take
+- **7.1 Async Redis.** ✅ DONE 2026-11-22. All nine Redis stores take
   `Arc<RwLock<redis::Connection>>` and make blocking calls. Every request
   queues behind one connection, and each call blocks an executor thread.
   This includes the JWT epoch check on every authenticated request. Switch

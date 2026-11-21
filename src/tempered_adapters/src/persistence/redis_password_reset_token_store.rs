@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
-use redis::Commands;
+use redis::{AsyncCommands, aio::ConnectionManager};
 use secrecy::{ExposeSecret, Secret};
-use tokio::sync::RwLock;
 
 use tempered_core::{
     Email, PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
@@ -24,11 +21,11 @@ const PENDING_PREFIX: &str = "password_reset_pending:";
 ///   set expires with the newest token.
 #[derive(Clone)]
 pub struct RedisPasswordResetTokenStore {
-    client: Arc<RwLock<redis::Connection>>,
+    client: ConnectionManager,
 }
 
 impl RedisPasswordResetTokenStore {
-    pub fn new(client: Arc<RwLock<redis::Connection>>) -> Self {
+    pub fn new(client: ConnectionManager) -> Self {
         Self { client }
     }
 }
@@ -62,7 +59,8 @@ impl PasswordResetTokenStore for RedisPasswordResetTokenStore {
             .ignore()
             .expire(&pending, ONE_HOUR_IN_SECONDS as i64)
             .ignore()
-            .query::<()>(&mut *self.client.write().await)
+            .query_async::<()>(&mut self.client.clone())
+            .await
             .map_err(unexpected)
     }
 
@@ -72,9 +70,9 @@ impl PasswordResetTokenStore for RedisPasswordResetTokenStore {
     ) -> Result<Email, PasswordResetTokenStoreError> {
         let value: Option<String> = self
             .client
-            .write()
-            .await
+            .clone()
             .get(get_key(token))
+            .await
             .map_err(unexpected)?;
         parse_email(value)
     }
@@ -90,24 +88,26 @@ impl PasswordResetTokenStore for RedisPasswordResetTokenStore {
         &self,
         token: &PasswordResetToken,
     ) -> Result<Email, PasswordResetTokenStoreError> {
-        let mut client = self.client.write().await;
+        let mut client = self.client.clone();
         // GETDEL is a single Redis command, so redeeming is atomic even
         // across multiple service instances.
-        let value: Option<String> = client.get_del(get_key(token)).map_err(unexpected)?;
+        let value: Option<String> = client.get_del(get_key(token)).await.map_err(unexpected)?;
         let email = parse_email(value)?;
         let _: i64 = client
             .srem(user_key(PENDING_PREFIX, &email), token.to_string())
+            .await
             .map_err(unexpected)?;
         Ok(email)
     }
 
     async fn delete_all_for_user(&self, email: &Email) -> Result<(), PasswordResetTokenStoreError> {
         purge_index(
-            &mut *self.client.write().await,
+            &mut self.client.clone(),
             &user_key(PENDING_PREFIX, email),
             RESET_TOKEN_PREFIX,
             &[],
         )
+        .await
         .map_err(unexpected)
     }
 }

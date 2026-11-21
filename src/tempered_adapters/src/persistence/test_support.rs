@@ -2,17 +2,15 @@
 
 #[cfg(feature = "redis")]
 pub(crate) mod redis {
-    use std::sync::Arc;
-
+    use ::redis::aio::ConnectionManager;
     use testcontainers_modules::{
         redis::Redis,
         testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
     };
-    use tokio::sync::RwLock;
 
     /// A fresh Redis and a connection to it. Keep the container alive for as
     /// long as the connection is used.
-    pub(crate) async fn connection() -> (ContainerAsync<Redis>, Arc<RwLock<::redis::Connection>>) {
+    pub(crate) async fn connection() -> (ContainerAsync<Redis>, ConnectionManager) {
         // The stores use GETDEL / GETEX (Redis 6.2+); the module's default
         // image is older.
         let container = Redis::default()
@@ -25,11 +23,12 @@ pub(crate) mod redis {
             .get_host_port_ipv4(6379)
             .await
             .expect("Redis port");
-        let connection = ::redis::Client::open(format!("redis://{host}:{port}/"))
-            .expect("Redis client")
-            .get_connection()
+        let client =
+            ::redis::Client::open(format!("redis://{host}:{port}/")).expect("Redis client");
+        let connection = ConnectionManager::new(client)
+            .await
             .expect("Redis connection");
-        (container, Arc::new(RwLock::new(connection)))
+        (container, connection)
     }
 }
 

@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use redis::aio::ConnectionManager;
 use reqwest::{
     Client, Url,
     cookie::{CookieStore, Jar},
@@ -22,9 +23,9 @@ use tempered_core::{Email, TwoFaAttemptId};
 use testcontainers_modules::{
     postgres,
     redis::Redis,
-    testcontainers::{ContainerAsync, runners::AsyncRunner},
+    testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
 };
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::net::TcpListener;
 use uuid::Uuid;
 use wiremock::MockServer;
 
@@ -54,7 +55,6 @@ pub struct TestApp {
 impl TestApp {
     pub async fn new() -> Self {
         let (redis_container, redis_connection) = setup_and_connect_redis_container().await;
-        let redis_connection = Arc::new(RwLock::new(redis_connection));
 
         let banned_token_store = RedisBannedTokenStore::new(redis_connection.clone(), 600);
         let two_fa_code_store = RedisTwoFaCodeStore::new(redis_connection.clone());
@@ -349,8 +349,11 @@ async fn setup_and_connect_user_store_container() -> (ContainerAsync<postgres::P
     (container, connection)
 }
 
-async fn setup_and_connect_redis_container() -> (ContainerAsync<Redis>, redis::Connection) {
+async fn setup_and_connect_redis_container() -> (ContainerAsync<Redis>, ConnectionManager) {
+    // The stores use GETDEL / GETEX (Redis 6.2+); the module's default image
+    // is older.
     let container = Redis::default()
+        .with_tag("7.4")
         .start()
         .await
         .expect("Failed to start container");
@@ -367,9 +370,9 @@ async fn setup_and_connect_redis_container() -> (ContainerAsync<Redis>, redis::C
 
     let db_url = format!("redis://{}:{}/", host, db_port);
 
-    let connection = redis::Client::open(db_url)
-        .expect("Failed to open redis client")
-        .get_connection()
+    let client = redis::Client::open(db_url).expect("Failed to open redis client");
+    let connection = ConnectionManager::new(client)
+        .await
         .expect("Failed to connect redis client");
 
     (container, connection)
