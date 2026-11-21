@@ -16,7 +16,7 @@ pub use domain::{
         CeremonyId, CeremonyStart, CeremonyState, CredentialId, PasskeyCeremony, PasskeyCredential,
         PendingCeremony,
     },
-    password::Password,
+    password::{MAX_PASSWORD_CHARS, MIN_PASSWORD_CHARS, Password},
     password_reset_token::PasswordResetToken,
     session_id::SessionId,
     two_fa_attempt_id::TwoFaAttemptId,

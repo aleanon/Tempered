@@ -7,7 +7,7 @@ use super::{email::Email, password::Password};
 pub enum UserError {
     #[error("Invalid Email")]
     InvalidEmail,
-    #[error("Invalid Password: Must be at least 8 characters")]
+    #[error("Invalid Password: Must be 8 to 256 characters")]
     InvalidPassword,
 }
 
