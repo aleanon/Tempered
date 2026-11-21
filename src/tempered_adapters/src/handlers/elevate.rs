@@ -3,7 +3,9 @@
 //! This handler implements the "sudo" pattern - users must re-authenticate
 //! with their password to receive an elevated token for sensitive operations.
 
-use tempered_core::{Email, HttpElevationScheme, Password, ResponseBuilder};
+use tempered_core::{
+    ClassifyError, Email, ErrorCategory, HttpElevationScheme, Password, ResponseBuilder,
+};
 
 /// Framework-agnostic elevation handler.
 ///
@@ -21,25 +23,31 @@ use tempered_core::{Email, HttpElevationScheme, Password, ResponseBuilder};
 /// * `builder` - HTTP response builder
 ///
 /// # Returns
-/// Either an HTTP response with the elevated token, or an error message
+/// Either an HTTP response with the elevated token, or the error's category
+/// and client-safe message (from [`ClassifyError`]; internal detail is
+/// logged, never returned).
 pub async fn handle_elevate<S, B>(
     scheme: &S,
     email: Email,
     password: Password,
     builder: B,
-) -> Result<B::Response, String>
+) -> Result<B::Response, (ErrorCategory, String)>
 where
     S: HttpElevationScheme,
+    S::ElevationError: ClassifyError,
     B: ResponseBuilder,
 {
     // Re-authenticate the user to create elevated token
     let elevated_token = scheme
         .elevate(email, password)
         .await
-        .map_err(|e| format!("Elevation failed: {}", e))?;
+        .map_err(ClassifyError::classify)?;
 
     // Create HTTP response with elevated token
     scheme
         .create_elevation_response(builder, elevated_token)
-        .map_err(|e| e.message)
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to build the elevation response");
+            (ErrorCategory::Internal, "Internal error".to_string())
+        })
 }

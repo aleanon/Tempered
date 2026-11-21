@@ -1325,7 +1325,12 @@ where
             .store
             .consume_token(&token)
             .await
-            .map_err(|_| CredentialError::InvalidResetToken)?;
+            .map_err(|e| match e {
+                PasswordResetTokenStoreError::TokenNotFound => CredentialError::InvalidResetToken,
+                // An outage is not a bad link: report it (as a 500) rather
+                // than tell the user their link is invalid.
+                e => CredentialError::PasswordResetTokenStoreError(e),
+            })?;
 
         self.user_store
             .set_new_password(&email, new_password)

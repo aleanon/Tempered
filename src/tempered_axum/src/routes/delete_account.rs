@@ -2,6 +2,7 @@
 //!
 //! This route requires elevated authentication - users must re-authenticate before deleting their account.
 
+use crate::IntoStatusMessage;
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use tempered_core::{Email, HttpAuthenticationScheme, IdentityClaims, SupportsAccountDeletion};
 use thiserror::Error;
@@ -22,16 +23,17 @@ pub async fn delete_account<S, C>(
 ) -> Result<impl IntoResponse, DeleteAccountError>
 where
     S: HttpAuthenticationScheme + SupportsAccountDeletion + Clone + 'static,
+    S::AccountDeletionError: IntoStatusMessage,
     C: IdentityClaims + Clone + Send + Sync + 'static,
 {
     // The user is whoever the validated token belongs to.
     let email = Email::try_from(claims.subject().clone())
         .map_err(|e| DeleteAccountError::InvalidEmail(e.to_string()))?;
 
-    scheme
-        .delete_account(email)
-        .await
-        .map_err(|e| DeleteAccountError::Failed(e.to_string()))?;
+    scheme.delete_account(email).await.map_err(|e| {
+        let (status, message) = e.into_status_message();
+        DeleteAccountError::Failed(status, message)
+    })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -42,15 +44,15 @@ pub enum DeleteAccountError {
     #[error("Invalid email: {0}")]
     InvalidEmail(String),
 
-    #[error("Account deletion failed: {0}")]
-    Failed(String),
+    #[error("Account deletion failed: {1}")]
+    Failed(StatusCode, String),
 }
 
 impl IntoResponse for DeleteAccountError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
             DeleteAccountError::InvalidEmail(msg) => (StatusCode::BAD_REQUEST, msg),
-            DeleteAccountError::Failed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            DeleteAccountError::Failed(status, msg) => (status, msg),
         };
 
         (status, Json(serde_json::json!({ "error": message }))).into_response()

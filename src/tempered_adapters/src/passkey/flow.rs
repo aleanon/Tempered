@@ -287,17 +287,31 @@ impl ClassifyError for PasskeyFlowError {
                 ErrorCategory::Unauthorized,
                 "Sign count regression".to_string(),
             ),
-            PasskeyFlowError::WebAuthn(e) => (ErrorCategory::Unauthorized, e.to_string()),
+            // The verifier's reason (bad signature, wrong origin, ...) is for
+            // the log; the client learns only that the assertion failed.
+            PasskeyFlowError::WebAuthn(e) => {
+                tracing::info!(error = %e, "passkey verification failed");
+                (
+                    ErrorCategory::Unauthorized,
+                    "Passkey verification failed".to_string(),
+                )
+            }
             PasskeyFlowError::Credential(PasskeyStoreError::CredentialNotFound) => (
                 ErrorCategory::Unauthorized,
                 "Unknown credential".to_string(),
             ),
-            PasskeyFlowError::Credential(e) => (ErrorCategory::Internal, e.to_string()),
+            PasskeyFlowError::Credential(e) => {
+                tracing::error!(error = %e, "passkey credential store error");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
             PasskeyFlowError::Challenge(ChallengeStoreError::ChallengeNotFound) => (
                 ErrorCategory::BadRequest,
                 "Challenge not found or expired".to_string(),
             ),
-            PasskeyFlowError::Challenge(e) => (ErrorCategory::Internal, e.to_string()),
+            PasskeyFlowError::Challenge(e) => {
+                tracing::error!(error = %e, "passkey challenge store error");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
         }
     }
 }

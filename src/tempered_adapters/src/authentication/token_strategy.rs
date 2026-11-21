@@ -339,7 +339,8 @@ impl ClassifyError for JwtTokenError {
             // its own status; a ban-store failure is a 500.
             JwtTokenError::Generate(e) => e.classify(),
             JwtTokenError::Revoke(e) => {
-                (ErrorCategory::Internal, format!("Token store error: {}", e))
+                tracing::error!(error = %e, "banned token store error");
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
             JwtTokenError::RevokeAll(e) => {
                 tracing::error!(error = %e, "failed to record revocation cutoff");

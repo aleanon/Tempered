@@ -2,6 +2,7 @@
 //!
 //! This route requires elevated authentication - users must re-authenticate before changing their password.
 
+use crate::IntoStatusMessage;
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
@@ -27,6 +28,7 @@ pub async fn change_password<S, C>(
 ) -> Result<impl IntoResponse, ChangePasswordError>
 where
     S: HttpAuthenticationScheme + SupportsPasswordChange + Send + 'static + Clone,
+    S::PasswordChangeError: IntoStatusMessage,
     C: IdentityClaims + Clone + Send + Sync + 'static,
 {
     // The user is whoever the validated token belongs to.
@@ -40,7 +42,10 @@ where
     scheme
         .change_password(email, new_password)
         .await
-        .map_err(|e| ChangePasswordError::Failed(e.to_string()))?;
+        .map_err(|e| {
+            let (status, message) = e.into_status_message();
+            ChangePasswordError::Failed(status, message)
+        })?;
 
     Ok((
         StatusCode::OK,
@@ -67,8 +72,8 @@ pub enum ChangePasswordError {
     #[error("Invalid password: {0}")]
     InvalidPassword(String),
 
-    #[error("Password change failed: {0}")]
-    Failed(String),
+    #[error("Password change failed: {1}")]
+    Failed(StatusCode, String),
 }
 
 impl IntoResponse for ChangePasswordError {
@@ -76,7 +81,7 @@ impl IntoResponse for ChangePasswordError {
         let (status, message) = match self {
             ChangePasswordError::InvalidEmail(msg) => (StatusCode::BAD_REQUEST, msg),
             ChangePasswordError::InvalidPassword(msg) => (StatusCode::BAD_REQUEST, msg),
-            ChangePasswordError::Failed(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            ChangePasswordError::Failed(status, msg) => (status, msg),
         };
 
         (status, Json(serde_json::json!({ "error": message }))).into_response()

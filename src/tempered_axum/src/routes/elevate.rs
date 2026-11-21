@@ -5,11 +5,13 @@ use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
 use tempered_adapters::{handlers, http::HttpResponseBuilder};
 use tempered_core::{
-    AuthValidator, Email, HttpElevationScheme, IdentityClaims, Password, constant_time_eq,
+    AuthValidator, ClassifyError, Email, HttpElevationScheme, IdentityClaims, Password,
+    constant_time_eq,
 };
 use thiserror::Error;
 
 use crate::adapters::into_axum_response;
+use crate::error::status_code;
 
 /// Axum elevation route.
 ///
@@ -29,6 +31,7 @@ pub async fn elevate<S>(
 ) -> Result<impl IntoResponse, ElevateError>
 where
     S: HttpElevationScheme,
+    S::ElevationError: ClassifyError,
     <S::Validator as AuthValidator>::Claims: IdentityClaims,
 {
     // Parse domain entities
@@ -50,7 +53,7 @@ where
 
     let http_response = handlers::handle_elevate(&scheme, email, password, builder)
         .await
-        .map_err(ElevateError::Failed)?;
+        .map_err(|(category, message)| ElevateError::Failed(status_code(category), message))?;
 
     Ok(into_axum_response(http_response))
 }
@@ -74,8 +77,8 @@ pub enum ElevateError {
     #[error("Invalid password: {0}")]
     InvalidPassword(String),
 
-    #[error("Elevation failed: {0}")]
-    Failed(String),
+    #[error("Elevation failed: {1}")]
+    Failed(StatusCode, String),
 
     #[error("Elevation must target the logged-in user")]
     NotSessionOwner,
@@ -86,7 +89,7 @@ impl IntoResponse for ElevateError {
         let (status, message) = match self {
             ElevateError::InvalidEmail(msg) => (StatusCode::BAD_REQUEST, msg),
             ElevateError::InvalidPassword(msg) => (StatusCode::BAD_REQUEST, msg),
-            ElevateError::Failed(msg) => (StatusCode::UNAUTHORIZED, msg),
+            ElevateError::Failed(status, msg) => (status, msg),
             ElevateError::NotSessionOwner => (
                 StatusCode::FORBIDDEN,
                 "Elevation must target the logged-in user".to_string(),

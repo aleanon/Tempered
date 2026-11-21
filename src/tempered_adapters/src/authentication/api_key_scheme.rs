@@ -396,7 +396,10 @@ impl ClassifyError for ApiKeyAuthError {
             ApiKeyAuthError::InvalidKey => {
                 (ErrorCategory::Unauthorized, "Invalid API key".to_string())
             }
-            ApiKeyAuthError::StoreError(m) => (ErrorCategory::Internal, m),
+            ApiKeyAuthError::StoreError(m) => {
+                tracing::error!(error = %m, "API key store error");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
         }
     }
 }

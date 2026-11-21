@@ -1,3 +1,4 @@
+use crate::IntoStatusMessage;
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use secrecy::Secret;
 use serde::Deserialize;
@@ -11,6 +12,7 @@ pub async fn complete_password_reset<S>(
 ) -> Result<impl IntoResponse, CompletePasswordResetError>
 where
     S: SupportsPasswordReset + Send + Sync + Clone + 'static,
+    S::PasswordResetError: IntoStatusMessage,
 {
     let new_password = Password::try_from(request.new_password)
         .map_err(|e| CompletePasswordResetError::InvalidPassword(e.to_string()))?;
@@ -18,7 +20,10 @@ where
     scheme
         .complete_password_reset(request.reset_token, new_password)
         .await
-        .map_err(|e| CompletePasswordResetError::Failed(e.to_string()))?;
+        .map_err(|e| {
+            let (status, message) = e.into_status_message();
+            CompletePasswordResetError::Failed(status, message)
+        })?;
 
     Ok((
         StatusCode::OK,
@@ -40,15 +45,15 @@ pub enum CompletePasswordResetError {
     #[error("Invalid password: {0}")]
     InvalidPassword(String),
 
-    #[error("Reset failed: {0}")]
-    Failed(String),
+    #[error("Reset failed: {1}")]
+    Failed(StatusCode, String),
 }
 
 impl IntoResponse for CompletePasswordResetError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
             CompletePasswordResetError::InvalidPassword(msg) => (StatusCode::BAD_REQUEST, msg),
-            CompletePasswordResetError::Failed(msg) => (StatusCode::BAD_REQUEST, msg),
+            CompletePasswordResetError::Failed(status, msg) => (status, msg),
         };
 
         (status, Json(serde_json::json!({ "error": message }))).into_response()

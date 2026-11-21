@@ -315,6 +315,7 @@ where
     <Self as SupportsElevation>::ElevatedValidator:
         AuthValidator<RequestParts = http::request::Parts>,
     <<Self as SupportsElevation>::ElevatedValidator as AuthValidator>::Error: IntoStatusMessage,
+    <Self as SupportsElevation>::ElevationError: IntoStatusMessage,
     TE: TokenStrategy,
 {
     fn wire_elevation(&self, mut routers: Routers<Self>, o: &PathOverrides) -> Routers<Self> {
@@ -356,6 +357,7 @@ impl<U, T, F, L, P, E, M, O, K> WirePasswordReset
     for CredentialScheme<U, T, F, L, PasswordReset<P, E>, M, O, K>
 where
     Self: HttpAuthenticationScheme + SupportsPasswordReset,
+    <Self as SupportsPasswordReset>::PasswordResetError: IntoStatusMessage,
 {
     fn wire_password_reset(&self, mut routers: Routers<Self>, o: &PathOverrides) -> Routers<Self> {
         routers.main_router = routers

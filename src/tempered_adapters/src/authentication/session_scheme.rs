@@ -313,7 +313,8 @@ impl ClassifyError for SessionError {
                 "Session not found or expired".to_string(),
             ),
             SessionError::Store(SessionStoreError::UnexpectedError(m)) => {
-                (ErrorCategory::Internal, m)
+                tracing::error!(error = %m, "session store error");
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
         }
     }
