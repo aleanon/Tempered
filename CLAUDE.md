@@ -10,7 +10,8 @@ consumer picks one auth scheme (JWT, session, API key), enables capabilities
 and the axum adapter auto-wires the matching routes.
 
 Read `ARCHITECTURE.md` for the design. Plans and their status live in `docs/`:
-`AUTH_SCHEMES_PLAN.md`, `REVIEW_CORRECTION_PLAN.md`, `FOLLOWUP_PLAN.md` (open work).
+`AUTH_SCHEMES_PLAN.md`, `REVIEW_CORRECTION_PLAN.md`, `FOLLOWUP_PLAN.md` (open work),
+`ROUTE_TABLE_DESIGN.md` (proposal: framework-neutral routes).
 
 ## Workspace layout
 
