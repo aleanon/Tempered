@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use secrecy::ExposeSecret;
 use tempered_core::{
     AuthRequest, AuthValidator, BannedTokenStore, BannedTokenStoreError, ClassifyError, Email,
     ErrorCategory, TokenEpochStore,
@@ -152,6 +153,10 @@ impl From<String> for JwtToken {
 // JWT strategy
 // ============================================================================
 
+/// The shortest JWT secret [`JwtTokens`] accepts, in bytes (256 bits, the
+/// HS256 output size).
+pub const MIN_JWT_SECRET_BYTES: usize = 32;
+
 /// JWT tokens: `issue` signs, `revoke` bans one token, validation is local
 /// signature checking plus the ban-list and revocation-cutoff lookups.
 #[derive(Clone)]
@@ -171,6 +176,13 @@ where
     /// actually invalidate outstanding tokens. Use `HashMapTokenEpochStore`
     /// in development and `RedisTokenEpochStore` (TTL ≥ the token TTL) in
     /// production.
+    ///
+    /// # Panics
+    ///
+    /// If the secret is shorter than [`MIN_JWT_SECRET_BYTES`]. HS256 with a
+    /// short secret can be brute-forced offline from a single token; this is
+    /// a configuration error, caught at startup. Generate one with
+    /// `openssl rand -base64 48`.
     pub fn new(config: JwtAuthConfig, banned: B, epoch: impl TokenEpochStore + 'static) -> Self {
         Self::from_parts(config, banned, Arc::new(epoch))
     }
@@ -180,6 +192,12 @@ where
         banned: B,
         epoch: Arc<dyn TokenEpochStore>,
     ) -> Self {
+        let length = config.jwt_secret.expose_secret().len();
+        assert!(
+            length >= MIN_JWT_SECRET_BYTES,
+            "the JWT secret for cookie {:?} is {length} bytes; use at least {MIN_JWT_SECRET_BYTES} random bytes",
+            config.jwt_cookie_name,
+        );
         let validator = LocalJwtValidator::new(banned.clone(), config.clone(), epoch.clone());
         Self {
             config,
@@ -187,6 +205,14 @@ where
             epoch,
             validator,
         }
+    }
+
+    /// Whether `other` signs with the same secret as this strategy.
+    pub(crate) fn shares_secret_with(&self, other: &JwtAuthConfig) -> bool {
+        tempered_core::constant_time_eq(
+            self.config.jwt_secret.expose_secret(),
+            other.jwt_secret.expose_secret(),
+        )
     }
 
     /// The revocation-cutoff store, shared so companion strategies (e.g. the
@@ -383,6 +409,23 @@ mod tests {
             HashSetBannedTokenStore::new(),
             HashMapTokenEpochStore::new(),
         )
+    }
+
+    #[test]
+    #[should_panic(expected = "use at least 32 random bytes")]
+    fn a_short_jwt_secret_is_refused_at_startup() {
+        let config = JwtAuthConfig {
+            jwt_cookie_name: "jwt".to_string(),
+            jwt_secret: Secret::new("secret".to_string()),
+            token_ttl_in_seconds: 3600,
+            audience: None,
+            issuer: None,
+        };
+        JwtTokens::new(
+            config,
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        );
     }
 
     #[tokio::test]

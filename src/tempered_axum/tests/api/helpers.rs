@@ -31,8 +31,8 @@ use wiremock::MockServer;
 // Test constants for JWT cookies
 pub const JWT_COOKIE_NAME: &str = "jwt";
 pub const JWT_ELEVATED_COOKIE_NAME: &str = "elevated_jwt";
-pub const JWT_SECRET: &str = "secret";
-pub const JWT_ELEVATED_SECRET: &str = "elevated_secret";
+pub const JWT_SECRET: &str = "a-test-secret-that-is-long-enough";
+pub const JWT_ELEVATED_SECRET: &str = "an-elevated-test-secret-long-enough";
 
 // Test constants for email client
 pub const SENDER: &str = "test@email.com";

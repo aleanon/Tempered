@@ -27,7 +27,8 @@ use tempered::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let jwt_config = JwtAuthConfig {
         jwt_cookie_name: "jwt".to_string(),
-        // Load this from the environment in real code; keep it >= 32 random bytes.
+        // Load this from the environment in real code. Shorter than 32 bytes
+        // panics at startup (`openssl rand -base64 48` makes a good one).
         jwt_secret: Secret::new(std::env::var("JWT_SECRET")?),
         token_ttl_in_seconds: 3600,
         // When set, tokens carry these claims and validation requires them, so a

@@ -228,6 +228,10 @@ pub async fn validate_auth_token(
     // checked-if-present — otherwise a token minted with the same secret but
     // without the claim (another service or environment) would validate here.
     let mut validation = Validation::default();
+    // jsonwebtoken allows 60 s past `exp` by default. Ban-list entries and
+    // revocation cutoffs live exactly as long as a token, so a token banned
+    // near the end of its life would validate again for that minute.
+    validation.leeway = 0;
     if let Some(aud) = &config.audience {
         validation.set_audience(&[aud]);
         validation.required_spec_claims.insert("aud".to_owned());
@@ -365,7 +369,7 @@ mod tests {
         JwtAuthConfig {
             token_ttl_in_seconds: 600,
             jwt_cookie_name: "jwt_cookie".to_string(),
-            jwt_secret: Secret::from("secret".to_owned()),
+            jwt_secret: Secret::from("a-test-secret-that-is-long-enough".to_owned()),
             audience: None,
             issuer: None,
         }
@@ -423,6 +427,31 @@ mod tests {
             .timestamp();
 
         assert!(result.exp > exp as usize);
+    }
+
+    #[tokio::test]
+    async fn a_token_past_its_expiry_is_rejected_without_grace() {
+        // jsonwebtoken's default 60 s leeway would accept this token; its
+        // ban-list entry and revocation cutoff may already be gone.
+        let config = jwt_auth_config();
+        let now = chrono::Utc::now().timestamp();
+        let claims = Claims {
+            sub: Secret::from("test@example.com".to_owned()),
+            exp: (now - 5) as usize,
+            iat: Some(now - 600),
+            jti: Some(uuid::Uuid::new_v4().to_string()),
+            aud: None,
+            iss: None,
+        };
+        let token = create_token(&claims, config.jwt_secret.expose_secret().as_bytes()).unwrap();
+        let result = validate_auth_token(
+            &token,
+            &HashSetBannedTokenStore::default(),
+            &epoch_store(),
+            &config,
+        )
+        .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

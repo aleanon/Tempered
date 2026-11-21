@@ -108,7 +108,8 @@ pub use tempered_adapters::{
         SessionTokens,
     },
     authentication::token_strategy::{
-        JwtTicket, JwtToken, JwtTokens, TokenStrategy, USER_LOCK_TTL_SECONDS, UserLock,
+        JwtTicket, JwtToken, JwtTokens, MIN_JWT_SECRET_BYTES, TokenStrategy, USER_LOCK_TTL_SECONDS,
+        UserLock,
     },
     email::MockEmailClient,
     oauth::{OAuthFlow, OAuthFlowError, VerifiedIdentity, pkce_challenge_s256},

@@ -66,6 +66,13 @@ where
     /// The elevated strategy shares the primary strategy's token-epoch store,
     /// so revoking all of a user's tokens (password change, account deletion)
     /// kills their elevated tokens too.
+    ///
+    /// # Panics
+    ///
+    /// If the elevated config signs with the primary config's secret. A
+    /// login token would then verify as an elevated one wherever the two
+    /// configs also agree on audience and issuer, and the sudo step would
+    /// protect nothing. Give elevation its own secret.
     // The return type spells out every capability slot on purpose: it is the
     // typestate transition. An alias would hide which slot changes.
     #[allow(clippy::type_complexity)]
@@ -78,6 +85,12 @@ where
     where
         Cfg: FnOnce(ElevatedCapabilities) -> ElevatedCapabilities,
     {
+        assert!(
+            !self
+                .token_strategy()
+                .shares_secret_with(&elevated_jwt_config),
+            "the elevated JWT config uses the primary JWT secret; give elevation its own secret",
+        );
         let epoch = self.token_strategy().epoch();
         self.supports_elevation_with(
             JwtTokens::from_parts(elevated_jwt_config, elevated_banned_token_store, epoch),
@@ -1411,5 +1424,40 @@ mod password_reset_tests {
             .complete_password_reset(first, password("another-password"))
             .await;
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::JwtScheme;
+    use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
+    use crate::persistence::{HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore};
+    use secrecy::Secret;
+
+    fn config(cookie: &str) -> JwtAuthConfig {
+        JwtAuthConfig {
+            jwt_cookie_name: cookie.to_string(),
+            jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+            token_ttl_in_seconds: 3600,
+            audience: None,
+            issuer: None,
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "uses the primary JWT secret")]
+    fn elevation_with_the_login_secret_is_refused_at_startup() {
+        // Same secret, no aud/iss: every login token would pass as elevated.
+        let _ = JwtScheme::new(
+            HashMapUserStore::new(),
+            config("jwt"),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_elevation(
+            HashSetBannedTokenStore::new(),
+            config("elevated_jwt"),
+            |e| e,
+        );
     }
 }
