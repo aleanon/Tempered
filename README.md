@@ -158,6 +158,11 @@ Every moving part is a trait, so you choose the backend:
   holding the email-verified mark must persist (AOF/RDB). The Postgres stores'
   tables are in `src/tempered_adapters/migrations/`; like `PostgresUserStore`,
   the stores do not run them, so migrate at startup.
+
+  Addresses are lowercased when parsed into an `Email`, so every store keys
+  on the lowercase form. Rows written by versions before this change keep
+  their original case and are no longer found by a lookup. Lowercase them
+  yourself, merging any accounts that differ only in case first.
 - **Email client:** `MockEmailClient`, `PostmarkEmailClient`, or your own `EmailClient`.
 - **Token strategy:** JWT and session are both `CredentialScheme`s over a
   `TokenStrategy`; implement the trait to add a new token type.

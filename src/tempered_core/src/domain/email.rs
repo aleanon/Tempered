@@ -8,6 +8,13 @@ use super::user::UserError;
 const EMAIL_REGEX_PATTERN: &str = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$";
 static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(EMAIL_REGEX_PATTERN).unwrap());
 
+/// A syntactically valid email address, lowercased.
+///
+/// Every store keys on `Email`, so two spellings of one mailbox must be one
+/// value: `Alice@X.com` and `alice@x.com` are the same account. The whole
+/// address is folded, not just the domain. RFC 5321 lets a server treat the
+/// local part as case-sensitive, but no mainstream provider does, and keeping
+/// case would let `Victim@x.com` be registered next to `victim@x.com`.
 #[derive(Debug, Clone)]
 pub struct Email(Secret<String>);
 
@@ -15,10 +22,12 @@ impl TryFrom<Secret<String>> for Email {
     type Error = UserError;
 
     fn try_from(email: Secret<String>) -> Result<Self, Self::Error> {
-        if !EMAIL_REGEX.is_match(email.expose_secret()) {
+        let email = email.expose_secret();
+        if !EMAIL_REGEX.is_match(email) {
             return Err(UserError::InvalidEmail);
         }
-        Ok(Email(email))
+        // The pattern admits ASCII only, so ASCII folding is complete.
+        Ok(Email(Secret::new(email.to_ascii_lowercase())))
     }
 }
 
@@ -40,5 +49,28 @@ impl Eq for Email {}
 impl Hash for Email {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.expose_secret().hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn email(s: &str) -> Email {
+        Email::try_from(Secret::new(s.to_string())).unwrap()
+    }
+
+    #[test]
+    fn spellings_of_one_mailbox_are_one_address() {
+        assert_eq!(email("Alice@Example.COM"), email("alice@example.com"));
+        assert_eq!(
+            email("Alice@Example.COM").as_ref().expose_secret(),
+            "alice@example.com"
+        );
+    }
+
+    #[test]
+    fn invalid_addresses_are_still_rejected() {
+        assert!(Email::try_from(Secret::new("not-an-email".to_string())).is_err());
     }
 }

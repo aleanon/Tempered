@@ -625,6 +625,39 @@ mod oauth_tests {
     }
 
     #[tokio::test]
+    async fn a_provider_address_in_other_case_reaches_the_existing_account() {
+        // Signed up as user@example.com, with 2FA; the provider reports
+        // User@Example.COM. That is the same account, held to its 2FA (and,
+        // with no 2FA capability here, refused), not a fresh second account
+        // the provider logs straight into.
+        let users = HashMapUserStore::new();
+        add_account(&users, "the-users-own-password", true).await;
+        let identities = HashMapOAuthIdentityStore::new();
+        identities
+            .link_identity("github".to_string(), "gh-1".to_string(), email())
+            .await
+            .unwrap();
+        let flow = OAuthFlow::new(
+            HashMapOAuthStateStore::new(),
+            identities,
+            MockClient {
+                email: "User@Example.COM".to_string(),
+            },
+        )
+        .with_provider(provider());
+        let scheme = JwtScheme::new(
+            users,
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_oauth(flow);
+
+        let result = oauth_login(&scheme).await;
+        assert!(matches!(result, Err(CredentialError::TwoFaNotConfigured)));
+    }
+
+    #[tokio::test]
     async fn two_factor_set_at_an_unverified_signup_does_not_bind_the_owner() {
         // The scheme offers email verification and this address was never
         // confirmed, yet whoever signed up turned 2FA on. The provider's user
