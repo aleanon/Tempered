@@ -2,6 +2,7 @@ pub mod auth_validation;
 pub mod authentication;
 pub mod cookie_util;
 pub mod email;
+pub mod endpoints;
 pub mod handlers;
 pub mod http;
 pub mod oauth;

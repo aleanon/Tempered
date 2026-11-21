@@ -1,0 +1,325 @@
+//! The route table: what each capability mounts, where, and at which tier.
+//!
+//! These pin what `tempered_axum`'s wiring mounted before the table existed,
+//! and the tier rules that must hold whatever the scheme enables.
+
+use http::Method;
+use secrecy::Secret;
+use tempered_core::{OAuthHttpClient, OAuthHttpError, OAuthProviderConfig, OAuthUserInfo};
+
+use super::{Endpoints, PathOverrides, RouteId, RouteSpec, Tier};
+use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
+use crate::authentication::jwt_scheme::JwtScheme;
+use crate::email::MockEmailClient;
+use crate::oauth::OAuthFlow;
+use crate::passkey::PasskeyFlow;
+use crate::passkey::flow::test_support::MockVerifier;
+use crate::persistence::{
+    HashMapChallengeStore, HashMapEmailVerificationTokenStore, HashMapOAuthIdentityStore,
+    HashMapOAuthStateStore, HashMapPasskeyCredentialStore, HashMapPasswordResetTokenStore,
+    HashMapTokenEpochStore, HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
+};
+
+/// Never called: the table is built without any request.
+#[derive(Clone)]
+struct NoOAuthClient;
+
+#[async_trait::async_trait]
+impl OAuthHttpClient for NoOAuthClient {
+    async fn exchange_code(
+        &self,
+        _: &OAuthProviderConfig,
+        _: &str,
+        _: &str,
+    ) -> Result<String, OAuthHttpError> {
+        unreachable!()
+    }
+    async fn fetch_user_info(
+        &self,
+        _: &OAuthProviderConfig,
+        _: &str,
+    ) -> Result<OAuthUserInfo, OAuthHttpError> {
+        unreachable!()
+    }
+}
+
+fn config(cookie: &str, secret: &str) -> JwtAuthConfig {
+    JwtAuthConfig {
+        jwt_cookie_name: cookie.to_string(),
+        jwt_secret: Secret::new(secret.to_string()),
+        token_ttl_in_seconds: 3600,
+        audience: None,
+        issuer: None,
+    }
+}
+
+fn minimal() -> impl Endpoints {
+    JwtScheme::new(
+        HashMapUserStore::new(),
+        config("jwt", "a-test-secret-that-is-long-enough"),
+        HashSetBannedTokenStore::new(),
+        HashMapTokenEpochStore::new(),
+    )
+}
+
+/// Every capability. `elevated` puts password change, account deletion and
+/// passkey enrolment behind the elevated token.
+fn everything(elevated: bool) -> impl Endpoints {
+    let oauth = OAuthFlow::new(
+        HashMapOAuthStateStore::new(),
+        HashMapOAuthIdentityStore::new(),
+        NoOAuthClient,
+    );
+    let passkeys = PasskeyFlow::new(
+        HashMapPasskeyCredentialStore::new(),
+        HashMapChallengeStore::new(),
+        MockVerifier,
+    );
+    JwtScheme::new(
+        HashMapUserStore::new(),
+        config("jwt", "a-test-secret-that-is-long-enough"),
+        HashSetBannedTokenStore::new(),
+        HashMapTokenEpochStore::new(),
+    )
+    .supports_registration()
+    .supports_password_change()
+    .supports_account_deletion()
+    .supports_2fa(HashMapTwoFaCodeStore::new(), MockEmailClient::new())
+    .supports_password_reset(
+        HashMapPasswordResetTokenStore::new(),
+        MockEmailClient::new(),
+    )
+    .supports_email_verification(
+        HashMapEmailVerificationTokenStore::new(),
+        MockEmailClient::new(),
+    )
+    .supports_oauth(oauth)
+    .supports_passkeys(passkeys)
+    .supports_elevation(
+        HashSetBannedTokenStore::new(),
+        config("elevated_jwt", "an-elevated-test-secret-long-enough"),
+        move |e| {
+            if elevated {
+                e.supports_password_change()
+                    .supports_account_deletion()
+                    .supports_passkey_enrollment()
+            } else {
+                e
+            }
+        },
+    )
+}
+
+fn table(
+    scheme: &impl Endpoints,
+    overrides: &PathOverrides,
+) -> Vec<(RouteId, Method, String, Tier)> {
+    let mut rows: Vec<_> = scheme
+        .routes(overrides)
+        .into_iter()
+        .map(
+            |RouteSpec {
+                 id,
+                 method,
+                 path,
+                 tier,
+             }| (id, method, path, tier),
+        )
+        .collect();
+    rows.sort_by_key(|row| row.0);
+    rows
+}
+
+fn row(id: RouteId, method: Method, path: &str, tier: Tier) -> (RouteId, Method, String, Tier) {
+    (id, method, path.to_string(), tier)
+}
+
+#[test]
+fn a_scheme_with_every_capability_serves_the_default_table() {
+    use RouteId::*;
+    use Tier::*;
+    let mut expected = vec![
+        row(RouteId::Login, Method::POST, "/login", Public),
+        row(Logout, Method::POST, "/logout", Tier::Login),
+        row(VerifyToken, Method::POST, "/verify-token", Tier::Login),
+        row(Signup, Method::POST, "/signup", Public),
+        row(ChangePassword, Method::POST, "/change-password", Verified),
+        row(
+            DeleteAccount,
+            Method::DELETE,
+            "/delete-account",
+            Tier::Login,
+        ),
+        row(Verify2Fa, Method::POST, "/verify-2fa", Public),
+        row(Elevate, Method::POST, "/elevate", Verified),
+        row(
+            VerifyElevatedToken,
+            Method::POST,
+            "/elevated/verify-token",
+            Elevated,
+        ),
+        row(
+            PasswordResetInitiate,
+            Method::POST,
+            "/password-reset/initiate",
+            Public,
+        ),
+        row(
+            PasswordResetComplete,
+            Method::POST,
+            "/password-reset/complete",
+            Public,
+        ),
+        row(VerifyEmail, Method::POST, "/verify-email", Tier::Login),
+        row(
+            ResendVerification,
+            Method::POST,
+            "/verify-email/resend",
+            Tier::Login,
+        ),
+        row(OAuthStart, Method::GET, "/oauth/{provider}/start", Public),
+        row(
+            OAuthCallback,
+            Method::GET,
+            "/oauth/{provider}/callback",
+            Public,
+        ),
+        row(
+            PasskeyRegisterStart,
+            Method::POST,
+            "/passkey/register/start",
+            Verified,
+        ),
+        row(
+            PasskeyRegisterFinish,
+            Method::POST,
+            "/passkey/register/finish",
+            Verified,
+        ),
+        row(
+            PasskeyLoginStart,
+            Method::POST,
+            "/passkey/login/start",
+            Public,
+        ),
+        row(
+            PasskeyLoginFinish,
+            Method::POST,
+            "/passkey/login/finish",
+            Public,
+        ),
+    ];
+    expected.sort_by_key(|row| row.0);
+    assert_eq!(
+        table(&everything(false), &PathOverrides::default()),
+        expected
+    );
+}
+
+#[test]
+fn step_up_moves_credential_changes_behind_the_elevated_token() {
+    let rows = table(&everything(true), &PathOverrides::default());
+    let find = |id| rows.iter().find(|r| r.0 == id).unwrap().clone();
+    assert_eq!(
+        find(RouteId::ChangePassword),
+        row(
+            RouteId::ChangePassword,
+            Method::POST,
+            "/elevated/change-password",
+            Tier::Elevated
+        )
+    );
+    assert_eq!(
+        find(RouteId::DeleteAccount),
+        row(
+            RouteId::DeleteAccount,
+            Method::DELETE,
+            "/elevated/delete-account",
+            Tier::Elevated
+        )
+    );
+    assert_eq!(
+        find(RouteId::PasskeyRegisterStart),
+        row(
+            RouteId::PasskeyRegisterStart,
+            Method::POST,
+            "/elevated/passkey/register/start",
+            Tier::Elevated
+        )
+    );
+}
+
+#[test]
+fn a_scheme_lists_only_the_capabilities_it_has() {
+    let ids: Vec<_> = table(&minimal(), &PathOverrides::default())
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(ids, [RouteId::Login, RouteId::Logout, RouteId::VerifyToken]);
+}
+
+#[test]
+fn overrides_move_routes_and_keep_their_tier() {
+    let mut o = PathOverrides::default();
+    o.set(RouteId::Login, "/signin");
+    o.set(RouteId::OAuthStart, "/auth/{provider}");
+    o.set_passkey_prefix("/webauthn");
+    o.set(RouteId::PasskeyLoginFinish, "/webauthn/done");
+    let rows = table(&everything(false), &o);
+    let find = |id| rows.iter().find(|r| r.0 == id).unwrap().clone();
+    assert_eq!(find(RouteId::Login).2, "/signin");
+    assert_eq!(find(RouteId::OAuthStart).2, "/auth/{provider}");
+    assert_eq!(
+        find(RouteId::PasskeyRegisterStart).2,
+        "/webauthn/register/start"
+    );
+    assert_eq!(find(RouteId::PasskeyRegisterStart).3, Tier::Verified);
+    assert_eq!(find(RouteId::PasskeyLoginFinish).2, "/webauthn/done");
+}
+
+#[test]
+#[should_panic(expected = "are both POST /signup")]
+fn an_override_onto_another_route_is_refused() {
+    let mut o = PathOverrides::default();
+    o.set(RouteId::Login, "/signup");
+    everything(false).routes(&o);
+}
+
+#[test]
+fn tier_rules_hold_for_every_scheme_built_here() {
+    for routes in [
+        minimal().routes(&PathOverrides::default()),
+        everything(false).routes(&PathOverrides::default()),
+        everything(true).routes(&PathOverrides::default()),
+    ] {
+        for spec in &routes {
+            use RouteId::*;
+            match spec.id {
+                // Changing or adding a credential: never below a verified
+                // address (the elevated tier is reached through /elevate,
+                // itself a verified route).
+                ChangePassword | PasskeyRegisterStart | PasskeyRegisterFinish | Elevate => {
+                    assert!(spec.tier >= Tier::Verified, "{spec:?}")
+                }
+                // Needs the account's login as well as the inbox.
+                VerifyEmail | ResendVerification | Logout | VerifyToken => {
+                    assert_eq!(spec.tier, Tier::Login, "{spec:?}")
+                }
+                DeleteAccount => assert!(spec.tier >= Tier::Login, "{spec:?}"),
+                VerifyElevatedToken => assert_eq!(spec.tier, Tier::Elevated, "{spec:?}"),
+                // Logging in, signing up and recovering are public by nature.
+                Login
+                | Signup
+                | Verify2Fa
+                | PasswordResetInitiate
+                | PasswordResetComplete
+                | OAuthStart
+                | OAuthCallback
+                | PasskeyLoginStart
+                | PasskeyLoginFinish => {
+                    assert_eq!(spec.tier, Tier::Public, "{spec:?}")
+                }
+            }
+        }
+    }
+}

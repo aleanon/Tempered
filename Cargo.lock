@@ -3121,6 +3121,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "cookie",
  "dotenvy",

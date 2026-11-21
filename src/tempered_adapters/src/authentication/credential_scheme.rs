@@ -694,6 +694,20 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
         &self.routes
     }
 
+    /// The capability slots, in order: 2FA, elevation, password reset, email
+    /// verification, OAuth, passkeys. For the route table
+    /// (`crate::endpoints`), which asks each slot for its routes.
+    pub(crate) fn slots(&self) -> (&F, &L, &R, &M, &O, &K) {
+        (
+            &self.two_fa,
+            &self.elevation,
+            &self.password_reset,
+            &self.email_verify,
+            &self.oauth,
+            &self.passkeys,
+        )
+    }
+
     /// Expose the self-service **signup** route (`/signup`).
     pub fn supports_registration(mut self) -> Self {
         self.routes.registration = true;

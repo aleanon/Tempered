@@ -1,0 +1,884 @@
+//! The route table and dispatcher for [`CredentialScheme`] (JWT and session
+//! schemes) and [`ApiKeyScheme`].
+//!
+//! The always-on routes (login, logout, verify-token, and the flag-gated
+//! signup, password change and account deletion) are served here. Each
+//! capability slot contributes its own routes through [`SlotEndpoints`]: a
+//! no-op for `()` (capability off), the real routes for the filled slot. A
+//! slot lists only routes its own `handle` serves, so the table and the
+//! dispatcher cannot drift, and a scheme without a capability has neither
+//! its routes nor its code paths.
+
+use async_trait::async_trait;
+use http::{Method, StatusCode, request::Parts};
+use secrecy::{ExposeSecret, Secret};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use tempered_core::{
+    AuthValidator, AuthenticationScheme, CeremonyId, ClassifyError, Email,
+    HttpAuthenticationScheme, HttpElevationScheme, HttpOAuth2Scheme, IdentityClaims, Password,
+    RequiresEmailVerification, SupportsAccountDeletion, SupportsPasskeys, SupportsPasswordChange,
+    SupportsPasswordReset, SupportsRegistration, SupportsTwoFactor, constant_time_eq,
+};
+
+use super::{
+    EndpointRequest, EndpointResponse, Endpoints, PathOverrides, RouteId, RouteSpec, Tier, checked,
+    classified, error_response, json_response, status_for, subject_email, validate_elevated,
+    validate_login,
+};
+use crate::authentication::api_key_scheme::ApiKeyScheme;
+use crate::authentication::credential_scheme::{
+    Authz, CredentialScheme, Elevation, EmailVerify, OAuth, Passkeys, PasswordReset, RouteFlags,
+    TwoFa,
+};
+use crate::authentication::token_strategy::TokenStrategy;
+use crate::handlers::{self, verify_2fa::Verify2FaError};
+use crate::http::HttpResponseBuilder;
+
+/// What one capability slot contributes to the route table. Every method
+/// has a no-op default, which is all `()` (capability off) uses.
+///
+/// Public only because it appears in the bounds of the [`Endpoints`] impl
+/// for [`CredentialScheme`]; not meant to be implemented outside this crate.
+#[async_trait]
+pub trait SlotEndpoints<S: Sync>: Send + Sync {
+    /// Append this capability's routes.
+    fn routes(&self, _flags: &RouteFlags, _o: &PathOverrides, _out: &mut Vec<RouteSpec>) {}
+
+    /// Serve `id` if it is one of this capability's routes (`who` is the
+    /// caller the route's tier admitted), or `None`.
+    async fn handle(
+        &self,
+        _scheme: &S,
+        _id: RouteId,
+        _req: &EndpointRequest,
+        _who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        None
+    }
+
+    /// The verified-tier check (email verification slot).
+    async fn check_verified(&self, _scheme: &S, _email: &Email) -> Result<(), EndpointResponse> {
+        Ok(())
+    }
+
+    /// The elevated-tier check (elevation slot); `None` without elevation.
+    async fn elevated_identity(
+        &self,
+        _scheme: &S,
+        _parts: &Parts,
+    ) -> Option<Result<Email, EndpointResponse>> {
+        None
+    }
+
+    /// Logout, if this slot changes it (elevation also revokes the elevated
+    /// token).
+    async fn logout(&self, _scheme: &S, _req: &EndpointRequest) -> Option<EndpointResponse> {
+        None
+    }
+}
+
+impl<S: Sync> SlotEndpoints<S> for () {}
+
+fn route(id: RouteId, method: Method, path: String, tier: Tier) -> RouteSpec {
+    RouteSpec {
+        id,
+        method,
+        path,
+        tier,
+    }
+}
+
+fn not_logged_in() -> EndpointResponse {
+    error_response(StatusCode::UNAUTHORIZED, "Not logged in")
+}
+
+fn parse<T: DeserializeOwned>(req: &EndpointRequest) -> Result<T, EndpointResponse> {
+    req.json()
+}
+
+/// Run `f`, turning `Err(response)` into the answer.
+macro_rules! respond {
+    ($body:expr) => {{
+        let result: Result<EndpointResponse, EndpointResponse> = (async { $body }).await;
+        Some(result.unwrap_or_else(|response| response))
+    }};
+}
+
+fn bad_request(message: impl std::fmt::Display) -> EndpointResponse {
+    error_response(StatusCode::BAD_REQUEST, &message.to_string())
+}
+
+// ============================================================================
+// CredentialScheme: the always-on routes, the tiers, and the slots
+// ============================================================================
+
+type LoginClaims<S> = <<S as AuthenticationScheme>::Validator as AuthValidator>::Claims;
+
+#[derive(Deserialize)]
+struct SignupRequest<D> {
+    email: Secret<String>,
+    password: Secret<String>,
+    #[serde(flatten)]
+    registration_data: D,
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordRequest {
+    new_password: Secret<String>,
+}
+
+// The private slot traits in the bounds are internal by design.
+#[allow(private_bounds)]
+#[async_trait]
+impl<U, T, F, L, R, M, O, K> Endpoints for CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    Self: HttpAuthenticationScheme<LogoutOutput = String>
+        + SupportsRegistration
+        + SupportsPasswordChange
+        + SupportsAccountDeletion
+        + Send
+        + Sync,
+    <Self as AuthenticationScheme>::AuthError: ClassifyError,
+    <Self as SupportsRegistration>::RegistrationError: ClassifyError,
+    <Self as SupportsPasswordChange>::PasswordChangeError: ClassifyError,
+    <Self as SupportsAccountDeletion>::AccountDeletionError: ClassifyError,
+    <Self as AuthenticationScheme>::Validator: AuthValidator<RequestParts = Parts>,
+    <<Self as AuthenticationScheme>::Validator as AuthValidator>::Error: ClassifyError,
+    LoginClaims<Self>: IdentityClaims,
+    T: TokenStrategy,
+    F: SlotEndpoints<Self>,
+    L: SlotEndpoints<Self>,
+    R: SlotEndpoints<Self>,
+    M: SlotEndpoints<Self>,
+    O: SlotEndpoints<Self>,
+    K: SlotEndpoints<Self>,
+{
+    fn routes(&self, o: &PathOverrides) -> Vec<RouteSpec> {
+        use RouteId::*;
+        let flags = self.route_flags();
+        let path = |id, default: &str| o.path_or(id, default);
+        let mut out = vec![
+            route(Login, Method::POST, path(Login, "/login"), Tier::Public),
+            route(
+                VerifyToken,
+                Method::POST,
+                path(VerifyToken, "/verify-token"),
+                Tier::Login,
+            ),
+            route(Logout, Method::POST, path(Logout, "/logout"), Tier::Login),
+        ];
+        if flags.registration {
+            out.push(route(
+                Signup,
+                Method::POST,
+                path(Signup, "/signup"),
+                Tier::Public,
+            ));
+        }
+        // Changing a credential needs a verified address. Deleting the
+        // account does not: whoever signed up with a mistyped address can
+        // still remove it.
+        match flags.password_change {
+            None => {}
+            Some(Authz::Login) => out.push(route(
+                ChangePassword,
+                Method::POST,
+                path(ChangePassword, "/change-password"),
+                Tier::Verified,
+            )),
+            Some(Authz::Elevated) => out.push(route(
+                ChangePassword,
+                Method::POST,
+                path(ChangePassword, "/elevated/change-password"),
+                Tier::Elevated,
+            )),
+        }
+        match flags.account_deletion {
+            None => {}
+            Some(Authz::Login) => out.push(route(
+                DeleteAccount,
+                Method::DELETE,
+                path(DeleteAccount, "/delete-account"),
+                Tier::Login,
+            )),
+            Some(Authz::Elevated) => out.push(route(
+                DeleteAccount,
+                Method::DELETE,
+                path(DeleteAccount, "/elevated/delete-account"),
+                Tier::Elevated,
+            )),
+        }
+
+        let (f, l, r, m, oauth, k) = self.slots();
+        f.routes(flags, o, &mut out);
+        l.routes(flags, o, &mut out);
+        r.routes(flags, o, &mut out);
+        m.routes(flags, o, &mut out);
+        oauth.routes(flags, o, &mut out);
+        k.routes(flags, o, &mut out);
+        checked(out)
+    }
+
+    async fn handle(&self, spec: &RouteSpec, req: EndpointRequest) -> EndpointResponse {
+        let who = match self.admit(spec.tier, &req.parts).await {
+            Ok(who) => who,
+            Err(response) => return response,
+        };
+        let who = who.as_ref();
+        if let Some(response) = self.handle_core(spec.id, &req, who).await {
+            return response;
+        }
+        let (f, l, r, m, o, k) = self.slots();
+        if let Some(response) = f.handle(self, spec.id, &req, who).await {
+            return response;
+        }
+        if let Some(response) = l.handle(self, spec.id, &req, who).await {
+            return response;
+        }
+        if let Some(response) = r.handle(self, spec.id, &req, who).await {
+            return response;
+        }
+        if let Some(response) = m.handle(self, spec.id, &req, who).await {
+            return response;
+        }
+        if let Some(response) = o.handle(self, spec.id, &req, who).await {
+            return response;
+        }
+        if let Some(response) = k.handle(self, spec.id, &req, who).await {
+            return response;
+        }
+        error_response(StatusCode::NOT_FOUND, "Not found")
+    }
+
+    async fn check_verified(&self, email: &Email) -> Result<(), EndpointResponse> {
+        self.slots().3.check_verified(self, email).await
+    }
+}
+
+#[allow(private_bounds)]
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    Self: HttpAuthenticationScheme<LogoutOutput = String>
+        + SupportsRegistration
+        + SupportsPasswordChange
+        + SupportsAccountDeletion
+        + Send
+        + Sync,
+    <Self as AuthenticationScheme>::AuthError: ClassifyError,
+    <Self as SupportsRegistration>::RegistrationError: ClassifyError,
+    <Self as SupportsPasswordChange>::PasswordChangeError: ClassifyError,
+    <Self as SupportsAccountDeletion>::AccountDeletionError: ClassifyError,
+    <Self as AuthenticationScheme>::Validator: AuthValidator<RequestParts = Parts>,
+    <<Self as AuthenticationScheme>::Validator as AuthValidator>::Error: ClassifyError,
+    LoginClaims<Self>: IdentityClaims,
+    L: SlotEndpoints<Self>,
+    M: SlotEndpoints<Self>,
+{
+    /// Check `tier` and return who passed it (`None` for public routes).
+    async fn admit(&self, tier: Tier, parts: &Parts) -> Result<Option<Email>, EndpointResponse> {
+        match tier {
+            Tier::Public => Ok(None),
+            Tier::Login | Tier::Verified => {
+                let claims = validate_login(self, parts).await?;
+                let email = subject_email(&claims)?;
+                if tier == Tier::Verified {
+                    self.slots().3.check_verified(self, &email).await?;
+                }
+                Ok(Some(email))
+            }
+            Tier::Elevated => match self.slots().1.elevated_identity(self, parts).await {
+                Some(result) => result.map(Some),
+                // Unreachable in a table this scheme built: elevated routes
+                // exist only with elevation.
+                None => Err(not_logged_in()),
+            },
+        }
+    }
+
+    async fn handle_core(
+        &self,
+        id: RouteId,
+        req: &EndpointRequest,
+        who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        match id {
+            RouteId::Login => respond!({
+                let credentials = parse(req)?;
+                handlers::handle_login(self, credentials, HttpResponseBuilder::new())
+                    .await
+                    .map_err(classified)
+            }),
+            RouteId::VerifyToken => respond!({
+                handlers::handle_verify_token(HttpResponseBuilder::new())
+                    .await
+                    .map_err(|e| error_response(StatusCode::UNAUTHORIZED, &e))
+            }),
+            RouteId::Logout => {
+                if let Some(response) = self.slots().1.logout(self, req).await {
+                    return Some(response);
+                }
+                respond!({
+                    handlers::handle_logout(self, &req.head(), HttpResponseBuilder::new())
+                        .await
+                        .map_err(|e| error_response(StatusCode::UNAUTHORIZED, &e))
+                })
+            }
+            RouteId::Signup => respond!({
+                let request: SignupRequest<<Self as SupportsRegistration>::RegistrationData> =
+                    parse(req)?;
+                let email = Email::try_from(request.email).map_err(bad_request)?;
+                let password = Password::try_from(request.password).map_err(bad_request)?;
+                let data = handlers::signup::SignupData {
+                    email,
+                    password,
+                    registration_data: request.registration_data,
+                };
+                handlers::handle_signup(self, data, HttpResponseBuilder::new())
+                    .await
+                    .map_err(classified)
+            }),
+            RouteId::ChangePassword => respond!({
+                let email = who.ok_or_else(not_logged_in)?.clone();
+                let request: ChangePasswordRequest = parse(req)?;
+                let new_password = Password::try_from(request.new_password).map_err(bad_request)?;
+                self.change_password(email, new_password)
+                    .await
+                    .map_err(classified)?;
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({ "status": "success", "message": "Password changed successfully" }),
+                ))
+            }),
+            RouteId::DeleteAccount => respond!({
+                let email = who.ok_or_else(not_logged_in)?.clone();
+                self.delete_account(email).await.map_err(classified)?;
+                Ok(http::Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(String::new())
+                    .expect("a status always builds"))
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ============================================================================
+// Slots
+// ============================================================================
+
+// ---- 2FA -------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct Verify2FaRequest {
+    email: Secret<String>,
+    #[serde(rename = "loginAttemptId")]
+    login_attempt_id: String,
+    #[serde(rename = "2FACode")]
+    two_factor_code: String,
+}
+
+#[async_trait]
+impl<S, St, E> SlotEndpoints<S> for TwoFa<St, E>
+where
+    S: HttpAuthenticationScheme + SupportsTwoFactor + Sync,
+    S::TwoFactorError: ClassifyError,
+    St: Send + Sync,
+    E: Send + Sync,
+{
+    fn routes(&self, _flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+        out.push(route(
+            RouteId::Verify2Fa,
+            Method::POST,
+            o.path_or(RouteId::Verify2Fa, "/verify-2fa"),
+            Tier::Public,
+        ));
+    }
+
+    async fn handle(
+        &self,
+        scheme: &S,
+        id: RouteId,
+        req: &EndpointRequest,
+        _who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        if id != RouteId::Verify2Fa {
+            return None;
+        }
+        respond!({
+            let request: Verify2FaRequest = parse(req)?;
+            let data = handlers::verify_2fa::Verify2FaData {
+                email: request.email.expose_secret().clone(),
+                login_attempt_id: request.login_attempt_id,
+                two_factor_code: request.two_factor_code,
+            };
+            handlers::handle_verify_2fa(scheme, data, HttpResponseBuilder::new())
+                .await
+                .map_err(|e| match e {
+                    Verify2FaError::InvalidEmail(e) => bad_request(e),
+                    Verify2FaError::InvalidAttemptId(e) | Verify2FaError::InvalidCode(e) => {
+                        bad_request(e)
+                    }
+                    Verify2FaError::VerificationFailed(e) => classified(e),
+                    Verify2FaError::ResponseBuild(e) => {
+                        tracing::error!(error = %e, "response builder failed (scheme bug)");
+                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
+                    }
+                })
+        })
+    }
+}
+
+// ---- Elevation -------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ElevateRequest {
+    email: Secret<String>,
+    password: Secret<String>,
+}
+
+#[async_trait]
+impl<S, TE> SlotEndpoints<S> for Elevation<TE>
+where
+    S: HttpElevationScheme + Sync,
+    S::ElevationError: ClassifyError,
+    S::ElevatedValidator: AuthValidator<RequestParts = Parts>,
+    <S::ElevatedValidator as AuthValidator>::Error: ClassifyError,
+    <S::ElevatedValidator as AuthValidator>::Claims: IdentityClaims,
+    TE: Send + Sync,
+{
+    fn routes(&self, _flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+        // `/elevate` needs a verified address, like every credential change;
+        // everything elevated is reached through it.
+        out.push(route(
+            RouteId::Elevate,
+            Method::POST,
+            o.path_or(RouteId::Elevate, "/elevate"),
+            Tier::Verified,
+        ));
+        out.push(route(
+            RouteId::VerifyElevatedToken,
+            Method::POST,
+            o.path_or(RouteId::VerifyElevatedToken, "/elevated/verify-token"),
+            Tier::Elevated,
+        ));
+    }
+
+    async fn handle(
+        &self,
+        scheme: &S,
+        id: RouteId,
+        req: &EndpointRequest,
+        who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        match id {
+            RouteId::Elevate => respond!({
+                let who = who.ok_or_else(not_logged_in)?;
+                let request: ElevateRequest = parse(req)?;
+                let email = Email::try_from(request.email).map_err(bad_request)?;
+                let password = Password::try_from(request.password).map_err(bad_request)?;
+                // Elevation is bound to the session: the body's credentials
+                // must be the logged-in user's. The body is attacker-chosen
+                // and the session subject is not, so compare in constant time.
+                if !constant_time_eq(who.as_ref().expose_secret(), email.as_ref().expose_secret()) {
+                    return Err(error_response(
+                        StatusCode::FORBIDDEN,
+                        "Elevation must target the logged-in user",
+                    ));
+                }
+                handlers::handle_elevate(scheme, email, password, HttpResponseBuilder::new())
+                    .await
+                    .map_err(|(category, message)| error_response(status_for(category), &message))
+            }),
+            RouteId::VerifyElevatedToken => respond!({
+                handlers::handle_verify_elevated_token(HttpResponseBuilder::new())
+                    .await
+                    .map_err(|e| error_response(StatusCode::UNAUTHORIZED, &e))
+            }),
+            _ => None,
+        }
+    }
+
+    async fn elevated_identity(
+        &self,
+        scheme: &S,
+        parts: &Parts,
+    ) -> Option<Result<Email, EndpointResponse>> {
+        Some(match validate_elevated(scheme, parts).await {
+            Ok(claims) => subject_email(&claims),
+            Err(response) => Err(response),
+        })
+    }
+
+    async fn logout(&self, scheme: &S, req: &EndpointRequest) -> Option<EndpointResponse> {
+        respond!({
+            handlers::handle_logout_with_elevation(scheme, &req.head(), HttpResponseBuilder::new())
+                .await
+                .map_err(|e| error_response(StatusCode::UNAUTHORIZED, &e))
+        })
+    }
+}
+
+// ---- Password reset --------------------------------------------------------
+
+#[derive(Deserialize)]
+struct InitiateResetRequest {
+    email: Secret<String>,
+}
+
+#[derive(Deserialize)]
+struct CompleteResetRequest {
+    reset_token: String,
+    new_password: Secret<String>,
+}
+
+#[async_trait]
+impl<S, P, E> SlotEndpoints<S> for PasswordReset<P, E>
+where
+    S: SupportsPasswordReset + Sync,
+    S::PasswordResetError: ClassifyError,
+    P: Send + Sync,
+    E: Send + Sync,
+{
+    fn routes(&self, _flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+        out.push(route(
+            RouteId::PasswordResetInitiate,
+            Method::POST,
+            o.path_or(RouteId::PasswordResetInitiate, "/password-reset/initiate"),
+            Tier::Public,
+        ));
+        out.push(route(
+            RouteId::PasswordResetComplete,
+            Method::POST,
+            o.path_or(RouteId::PasswordResetComplete, "/password-reset/complete"),
+            Tier::Public,
+        ));
+    }
+
+    async fn handle(
+        &self,
+        scheme: &S,
+        id: RouteId,
+        req: &EndpointRequest,
+        _who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        match id {
+            RouteId::PasswordResetInitiate => respond!({
+                let request: InitiateResetRequest = parse(req)?;
+                // The same answer whether or not the address is registered.
+                if let Ok(email) = Email::try_from(request.email) {
+                    let _ = scheme.initiate_password_reset(email).await;
+                }
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({
+                        "status": "success",
+                        "message": "If that email address is registered, you will receive a password reset link"
+                    }),
+                ))
+            }),
+            RouteId::PasswordResetComplete => respond!({
+                let request: CompleteResetRequest = parse(req)?;
+                let new_password = Password::try_from(request.new_password).map_err(bad_request)?;
+                scheme
+                    .complete_password_reset(request.reset_token, new_password)
+                    .await
+                    .map_err(classified)?;
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({ "status": "success", "message": "Password reset successfully" }),
+                ))
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ---- Email verification ----------------------------------------------------
+
+#[derive(Deserialize)]
+struct VerifyEmailRequest {
+    token: String,
+}
+
+#[async_trait]
+impl<S, V, E> SlotEndpoints<S> for EmailVerify<V, E>
+where
+    S: RequiresEmailVerification + Sync,
+    S::EmailVerificationError: ClassifyError,
+    V: Send + Sync,
+    E: Send + Sync,
+{
+    fn routes(&self, _flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+        // Verifying needs the token (the inbox) and a login (the account):
+        // either alone could prove an account someone else created with the
+        // address. Login tier, not verified, like asking for another link.
+        out.push(route(
+            RouteId::VerifyEmail,
+            Method::POST,
+            o.path_or(RouteId::VerifyEmail, "/verify-email"),
+            Tier::Login,
+        ));
+        out.push(route(
+            RouteId::ResendVerification,
+            Method::POST,
+            o.path_or(RouteId::ResendVerification, "/verify-email/resend"),
+            Tier::Login,
+        ));
+    }
+
+    async fn handle(
+        &self,
+        scheme: &S,
+        id: RouteId,
+        req: &EndpointRequest,
+        who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        match id {
+            RouteId::VerifyEmail => respond!({
+                let email = who.ok_or_else(not_logged_in)?;
+                let request: VerifyEmailRequest = parse(req)?;
+                handlers::handle_verify_email(
+                    scheme,
+                    email,
+                    request.token,
+                    HttpResponseBuilder::new(),
+                )
+                .await
+                .map_err(classified)
+            }),
+            RouteId::ResendVerification => respond!({
+                let email = who.ok_or_else(not_logged_in)?.clone();
+                scheme
+                    .initiate_email_verification(email)
+                    .await
+                    .map_err(classified)?;
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({ "status": "success" }),
+                ))
+            }),
+            _ => None,
+        }
+    }
+
+    async fn check_verified(&self, scheme: &S, email: &Email) -> Result<(), EndpointResponse> {
+        match scheme.is_email_verified(email).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(error_response(
+                StatusCode::FORBIDDEN,
+                "Email address not verified",
+            )),
+            Err(e) => Err(classified(e)),
+        }
+    }
+}
+
+// ---- OAuth -----------------------------------------------------------------
+
+#[async_trait]
+impl<S, ST, ID, HC> SlotEndpoints<S> for OAuth<ST, ID, HC>
+where
+    S: HttpOAuth2Scheme + Sync,
+    S::OAuth2Error: ClassifyError,
+    ST: Send + Sync,
+    ID: Send + Sync,
+    HC: Send + Sync,
+{
+    fn routes(&self, _flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+        // GET: the browser is redirected through both.
+        out.push(route(
+            RouteId::OAuthStart,
+            Method::GET,
+            o.path_or(RouteId::OAuthStart, "/oauth/{provider}/start"),
+            Tier::Public,
+        ));
+        out.push(route(
+            RouteId::OAuthCallback,
+            Method::GET,
+            o.path_or(RouteId::OAuthCallback, "/oauth/{provider}/callback"),
+            Tier::Public,
+        ));
+    }
+
+    async fn handle(
+        &self,
+        scheme: &S,
+        id: RouteId,
+        req: &EndpointRequest,
+        _who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        let provider = || {
+            req.param("provider")
+                .ok_or_else(|| bad_request("Missing provider"))
+        };
+        match id {
+            RouteId::OAuthStart => respond!({
+                handlers::handle_oauth_start(scheme, provider()?, HttpResponseBuilder::new())
+                    .await
+                    .map_err(classified)
+            }),
+            RouteId::OAuthCallback => respond!({
+                let (Some(code), Some(state)) = (req.query("code"), req.query("state")) else {
+                    return Err(bad_request("Missing code or state"));
+                };
+                // The browser-bound state lives in the cookie the start leg set.
+                let head = req.head();
+                let cookie_state =
+                    tempered_core::AuthRequest::cookie(&head, scheme.oauth_state_cookie_name())
+                        .unwrap_or("");
+                handlers::handle_oauth_callback(
+                    scheme,
+                    provider()?,
+                    &code,
+                    &state,
+                    cookie_state,
+                    HttpResponseBuilder::new(),
+                )
+                .await
+                .map_err(classified)
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ---- Passkeys --------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct PasskeyLoginStartRequest {
+    /// Omit for a usernameless (discoverable-credential) ceremony.
+    #[serde(default)]
+    email: Option<Secret<String>>,
+}
+
+#[derive(Deserialize)]
+struct PasskeyFinishRequest {
+    ceremony_id: String,
+    response: Value,
+}
+
+#[async_trait]
+impl<S, CS, ChS, V> SlotEndpoints<S> for Passkeys<CS, ChS, V>
+where
+    S: SupportsPasskeys + HttpAuthenticationScheme + Sync,
+    S::PasskeyError: ClassifyError,
+    CS: Send + Sync,
+    ChS: Send + Sync,
+    V: Send + Sync,
+{
+    fn routes(&self, flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+        let prefix = o.passkey_prefix();
+        // Enrolling a passkey grants login as that user, so it always needs
+        // an authenticated caller with a verified address, or an elevated
+        // token if the scheme asked for step-up. Never public.
+        let (enrol_prefix, enrol_tier) = match flags.passkey_enrollment {
+            Authz::Login => (prefix.to_string(), Tier::Verified),
+            Authz::Elevated => (format!("/elevated{prefix}"), Tier::Elevated),
+        };
+        for (id, default, tier) in [
+            (
+                RouteId::PasskeyRegisterStart,
+                format!("{enrol_prefix}/register/start"),
+                enrol_tier,
+            ),
+            (
+                RouteId::PasskeyRegisterFinish,
+                format!("{enrol_prefix}/register/finish"),
+                enrol_tier,
+            ),
+            // Logging in with a passkey is, by definition, unauthenticated.
+            (
+                RouteId::PasskeyLoginStart,
+                format!("{prefix}/login/start"),
+                Tier::Public,
+            ),
+            (
+                RouteId::PasskeyLoginFinish,
+                format!("{prefix}/login/finish"),
+                Tier::Public,
+            ),
+        ] {
+            out.push(route(id, Method::POST, o.path_or(id, &default), tier));
+        }
+    }
+
+    async fn handle(
+        &self,
+        scheme: &S,
+        id: RouteId,
+        req: &EndpointRequest,
+        who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        match id {
+            RouteId::PasskeyRegisterStart => respond!({
+                let email = who.ok_or_else(not_logged_in)?.clone();
+                handlers::handle_passkey_register_start(scheme, email, HttpResponseBuilder::new())
+                    .await
+                    .map_err(classified)
+            }),
+            RouteId::PasskeyRegisterFinish => respond!({
+                let email = who.ok_or_else(not_logged_in)?.clone();
+                let request: PasskeyFinishRequest = parse(req)?;
+                handlers::handle_passkey_register_finish(
+                    scheme,
+                    email,
+                    CeremonyId(request.ceremony_id),
+                    request.response,
+                    HttpResponseBuilder::new(),
+                )
+                .await
+                .map_err(classified)
+            }),
+            RouteId::PasskeyLoginStart => respond!({
+                let request: PasskeyLoginStartRequest = parse(req)?;
+                let email = request
+                    .email
+                    .map(Email::try_from)
+                    .transpose()
+                    .map_err(bad_request)?;
+                handlers::handle_passkey_login_start(scheme, email, HttpResponseBuilder::new())
+                    .await
+                    .map_err(classified)
+            }),
+            RouteId::PasskeyLoginFinish => respond!({
+                let request: PasskeyFinishRequest = parse(req)?;
+                handlers::handle_passkey_login_finish(
+                    scheme,
+                    CeremonyId(request.ceremony_id),
+                    request.response,
+                    HttpResponseBuilder::new(),
+                )
+                .await
+                .map_err(classified)
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ============================================================================
+// ApiKeyScheme: no library routes
+// ============================================================================
+
+/// API-key schemes have no credential routes to serve. Key issuance needs an
+/// owner and scopes the app decides, so it stays an app route.
+#[async_trait]
+impl<St, I> Endpoints for ApiKeyScheme<St, I>
+where
+    St: Send + Sync,
+    I: Send + Sync,
+{
+    fn routes(&self, _overrides: &PathOverrides) -> Vec<RouteSpec> {
+        Vec::new()
+    }
+
+    async fn handle(&self, _spec: &RouteSpec, _request: EndpointRequest) -> EndpointResponse {
+        error_response(StatusCode::NOT_FOUND, "Not found")
+    }
+
+    async fn check_verified(&self, _email: &Email) -> Result<(), EndpointResponse> {
+        Ok(())
+    }
+}
