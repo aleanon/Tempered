@@ -194,6 +194,11 @@ Each opens on <http://localhost:3000>.
 - `tempered_core` — domain types, capability traits, and ports (store/email traits).
 - `tempered_adapters` — schemes (`JwtScheme`, `SessionScheme`, `ApiKeyScheme`),
   token strategies, and concrete store/email/OAuth/passkey backends.
-- `tempered_axum` — the axum adapter: `auth_service`, route handlers, middleware,
-  and the auto-wiring layer.
+- `tempered_axum` — the axum adapter: `auth_service` mounts the scheme's
+  route table, plus the tier checks for your own routers.
+
+The routes themselves (which exist, where, behind which check) come from the
+framework-neutral route table in `tempered_adapters::endpoints`, so an
+adapter for another web framework needs no per-capability code (see
+ARCHITECTURE.md, "Adding a web-framework adapter").
 - `tempered` — a facade crate that re-exports the common surface.

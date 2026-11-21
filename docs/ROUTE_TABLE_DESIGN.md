@@ -1,6 +1,14 @@
 # Design: framework-neutral routes
 
-Status: **proposal** (2026-11-21), not built. Requested after the
+Status: **built** (2026-11-22, `c47c57b..` on `main`). Decisions taken
+(§10): the malformed-JSON body change accepted (statuses 415/400/422 kept,
+messages are the library's); both override forms (`.login(..)` and
+`.path(RouteId, ..)`); the proof adapter is framework-free
+(`tempered_adapters/tests/framework_free.rs`, no hyper needed); 7.1 went first.
+As built, steps 1–5 landed as one commit, and the tier-rule tests sit in
+`endpoints/table_tests.rs`. Original proposal follows.
+
+Status at writing: **proposal** (2026-11-21). Requested after the
 2026-11-21 review, which noted that a second web framework would mean
 copying the axum layer. Nothing here changes behaviour; it moves decisions.
 

@@ -33,6 +33,8 @@ src/tempered_adapters/         concrete implementations
   src/authentication/          CredentialScheme (+ JwtScheme, SessionScheme aliases),
                                ApiKeyScheme, TokenStrategy
   src/auth_validation/         LocalJwtValidator and friends
+  src/endpoints/               the route table: RouteId/Tier/RouteSpec, Endpoints
+                               (routes + handle, tier checks), per-slot routes
   src/handlers/                framework-agnostic route logic (login, logout, ...)
   src/persistence/             HashMap*/HashSet* (dev) + Postgres/Redis stores
   src/email/                   MockEmailClient, PostmarkEmailClient
@@ -40,11 +42,8 @@ src/tempered_adapters/         concrete implementations
   src/passkey/                 PasskeyFlow, WebAuthn verification
 
 src/tempered_axum/             the axum adapter
-  src/auth_service.rs          auth_service() / AuthService builder
-  src/wiring.rs                AutoWire: capability slots -> routes
-  src/route_config.rs          route buckets, path overrides, elevated layer
-  src/routes/                  axum handlers (signup, login, verify_2fa, oauth, ...)
-  src/middleware.rs            validate_token / validate_elevated_token
+  src/auth_service.rs          auth_service() / AuthService: mounts the route table
+  src/middleware.rs            tier checks for the app's own routers
   src/adapters.rs              axum AuthRequest / ResponseBuilder impls
   src/error.rs                 ErrorCategory -> http::StatusCode + IntoStatusMessage
 ```
@@ -90,15 +89,21 @@ The heart of the composition model lives here:
 Turns a scheme into a running service:
 
 - **`auth_service(scheme, assets_dir)`** returns an `AuthService` builder.
-- **Auto-wiring** (`wiring.rs`): `AutoWire::auto_wire` inspects the scheme's
-  capability slots at compile time and mounts exactly the routes those
-  capabilities imply, at the correct authorization level (public, login-validated,
-  or elevation-validated). The scheme is the single source of truth — there are no
-  per-route opt-ins, only path overrides.
-- **Middleware** (`middleware.rs`): `validate_token` validates the session token
-  and inserts the decoded `Claims` into the request extensions; a handler reads it
-  via `Extension<Claims>`. `validate_elevated_token` does the same for the
-  elevated ("sudo") layer.
+- **Route table** (`tempered_adapters::endpoints`, framework-neutral): the
+  scheme's `Endpoints::routes` lists exactly the routes its capability slots
+  imply (`RouteId`, method, path, `Tier`: public / login / verified /
+  elevated), and `Endpoints::handle` checks the route's tier, then runs it.
+  `auth_service` only mounts each route and forwards the request, so an
+  adapter cannot put a route behind the wrong check. The scheme is the single
+  source of truth: there are no per-route opt-ins, only path overrides
+  (`.login("/signin")`, or `.path(RouteId::Login, "/signin")`). See
+  `docs/ROUTE_TABLE_DESIGN.md`.
+- **Middleware** (`middleware.rs`), for the app's own routers only:
+  `validate_token` validates the login token and inserts the decoded `Claims`
+  into the request extensions; a handler reads it via `Extension<Claims>`.
+  `validate_elevated_token` does the same for the elevated ("sudo") layer, and
+  `require_verified_email` adds the verified check. They call the same check
+  functions as the table.
 - **Escape hatch**: `.validated_router(router)` and
   `.validated_elevated_router(router)` attach a consumer's own `axum::Router`
   behind the login or elevated middleware. Because identity arrives via
@@ -130,9 +135,10 @@ alongside the always-present `/login`, `/logout`, and `/verify-token`.
 
 ## Request flow (login)
 
-1. axum receives `POST /login` and the route handler in `tempered_axum/src/routes/`
-   extracts the credentials.
-2. It calls the framework-agnostic handler in `tempered_adapters/handlers/`, which
+1. axum receives `POST /login`; the route `auth_service` mounted from the table
+   hands the request head and body to `Endpoints::handle`.
+2. `handle` checks the route's tier (public here), parses the JSON body, and
+   calls the framework-agnostic handler in `tempered_adapters/handlers/`, which
    runs `scheme.login(...)` and builds the response through a `ResponseBuilder`.
 3. The scheme's `create_login_response` (an `HttpAuthenticationScheme` method,
    returning `Result<B::Response, ResponseBuilderError>`) sets the session cookie
@@ -140,8 +146,27 @@ alongside the always-present `/login`, `/logout`, and `/verify-token`.
 4. `tempered_axum/src/adapters.rs` turns the built response into an axum
    `Response`.
 
-On a subsequent request to a protected route, `validate_token` validates the
-cookie and injects `Claims` before the handler runs.
+On a later request to a protected library route, `handle` validates the
+cookie before the route runs; for the app's own routes, `validate_token`
+does the same and injects `Claims`.
+
+## Adding a web-framework adapter
+
+A new adapter needs no per-capability code:
+
+1. For each `RouteSpec` in `scheme.routes(&overrides)`, mount `spec.path`
+   (`RouteSpec::path_with` renders `{name}` parameters in another syntax) for
+   `spec.method`.
+2. On a match, build an `EndpointRequest` from the request head
+   (`http::request::Parts`), the body (read under the framework's body limit)
+   and the matched path parameters, call `scheme.handle(&spec, request)`, and
+   convert the `http::Response<String>` back.
+3. For the app's own routes, wrap `endpoints::validate_login` /
+   `validate_elevated` / `Endpoints::check_verified` as the framework's
+   middleware and insert the claims where handlers can read them.
+
+`tempered_adapters/tests/framework_free.rs` is a complete adapter in about 30
+lines, with no framework at all.
 
 ## Design principles
 

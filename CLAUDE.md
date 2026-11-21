@@ -21,10 +21,11 @@ Dependency direction: `tempered_axum → tempered_adapters → tempered_core`.
   clients (`ports/`), strategy traits, transport-neutral `ErrorCategory`. No web
   or HTTP crates; keep it that way.
 - `src/tempered_adapters/` — `CredentialScheme` (+ `JwtScheme` / `SessionScheme`
-  aliases over a `TokenStrategy`), `ApiKeyScheme`, framework-agnostic `handlers/`,
-  and backends in `persistence/`, `email/`, `oauth/`, `passkey/`. No axum crates.
-- `src/tempered_axum/` — `auth_service()`, `wiring.rs` (capability slots →
-  routes), middleware, axum route shims, API integration tests in `tests/api/`.
+  aliases over a `TokenStrategy`), `ApiKeyScheme`, the route table in
+  `endpoints/`, framework-agnostic `handlers/`, and backends in `persistence/`,
+  `email/`, `oauth/`, `passkey/`. No axum crates.
+- `src/tempered_axum/` — `auth_service()` (mounts the route table), middleware
+  for the app's own routers, API integration tests in `tests/api/`.
 - `src/lib.rs` — the `tempered` facade; everything public is re-exported here.
   Examples import from the facade only.
 - `examples/` — `quickstart.rs` (mirrored in the README), `composed_scheme.rs`,
@@ -36,9 +37,12 @@ Dependency direction: `tempered_axum → tempered_adapters → tempered_core`.
   `CredentialScheme` defaulting to `()`; `supports_*` fills it and the capability
   trait is implemented only for the filled slot. Adding a capability means a new
   slot threaded through every impl header.
-- **Auto-wiring.** `wiring.rs` has a no-op impl for `()` and a route-mounting impl
-  for the real slot. There are no per-route opt-ins on `auth_service`, only path
-  overrides.
+- **Route table.** `endpoints/credential.rs`: each slot implements
+  `SlotEndpoints` (one no-op impl covers every `()`), listing its routes with
+  their `Tier` and serving them; `Endpoints::handle` checks the tier before the
+  route runs. A new route = a `RouteId` + the slot's `routes`/`handle` arms; add
+  it to `endpoints/table_tests.rs`. Framework adapters only mount the table.
+  There are no per-route opt-ins on `auth_service`, only path overrides.
 - **One scheme per service.** Multiple schemes are composed by the user on their
   own enum; do not add a library-level composite scheme.
 - **Protected user routes** go through `.validated_router(...)` /

@@ -447,8 +447,7 @@ OAuth slot instead.
   touches about 36 impl headers that each spell out all eight generics. A
   `Capabilities` bundle with associated types would shrink them to
   `<U, T, C>`.
-- **9.8 Framework-neutral routes** (designed 2026-11-21, waiting on
-  decisions). See `docs/ROUTE_TABLE_DESIGN.md`. A route table (`RouteId`,
+- **9.8 Framework-neutral routes** ✅ DONE 2026-11-22 (designed 2026-11-21). See `docs/ROUTE_TABLE_DESIGN.md`. A route table (`RouteId`,
   method, path, tier) and one `Endpoints::handle` dispatcher in
   `tempered_adapters` replace `wiring.rs`, `route_config.rs` and
   `routes/*`. Library routes are authorized inside the library, and a new
