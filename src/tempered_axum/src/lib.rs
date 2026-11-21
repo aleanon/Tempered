@@ -5,42 +5,27 @@
 //!
 //! # Architecture
 //!
-//! ```text
-//! ┌──────────────────────────────────────────┐
-//! │  tempered_core: HTTP trait definitions   │
-//! └──────────────┬───────────────────────────┘
-//!                │
-//!                ▼
-//! ┌──────────────────────────────────────────┐
-//! │  tempered_axum: Axum implementations     │
-//! │  - AxumRequest newtype wrapper           │
-//! │  - AxumResponseBuilder                   │
-//! │  - Axum route handlers                   │
-//! └──────────────────────────────────────────┘
-//! ```
+//! The scheme's route table (`tempered_adapters::endpoints`) decides which
+//! routes exist, where, and behind which check, and serves them. This crate
+//! mounts the table on an axum `Router`, converts requests and responses,
+//! applies the same checks to your own routers (with `Extension<Claims>`),
+//! and serves static files.
 //!
 //! # Usage
 //!
 //! ```ignore
-//! use tempered_axum::{routes, response_builder};
-//! use tempered_adapters::authentication::JwtScheme;
-//!
-//! let app = Router::new()
-//!     .route("/login", post(routes::login::<JwtScheme>))
-//!     .route("/logout", post(routes::logout::<JwtScheme>))
-//!     .with_state(jwt_scheme);
+//! let app: axum::Router = tempered_axum::auth_service(scheme, "assets".into())
+//!     .validated_router(my_routes)
+//!     .into();
 //! ```
 
 pub mod adapters;
 pub mod auth_service;
 pub mod error;
 pub mod middleware;
-pub mod route_config;
-pub mod routes;
-pub mod wiring;
 
 // Re-export for convenience
 pub use adapters::{AxumRequest, AxumResponseBuilder, response_builder};
 pub use auth_service::{AuthService, auth_service};
 pub use error::{IntoStatusMessage, status_code};
-pub use wiring::PathOverrides;
+pub use tempered_adapters::endpoints::{PathOverrides, RouteId, Tier};

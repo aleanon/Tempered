@@ -152,9 +152,15 @@ pub mod axum_service {
 // builds the fully-wired service; `validate_token` / `validate_elevated_token`
 // are the middleware behind `.validated_router()` / `.validated_elevated_router()`.
 pub use tempered_axum::{
-    AuthService, IntoStatusMessage, PathOverrides, auth_service,
+    AuthService, IntoStatusMessage, PathOverrides, RouteId, Tier, auth_service,
     middleware::{validate_elevated_token, validate_token},
 };
+
+/// The framework-neutral route table (for writing an adapter for another web
+/// framework; see `docs/ROUTE_TABLE_DESIGN.md`).
+pub mod endpoints {
+    pub use tempered_adapters::endpoints::*;
+}
 
 // ============================================================================
 // Re-export common external dependencies
