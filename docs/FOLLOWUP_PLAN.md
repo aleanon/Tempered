@@ -242,6 +242,203 @@ the example's `DemoVerifier`.
   uses the Redis `SessionStore` from Phase 3 when `REDIS_HOST_NAME` is set and
   the in-memory one otherwise. Add it to the README example list.
 
+---
+
+Phases 6–10 come from the multi-agent review of 2026-11-21 (`main` @
+`df1acb1`): two security reviewers, one logic-bug reviewer, one architecture
+reviewer and one gap analysis, with the high-impact findings checked by hand.
+
+## Phase 6 — Security pass
+
+One commit per task. Each comes with a test that fails before the fix.
+
+- **6.1 Case-fold email addresses.** `Email::try_from` keeps the address as
+  given, so `Alice@x.com` and `alice@x.com` are two accounts. A provider
+  login whose address differs only in case makes a second account and skips
+  the pre-hijacking cleanup of the real one. Lowercase the whole address at
+  parse time. Every store keys on `Email`, so this one change covers them
+  all. Existing mixed-case rows are not migrated, because a lowercasing
+  migration fails on duplicates. Say so in the README.
+- **6.2 Revoke elevated sessions with the rest.** `SessionScheme`'s elevation
+  uses its own session store, and password change, reset, deletion and
+  `secure_unproven_account` only revoked the primary tokens. An elevated
+  session also slides its expiry while used, so it survived a password reset
+  and could set a new password. Add a private slot hook (like
+  `PasskeyCleanup`) that revokes the elevation tokens wherever the primary
+  ones are revoked. JWT already shares the epoch store; revoking twice is
+  harmless.
+- **6.3 Reset tokens die with the account and with credential changes.**
+  Deletion and password change did not touch outstanding reset tokens. A
+  token mailed before deletion reset the password of whoever re-registered
+  the address within the hour. Add
+  `PasswordResetTokenStore::delete_all_for_user` (a per-user set in Redis, as
+  in the verification store) and call it on deletion, password change,
+  completed reset and `secure_unproven_account`.
+- **6.4 `PostgresUserStore::set_new_password` reports a missing user.** It
+  ignored `rows_affected`, so a reset against a deleted account returned
+  success. Return `UserNotFound` as the in-memory store does, and add a
+  shared `UserStore` contract test.
+- **6.5 API keys: owner-scoped revoke and per-owner cleanup.**
+  `revoke_api_key(id)` had no owner check, so exposing it lets any user
+  revoke anyone's key. Make it `revoke_api_key(owner, id)` and add
+  `ApiKeyStore::delete_all_for_owner` for account deletion (`ApiKeyScheme`
+  is a separate scheme, so the app calls it; document this).
+- **6.6 No internal error text in responses.** `complete_password_reset`
+  (unauthenticated), `change_password`, `delete_account`, `/elevate`, the
+  passkey store errors and the API-key store errors sent `e.to_string()`,
+  which can include sqlx or redis text. Answer with the classified message
+  and log the cause.
+- **6.7 JWT hardening.** jsonwebtoken's default 60 s `exp` leeway outlived the
+  ban-list and epoch TTLs, so a revoked token could validate again for up to
+  a minute. Set the leeway to 0. Reject secrets shorter than 32 bytes, and
+  reject an elevated config with the same secret as the primary one.
+- **6.8 Atomic 2FA checks in Redis.** The attempt cap was get-then-incr, so
+  parallel guesses each got a try, and a correct code was validated and then
+  deleted, so two concurrent submissions both logged in. Count the attempt
+  and compare in one Lua script, and consume on success in the same script.
+- **6.9 2FA budget survives a new login.** `store_code` reset the attempt
+  counter, so an attacker with the password got 5 fresh guesses per login.
+  Keep the counter across reissue for its own window.
+- **6.10 OAuth HTTP client hardening.** `reqwest::Client::new()` had no
+  timeouts and followed redirects. A 307/308 from the token endpoint would
+  resend the code, verifier and client secret. Set connect and request
+  timeouts and `redirect::Policy::none()`, and require `https` provider URLs
+  (plain http only for loopback).
+- **6.11 Atomic epoch cutoff in Redis.** `revoke_before` read and then wrote,
+  so two instances racing could lower the cutoff. Do it in one Lua script.
+- **6.12 Maximum password length.** Only a minimum (8) was enforced. Cap it
+  at 128 bytes so a large body cannot make every Argon2 call expensive.
+
+Raised by the review; they change behaviour, so each needs a decision
+before it is built:
+- `/elevate` ignores `Requires2Fa`: password alone gives sudo on a 2FA
+  account. A two-step elevate (password, then code) fixes it.
+- Login-level `/change-password` needs no current password, so a stolen
+  cookie can set a new one. Require `current_password`, or make the
+  elevated variant the default.
+- Account enumeration: signup answers 409 "User already exists", and reset
+  initiation is slower for real accounts. A fix is to always answer the
+  same, and mail an "already registered" notice.
+- Passkey login skips 2FA. That may be intended (a passkey is possession
+  plus user verification), but it should be documented either way.
+- Sessions have no absolute lifetime. Store a created-at time and cap the
+  age.
+- Smaller items:
+  - `PendingCeremony` does not record whether it is a registration or a
+    login.
+  - The `WebAuthnVerifier` port does not say what a verifier must check
+    (raw id, user handle).
+  - `ServeDir` serves dotfiles, so an `assets_dir` of `"."` would serve
+    `.env`.
+  - No `__Host-` cookie prefix and no Origin check.
+  - Redis 2FA and reset stores map errors to "not found".
+  - `authenticate_user` maps DB errors to `UserNotFound`.
+  - An OAuth email change after linking locks the user out of that
+    provider.
+  - The OAuth callback rejects a provider `error=` redirect without
+    clearing the state cookie.
+
+## Phase 7 — Performance
+
+- **7.1 Async Redis.** All nine Redis stores take
+  `Arc<RwLock<redis::Connection>>` and make blocking calls. Every request
+  queues behind one connection, and each call blocks an executor thread.
+  This includes the JWT epoch check on every authenticated request. Switch
+  to `redis::aio::ConnectionManager` (clone it, no lock). This changes the
+  constructors, which is fine before 1.0.
+- **7.2 `Arc` the scheme.** axum clones `State<S>` per request, and the
+  scheme holds `JwtAuthConfig`, strings and the secret, twice, by value. Hold
+  the scheme or its config in an `Arc`.
+- **7.3 Fewer round trips.**
+  - Run the JWT ban and epoch checks concurrently.
+  - Read and slide a Redis session in one `GETEX` instead of three
+    commands.
+  - Consider refreshing the session TTL only past half-life.
+- **7.4 Bound Argon2.** Put a semaphore around `spawn_blocking` hashing so a
+  login flood cannot fill the blocking pool (about 19 MiB each). Make the
+  Argon2 parameters configurable and rehash on login when they change.
+
+## Phase 8 — Missing features
+
+Must-have for a working framework:
+- **8.1 Rate limiting and lockout.** Add a `RateLimitStore` port (Redis +
+  in-memory) and per-account and per-IP limits on `/login`, `/elevate`,
+  `/verify-2fa`, reset, resend (absorbs the backlog item) and the passkey and
+  OAuth starts. Answer 429 (`ErrorCategory::TooManyRequests` exists).
+- **8.2 Real WebAuthn verifier**: Phase 4.
+- **8.3 TOTP and recovery codes.** Today the only second factor is a code
+  sent by email, and `requires_2fa` is a flag with no enrol route. Make the
+  2FA slot a pluggable second factor (email, TOTP). Add a TOTP secret store,
+  hashed recovery codes, and enrol/confirm/disable routes in the elevated
+  tier.
+- **8.4 OIDC.** Verify the ID token (JWKS, `iss`/`aud`/`exp`, nonce in
+  `PendingAuthorization`) and read `.well-known` discovery. Add provider
+  presets for Google, Microsoft and Apple, and GitHub with its emails
+  endpoint. The README says "OIDC"; today it is OAuth2 plus userinfo.
+- **8.5 CSRF defence in depth.** Add an `Origin` / `Sec-Fetch-Site` check on
+  state-changing cookie routes. Today the only defence is `SameSite=Lax`
+  plus JSON bodies.
+
+Should-have:
+- **8.6 Refresh tokens** with rotation and reuse detection, short-lived
+  access JWTs, and an `Authorization: Bearer` mode for SPAs and mobile.
+  Today JWTs and sessions are cookie-only.
+- **8.7 Session and device management.** `SessionStore::list_for_user`,
+  per-session metadata (created, last seen, user agent), and list/revoke
+  routes.
+- **8.8 Passwordless login**: magic links and email OTP, as a new slot over
+  the existing token-store shapes.
+- **8.9 Email change** (verify the new address, notify the old one,
+  elevated). This needs 9.5 first.
+- **8.10 Password policy** port and an optional breached-password check
+  (HIBP k-anonymity, behind a feature).
+- **8.11 Account self-service routes.** Link or unlink an OAuth provider
+  while logged in, and list, rename or delete passkeys.
+- **8.12 API-key management.** Issue/list/revoke routes in the elevated
+  tier, scope enforcement (`require_scope`), expiry and last-used.
+- **8.13 Observability.** `#[instrument]` spans on the flows, plus metrics
+  counters behind a feature.
+
+Nice-to-have: roles and organisations, admin APIs (ban, force reset,
+impersonate), SMS OTP once 8.3 exists, risk signals, CAPTCHA hook.
+
+Out of scope (state it in the README): being an OIDC/OAuth provider, SAML,
+SCIM and enterprise SSO brokering. Integrate an external IdP through the
+OAuth slot instead.
+
+## Phase 9 — Extensibility and modularity
+
+- **9.1 Readable errors for missing capabilities.** Add
+  `#[diagnostic::on_unimplemented]` on the `Wire*` and `Supports*` traits.
+- **9.2 Customisation ports.**
+  - `EmailComposer`: typed messages, HTML, links rather than raw tokens,
+    locale.
+  - `AuthEventSink`: login ok/fail, 2FA, reset, link, delete, for audit
+    logs and "new sign-in" emails. Default it to tracing; it is a
+    constructor parameter.
+  - Custom claims (roles, tenant) via the validator's `Claims` type.
+- **9.3 Split `credential_scheme.rs`** (1,888 lines) into per-capability
+  modules, keeping each slot's types and impls together.
+- **9.4 Error sources.** Store errors carry `String`. Keep the underlying
+  error as `#[source]` so callers can match unique-violation against
+  connection failure.
+- **9.5 Stable user id.** Every store keys on `Email`. A UUID with the
+  (case-folded) email as a lookup index makes email change possible and
+  simplifies cleanup. This touches every port (L).
+- **9.6 Public contract tests.** Expose `persistence/contract.rs` behind a
+  `testing` feature so third-party store backends can run them.
+- **9.7 Capability bundle (only if more slots are planned).** A ninth slot
+  touches about 36 impl headers that each spell out all eight generics. A
+  `Capabilities` bundle with associated types would shrink them to
+  `<U, T, C>`.
+
+## Phase 10 — Release basics
+
+Add a LICENSE, SECURITY.md, CHANGELOG, `rust-version` (MSRV) and
+crates.io-ready Cargo metadata (description, repository, license, versioned
+internal dependencies). Fuzz the token, cookie, API-key and WebAuthn JSON
+parsers.
+
 ## Backlog
 
 - **Configurable rate limit on `/verify-email/resend`** (requested
