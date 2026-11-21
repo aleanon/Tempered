@@ -248,9 +248,25 @@ Phases 6–10 come from the multi-agent review of 2026-11-21 (`main` @
 `df1acb1`): two security reviewers, one logic-bug reviewer, one architecture
 reviewer and one gap analysis, with the high-impact findings checked by hand.
 
-## Phase 6 — Security pass
+## Phase 6 — Security pass ✅ DONE (2026-11-21, `9d74370..6a77bc4`)
 
 One commit per task. Each comes with a test that fails before the fix.
+
+As executed:
+- 6.8 and 6.9 are one commit (`f59c0c5`): they are one Lua script.
+  `TwoFaCodeStore::validate` became `redeem_code`. Codes stored before
+  the change read as absent, so those users log in again.
+- An extra commit (`fc666af`) came from the automated commit review: the
+  reset, verification and challenge stores purged a user's index set in
+  two steps, so a token stored in between survived. They now use one
+  script (`redis_support::purge_index`).
+- 6.6 also stopped `complete_password_reset` reporting a store outage as
+  an invalid link.
+- New shared contract tests: `user_store`, `password_reset_token_store`,
+  `two_fa_code_store`, `token_epoch_store`.
+- Startup panics on misconfiguration: JWT secret < 32 bytes, an elevated
+  JWT config with the primary secret, and an OAuth endpoint that is not
+  https off the loopback.
 
 - **6.1 Case-fold email addresses.** `Email::try_from` keeps the address as
   given, so `Alice@x.com` and `alice@x.com` are two accounts. A provider
