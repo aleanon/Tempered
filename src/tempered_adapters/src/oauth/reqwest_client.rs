@@ -6,16 +6,40 @@ use tempered_core::{OAuthHttpClient, OAuthHttpError, OAuthProviderConfig, OAuthU
 ///
 /// Performs the standard authorization-code token exchange with PKCE (form-encoded POST)
 /// and an OIDC-style userinfo `GET` with a bearer token.
-#[derive(Clone, Default)]
+///
+/// The client times out (5 s to connect, 10 s per request), so a slow or
+/// hung provider cannot hold a callback open indefinitely, and it follows no
+/// redirects: a 307/308 from the token endpoint would resend the code, the
+/// PKCE verifier and the client secret to wherever it points.
+#[derive(Clone)]
 pub struct ReqwestOAuthHttpClient {
     client: reqwest::Client,
 }
 
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl ReqwestOAuthHttpClient {
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-        }
+        let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("the TLS backend failed to initialise");
+        Self { client }
+    }
+
+    /// Use your own `reqwest::Client` (proxy, custom roots, other timeouts).
+    /// Keep its redirect policy at `Policy::none()`, for the reason above.
+    pub fn with_client(client: reqwest::Client) -> Self {
+        Self { client }
+    }
+}
+
+impl Default for ReqwestOAuthHttpClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

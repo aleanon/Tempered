@@ -59,6 +59,27 @@ impl VerifiedIdentity {
     }
 }
 
+/// `Ok` for an `https` URL, or `http` on the loopback (local development).
+fn check_endpoint(value: &str) -> Result<(), String> {
+    let url = url::Url::parse(value).map_err(|e| format!("is not a valid URL ({e})"))?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback(&url) => Ok(()),
+        scheme => Err(format!(
+            "must use https (got {scheme}://; plain http is allowed only for localhost)"
+        )),
+    }
+}
+
+fn is_loopback(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host == "localhost",
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
 #[derive(Clone)]
 pub struct OAuthFlow<ST, ID, HC> {
     state_store: ST,
@@ -83,7 +104,26 @@ where
     }
 
     /// Register a provider; keyed by `config.name`.
+    ///
+    /// # Panics
+    ///
+    /// If an endpoint or the redirect URI is not a valid URL, or is plain
+    /// `http` on a host other than the loopback (`localhost`, `127.0.0.1`,
+    /// `[::1]`). The token request carries the client secret and the PKCE
+    /// verifier, and the userinfo reply decides whose account is logged
+    /// into, so neither may travel unencrypted. This is a configuration
+    /// error, caught at startup.
     pub fn with_provider(mut self, config: OAuthProviderConfig) -> Self {
+        for (field, value) in [
+            ("auth_url", &config.auth_url),
+            ("token_url", &config.token_url),
+            ("userinfo_url", &config.userinfo_url),
+            ("redirect_uri", &config.redirect_uri),
+        ] {
+            if let Err(problem) = check_endpoint(value) {
+                panic!("OAuth provider {:?}: {field} {problem}", config.name);
+            }
+        }
         self.providers.insert(config.name.clone(), config);
         self
     }
@@ -261,6 +301,7 @@ fn random_state() -> String {
 }
 
 fn build_authorize_url(config: &OAuthProviderConfig, state: &str, code_challenge: &str) -> String {
+    // Checked when the provider was registered (`with_provider`).
     let mut url = url::Url::parse(&config.auth_url).expect("provider auth_url must be a valid URL");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
@@ -380,6 +421,39 @@ mod tests {
                 email_verified: self.email_verified,
             })
         }
+    }
+
+    #[test]
+    fn provider_endpoints_must_be_https_except_on_the_loopback() {
+        for ok in [
+            "https://accounts.example.com/token",
+            "http://localhost:3000/mock/token",
+            "http://127.0.0.1:8080/token",
+            "http://[::1]:8080/token",
+        ] {
+            assert!(check_endpoint(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://accounts.example.com/token",
+            "ftp://accounts.example.com/token",
+            "not a url",
+            "http://localhost.evil.example/token",
+        ] {
+            assert!(check_endpoint(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "token_url must use https")]
+    fn a_plain_http_token_endpoint_is_refused_at_startup() {
+        let mut config = provider();
+        config.token_url = "http://accounts.example.com/token".to_string();
+        let _ = OAuthFlow::new(
+            HashMapOAuthStateStore::new(),
+            HashMapOAuthIdentityStore::new(),
+            MockClient::new("sub", "user@example.com", true),
+        )
+        .with_provider(config);
     }
 
     fn provider() -> OAuthProviderConfig {
