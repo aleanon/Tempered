@@ -171,9 +171,10 @@ async fn should_return_429_after_too_many_wrong_codes() {
     let response = app.verify_2fa(&wrong_body).await;
     assert_eq!(response.status().as_u16(), 429);
 
-    // The code is burned: even the correct one is rejected now.
+    // The account is locked out for the window: even the correct code is
+    // refused, and logging in again would not reset the count.
     let response = app.verify_2fa(&verify_2fa_body).await;
-    assert_eq!(response.status().as_u16(), 401);
+    assert_eq!(response.status().as_u16(), 429);
 }
 
 #[tokio::test]

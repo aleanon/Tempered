@@ -1154,11 +1154,12 @@ where
             .begin(&email)
             .await
             .map_err(CredentialError::Token)?;
+        // Checks and consumes the code in one step: two concurrent requests
+        // with the right code cannot both get past it.
         self.two_fa
             .store
-            .validate(&email, &attempt_id, &code)
+            .redeem_code(&email, &attempt_id, &code)
             .await?;
-        self.two_fa.store.delete(&email).await?;
         // The account may have been deleted since the first factor.
         self.user_store.get_user(&email).await?;
         Ok(self
@@ -1907,11 +1908,11 @@ where
             }
 
             CredentialError::TwoFaError(e) => (ErrorCategory::Unauthorized, e.to_string()),
-            // Distinct, safe-to-reveal signal: the code is burned and the user
-            // must log in again for a fresh one.
+            // Distinct, safe-to-reveal signal: the account's guessing budget
+            // is spent until the window ends; a new login does not refill it.
             CredentialError::TwoFaCodeStoreError(TwoFaCodeStoreError::TooManyAttempts) => (
                 ErrorCategory::TooManyRequests,
-                "Too many failed attempts; log in again for a new code".to_string(),
+                "Too many failed attempts; try again later".to_string(),
             ),
             CredentialError::TwoFaCodeStoreError(e) => {
                 tracing::error!(error = %e, "2FA code store error");

@@ -192,6 +192,115 @@ pub(crate) async fn email_verification_token_store(
     assert_eq!(store.consume_token(&bobs).await.unwrap(), bob);
 }
 
+/// [`TwoFaCodeStore`](tempered_core::TwoFaCodeStore) with the default cap
+/// of 5: single use, the per-account guessing budget (which a new code does
+/// not reset), and success clearing it.
+pub(crate) async fn two_fa_code_store(store: impl tempered_core::TwoFaCodeStore) {
+    use tempered_core::{TwoFaAttemptId, TwoFaCode, TwoFaCodeStoreError};
+
+    let wrong = |right: &TwoFaCode| {
+        let flipped = if right.as_str() == "000000" {
+            "000001"
+        } else {
+            "000000"
+        };
+        TwoFaCode::parse(flipped.to_string()).unwrap()
+    };
+    let issue = |user: &Email| {
+        let (attempt, code) = (TwoFaAttemptId::new(), TwoFaCode::new());
+        let user = user.clone();
+        let store = &store;
+        async move {
+            store
+                .store_code(user, attempt.clone(), code.clone())
+                .await
+                .unwrap();
+            (attempt, code)
+        }
+    };
+    let alice = email("alice@example.com");
+    let bob = email("bob@example.com");
+
+    // Single use.
+    let (attempt, code) = issue(&alice).await;
+    assert_eq!(
+        store
+            .get_login_attempt_id_and_two_fa_code(&alice)
+            .await
+            .unwrap(),
+        (attempt.clone(), code.clone())
+    );
+    store.redeem_code(&alice, &attempt, &code).await.unwrap();
+    assert_eq!(
+        store.redeem_code(&alice, &attempt, &code).await,
+        Err(TwoFaCodeStoreError::UserNotFound)
+    );
+
+    // Another login attempt's id does not redeem the code.
+    let (attempt, code) = issue(&alice).await;
+    assert_eq!(
+        store
+            .redeem_code(&alice, &TwoFaAttemptId::new(), &code)
+            .await,
+        Err(TwoFaCodeStoreError::InvalidAttemptId)
+    );
+    store.redeem_code(&alice, &attempt, &code).await.unwrap();
+
+    // Two wrong guesses, then a fresh login: the budget carries over, so
+    // two more fail and the fifth hits the cap.
+    let (attempt, code) = issue(&alice).await;
+    for _ in 0..2 {
+        assert_eq!(
+            store.redeem_code(&alice, &attempt, &wrong(&code)).await,
+            Err(TwoFaCodeStoreError::Invalid2FACode)
+        );
+    }
+    let (attempt, code) = issue(&alice).await;
+    for _ in 0..2 {
+        assert_eq!(
+            store.redeem_code(&alice, &attempt, &wrong(&code)).await,
+            Err(TwoFaCodeStoreError::Invalid2FACode)
+        );
+    }
+    assert_eq!(
+        store.redeem_code(&alice, &attempt, &wrong(&code)).await,
+        Err(TwoFaCodeStoreError::TooManyAttempts)
+    );
+    // The code is gone, and a code issued later in the window is refused too.
+    assert!(
+        store
+            .get_login_attempt_id_and_two_fa_code(&alice)
+            .await
+            .is_err()
+    );
+    let (attempt, code) = issue(&alice).await;
+    assert_eq!(
+        store.redeem_code(&alice, &attempt, &code).await,
+        Err(TwoFaCodeStoreError::TooManyAttempts)
+    );
+
+    // Bob's budget is his own, and a success clears it.
+    let (attempt, code) = issue(&bob).await;
+    for _ in 0..4 {
+        let _ = store.redeem_code(&bob, &attempt, &wrong(&code)).await;
+    }
+    store.redeem_code(&bob, &attempt, &code).await.unwrap();
+    let (attempt, code) = issue(&bob).await;
+    assert_eq!(
+        store.redeem_code(&bob, &attempt, &wrong(&code)).await,
+        Err(TwoFaCodeStoreError::Invalid2FACode)
+    );
+    store.redeem_code(&bob, &attempt, &code).await.unwrap();
+
+    // Deleting a pending code; deleting none is reported.
+    issue(&bob).await;
+    store.delete(&bob).await.unwrap();
+    assert_eq!(
+        store.delete(&bob).await,
+        Err(TwoFaCodeStoreError::UserNotFound)
+    );
+}
+
 /// [`UserStore`](tempered_core::UserStore): one account per address,
 /// password checks, and `UserNotFound` from every update of a missing
 /// account.

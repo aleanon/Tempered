@@ -543,14 +543,24 @@ pub trait TwoFaCodeStore: Send + Sync {
         two_fa_code: TwoFaCode,
     ) -> Result<(), TwoFaCodeStoreError>;
 
-    /// Check a presented code against the stored one.
+    /// Check a presented code against the stored one and, if it matches,
+    /// remove it: a code logs in once.
     ///
-    /// Contract: implementations MUST bound the guessing budget — count failed
-    /// attempts and, past a cap, delete the code and return
-    /// [`TwoFaCodeStoreError::TooManyAttempts`]; stored codes MUST expire
-    /// (return [`TwoFaCodeStoreError::CodeExpired`] past their TTL). A 6-digit
-    /// code is brute-forceable within its lifetime without both.
-    async fn validate(
+    /// Contract (all of it atomic, across instances too; a check followed by
+    /// a separate update lets parallel requests slip through):
+    /// - **Single use.** On success the code is gone, so concurrent
+    ///   submissions of the right code succeed at most once.
+    /// - **Bounded guessing per account.** Count failed codes per user, in a
+    ///   window that a new code does NOT reset (otherwise logging in again
+    ///   buys a fresh budget). At the cap, delete any stored code and return
+    ///   [`TwoFaCodeStoreError::TooManyAttempts`], also for codes issued later
+    ///   in the window. Success clears the count.
+    /// - **Expiry.** A stored code expires; an expired or absent code fails
+    ///   with [`TwoFaCodeStoreError::CodeExpired`] or
+    ///   [`TwoFaCodeStoreError::UserNotFound`].
+    ///
+    /// A 6-digit code is brute-forceable without all three.
+    async fn redeem_code(
         &self,
         user_id: &Email,
         login_attempt_id: &TwoFaAttemptId,

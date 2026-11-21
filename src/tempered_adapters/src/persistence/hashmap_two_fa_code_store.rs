@@ -12,13 +12,26 @@ struct StoredCode {
     attempt_id: TwoFaAttemptId,
     code: TwoFaCode,
     issued_at: Instant,
-    failed_attempts: u32,
+}
+
+/// Failed codes for one account in the current window. Kept apart from the
+/// code so that issuing a new code (logging in again) does not reset it.
+struct Failures {
+    count: u32,
+    window_start: Instant,
+}
+
+#[derive(Default)]
+struct State {
+    codes: HashMap<Email, StoredCode>,
+    failures: HashMap<Email, Failures>,
 }
 
 /// In-memory [`TwoFaCodeStore`] backed by a `HashMap`.
 ///
-/// Enforces the trait's guessing-budget contract: codes expire after `ttl`
-/// and are deleted after `max_attempts` failed validations.
+/// Enforces the trait's contract: codes expire after `ttl`, a correct code
+/// is consumed, and an account gets `max_attempts` failed codes per `ttl`
+/// window however many codes are issued in it.
 ///
 /// # Warning: development and tests only
 ///
@@ -27,7 +40,7 @@ struct StoredCode {
 /// in production.
 #[derive(Clone)]
 pub struct HashMapTwoFaCodeStore {
-    codes: Arc<RwLock<HashMap<Email, StoredCode>>>,
+    state: Arc<RwLock<State>>,
     max_attempts: u32,
     ttl: Duration,
 }
@@ -39,14 +52,15 @@ impl Default for HashMapTwoFaCodeStore {
 }
 
 impl HashMapTwoFaCodeStore {
-    /// Default limits: 5 attempts, 10-minute TTL.
+    /// Default limits: 5 failed codes per 10 minutes, codes live 10 minutes.
     pub fn new() -> Self {
         Self::with_limits(DEFAULT_MAX_ATTEMPTS, DEFAULT_TTL)
     }
 
+    /// `ttl` is both how long a code lives and the failure-count window.
     pub fn with_limits(max_attempts: u32, ttl: Duration) -> Self {
         Self {
-            codes: Arc::new(RwLock::new(HashMap::new())),
+            state: Arc::new(RwLock::new(State::default())),
             max_attempts,
             ttl,
         }
@@ -61,48 +75,67 @@ impl TwoFaCodeStore for HashMapTwoFaCodeStore {
         login_attempt_id: TwoFaAttemptId,
         two_fa_code: TwoFaCode,
     ) -> Result<(), TwoFaCodeStoreError> {
-        let mut codes = self.codes.write().await;
-        codes.insert(
+        // The failure count is left alone: a new code is not a new budget.
+        self.state.write().await.codes.insert(
             user_id,
             StoredCode {
                 attempt_id: login_attempt_id,
                 code: two_fa_code,
                 issued_at: Instant::now(),
-                failed_attempts: 0,
             },
         );
         Ok(())
     }
 
-    async fn validate(
+    async fn redeem_code(
         &self,
         user_id: &Email,
         login_attempt_id: &TwoFaAttemptId,
         two_fa_code: &TwoFaCode,
     ) -> Result<(), TwoFaCodeStoreError> {
-        // Take the write lock for the whole check so the counter update is
-        // atomic with the comparison (no parallel-guess window).
-        let mut codes = self.codes.write().await;
-        let Some(stored) = codes.get_mut(user_id) else {
+        // One write lock for the whole check: comparing, counting and
+        // consuming happen as one step.
+        let mut state = self.state.write().await;
+        let State { codes, failures } = &mut *state;
+
+        if let Some(f) = failures.get(user_id)
+            && f.window_start.elapsed() > self.ttl
+        {
+            failures.remove(user_id);
+        }
+        if failures
+            .get(user_id)
+            .is_some_and(|f| f.count >= self.max_attempts)
+        {
+            codes.remove(user_id);
+            return Err(TwoFaCodeStoreError::TooManyAttempts);
+        }
+
+        let Some(stored) = codes.get(user_id) else {
             return Err(TwoFaCodeStoreError::UserNotFound);
         };
-
         if stored.issued_at.elapsed() > self.ttl {
             codes.remove(user_id);
             return Err(TwoFaCodeStoreError::CodeExpired);
         }
-
         if stored.attempt_id != *login_attempt_id {
             return Err(TwoFaCodeStoreError::InvalidAttemptId);
         }
         if stored.code != *two_fa_code {
-            stored.failed_attempts += 1;
-            if stored.failed_attempts >= self.max_attempts {
+            let f = failures.entry(user_id.clone()).or_insert(Failures {
+                count: 0,
+                window_start: Instant::now(),
+            });
+            f.count += 1;
+            if f.count >= self.max_attempts {
                 codes.remove(user_id);
                 return Err(TwoFaCodeStoreError::TooManyAttempts);
             }
             return Err(TwoFaCodeStoreError::Invalid2FACode);
         }
+
+        codes.remove(user_id);
+        failures.remove(user_id);
         Ok(())
     }
 
@@ -110,16 +143,18 @@ impl TwoFaCodeStore for HashMapTwoFaCodeStore {
         &self,
         user_id: &Email,
     ) -> Result<(TwoFaAttemptId, TwoFaCode), TwoFaCodeStoreError> {
-        let codes = self.codes.read().await;
-        let Some(stored) = codes.get(user_id) else {
+        let state = self.state.read().await;
+        let Some(stored) = state.codes.get(user_id) else {
             return Err(TwoFaCodeStoreError::UserNotFound);
         };
         Ok((stored.attempt_id.clone(), stored.code.clone()))
     }
 
     async fn delete(&self, user_id: &Email) -> Result<(), TwoFaCodeStoreError> {
-        let mut codes = self.codes.write().await;
-        codes
+        self.state
+            .write()
+            .await
+            .codes
             .remove(user_id)
             .ok_or(TwoFaCodeStoreError::UserNotFound)?;
         Ok(())
@@ -131,40 +166,15 @@ mod tests {
     use secrecy::Secret;
 
     use super::*;
+    use crate::persistence::contract;
 
     fn email() -> Email {
         Email::try_from(Secret::new("test@example.com".to_string())).unwrap()
     }
 
-    fn wrong_code(right: &TwoFaCode) -> TwoFaCode {
-        let flipped = if right.as_str() == "000000" {
-            "000001"
-        } else {
-            "000000"
-        };
-        TwoFaCode::parse(flipped.to_string()).unwrap()
-    }
-
     #[tokio::test]
-    async fn caps_failed_attempts_and_deletes_the_code() {
-        let store = HashMapTwoFaCodeStore::with_limits(3, Duration::from_secs(600));
-        let (attempt_id, code) = (TwoFaAttemptId::default(), TwoFaCode::new());
-        store
-            .store_code(email(), attempt_id.clone(), code.clone())
-            .await
-            .unwrap();
-        let wrong = wrong_code(&code);
-
-        for _ in 0..2 {
-            let err = store.validate(&email(), &attempt_id, &wrong).await;
-            assert_eq!(err, Err(TwoFaCodeStoreError::Invalid2FACode));
-        }
-        let err = store.validate(&email(), &attempt_id, &wrong).await;
-        assert_eq!(err, Err(TwoFaCodeStoreError::TooManyAttempts));
-
-        // The code is gone — even the *correct* code no longer validates.
-        let err = store.validate(&email(), &attempt_id, &code).await;
-        assert_eq!(err, Err(TwoFaCodeStoreError::UserNotFound));
+    async fn meets_the_two_fa_code_store_contract() {
+        contract::two_fa_code_store(HashMapTwoFaCodeStore::new()).await;
     }
 
     #[tokio::test]
@@ -177,21 +187,7 @@ mod tests {
             .unwrap();
 
         tokio::time::sleep(Duration::from_millis(5)).await;
-        let err = store.validate(&email(), &attempt_id, &code).await;
+        let err = store.redeem_code(&email(), &attempt_id, &code).await;
         assert_eq!(err, Err(TwoFaCodeStoreError::CodeExpired));
-    }
-
-    #[tokio::test]
-    async fn correct_code_within_budget_validates() {
-        let store = HashMapTwoFaCodeStore::new();
-        let (attempt_id, code) = (TwoFaAttemptId::default(), TwoFaCode::new());
-        store
-            .store_code(email(), attempt_id.clone(), code.clone())
-            .await
-            .unwrap();
-
-        let wrong = wrong_code(&code);
-        let _ = store.validate(&email(), &attempt_id, &wrong).await;
-        assert!(store.validate(&email(), &attempt_id, &code).await.is_ok());
     }
 }

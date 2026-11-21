@@ -7,11 +7,16 @@ use tokio::sync::RwLock;
 
 /// Redis-backed [`TwoFaCodeStore`].
 ///
-/// Enforces the trait's guessing-budget contract: the code key carries a TTL
-/// (expiry surfaces as `UserNotFound` → treated as an invalid/expired code by
-/// the handler), and failed attempts are counted in a sibling
-/// `two_fa_attempts:` key via atomic `INCR`, so the cap holds across
-/// concurrent requests and multiple service instances.
+/// - `two_fa_code:{email}` → a hash of the login attempt id and the code,
+///   expiring with the code (an expired code reads as absent, so it fails
+///   with `UserNotFound`);
+/// - `two_fa_attempts:{email}` → failed codes in the current window. It
+///   expires a window after the first failure and is not reset by a new
+///   code, so logging in again does not buy more guesses.
+///
+/// [`redeem_code`](TwoFaCodeStore::redeem_code) runs as one Lua script:
+/// the cap check, the comparison, the count and the consume cannot
+/// interleave with another request, on this instance or any other.
 #[derive(Clone)]
 pub struct RedisTwoFaCodeStore {
     client: Arc<RwLock<redis::Connection>>,
@@ -19,7 +24,7 @@ pub struct RedisTwoFaCodeStore {
 }
 
 impl RedisTwoFaCodeStore {
-    /// Default limit: 5 attempts (codes expire after 10 minutes).
+    /// Default limits: 5 failed codes per 10 minutes, codes live 10 minutes.
     pub fn new(client: Arc<RwLock<redis::Connection>>) -> Self {
         Self::with_max_attempts(client, DEFAULT_MAX_ATTEMPTS)
     }
@@ -32,6 +37,41 @@ impl RedisTwoFaCodeStore {
     }
 }
 
+fn unexpected(e: impl std::fmt::Display) -> TwoFaCodeStoreError {
+    TwoFaCodeStoreError::UnexpectedError(e.to_string())
+}
+
+/// KEYS: code hash, attempts counter.
+/// ARGV: attempt id, code, max attempts, window seconds.
+const REDEEM_SCRIPT: &str = r"
+local max = tonumber(ARGV[3])
+local failed = tonumber(redis.call('get', KEYS[2]) or '0')
+if failed >= max then
+    redis.call('del', KEYS[1])
+    return 'too_many'
+end
+local stored = redis.call('hmget', KEYS[1], 'attempt', 'code')
+if not stored[1] then
+    return 'missing'
+end
+if stored[1] ~= ARGV[1] then
+    return 'wrong_attempt'
+end
+if stored[2] ~= ARGV[2] then
+    failed = redis.call('incr', KEYS[2])
+    if failed == 1 then
+        redis.call('expire', KEYS[2], ARGV[4])
+    end
+    if failed >= max then
+        redis.call('del', KEYS[1])
+        return 'too_many'
+    end
+    return 'wrong_code'
+end
+redis.call('del', KEYS[1], KEYS[2])
+return 'ok'
+";
+
 #[async_trait::async_trait]
 impl TwoFaCodeStore for RedisTwoFaCodeStore {
     async fn store_code(
@@ -41,84 +81,80 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
         two_fa_code: TwoFaCode,
     ) -> Result<(), TwoFaCodeStoreError> {
         let key = get_key(&user_id);
-
-        let value = serde_json::to_string(&(login_attempt_id, two_fa_code))
-            .map_err(|e| TwoFaCodeStoreError::UnexpectedError(e.to_string()))?;
-
-        let mut client = self.client.write().await;
-        let _: () = client
-            .set_ex(key, value, TEN_MINUTES_IN_SECONDS)
-            .map_err(|e| TwoFaCodeStoreError::UnexpectedError(e.to_string()))?;
-        // A fresh code resets the guessing budget.
-        client
-            .del(get_attempts_key(&user_id))
-            .map_err(|e| TwoFaCodeStoreError::UnexpectedError(e.to_string()))
+        // The attempts counter is left alone: a new code is not a new budget.
+        redis::pipe()
+            .atomic()
+            .del(&key)
+            .ignore()
+            .hset_multiple(
+                &key,
+                &[
+                    ("attempt", login_attempt_id.to_string()),
+                    ("code", two_fa_code.as_str().to_string()),
+                ],
+            )
+            .ignore()
+            .expire(&key, TEN_MINUTES_IN_SECONDS as i64)
+            .ignore()
+            .query::<()>(&mut *self.client.write().await)
+            .map_err(unexpected)
     }
 
-    async fn validate(
+    async fn redeem_code(
         &self,
         user_id: &Email,
         login_attempt_id: &TwoFaAttemptId,
         two_fa_code: &TwoFaCode,
     ) -> Result<(), TwoFaCodeStoreError> {
-        let (stored_login_attempt_id, stored_two_fa_code) =
-            self.get_login_attempt_id_and_two_fa_code(user_id).await?;
-
-        if stored_login_attempt_id != *login_attempt_id {
-            return Err(TwoFaCodeStoreError::InvalidAttemptId);
+        let outcome: String = redis::Script::new(REDEEM_SCRIPT)
+            .key(get_key(user_id))
+            .key(get_attempts_key(user_id))
+            .arg(login_attempt_id.to_string())
+            .arg(two_fa_code.as_str())
+            .arg(self.max_attempts)
+            .arg(TEN_MINUTES_IN_SECONDS)
+            .invoke(&mut *self.client.write().await)
+            .map_err(unexpected)?;
+        match outcome.as_str() {
+            "ok" => Ok(()),
+            "missing" => Err(TwoFaCodeStoreError::UserNotFound),
+            "wrong_attempt" => Err(TwoFaCodeStoreError::InvalidAttemptId),
+            "wrong_code" => Err(TwoFaCodeStoreError::Invalid2FACode),
+            "too_many" => Err(TwoFaCodeStoreError::TooManyAttempts),
+            other => Err(unexpected(format!("unexpected script reply {other:?}"))),
         }
-        if stored_two_fa_code != *two_fa_code {
-            // Count the failure atomically (INCR), bounded to the code's own
-            // lifetime (EXPIRE), so parallel guesses across instances all hit
-            // the same budget.
-            let attempts_key = get_attempts_key(user_id);
-            let mut client = self.client.write().await;
-            let attempts: u32 = client
-                .incr(&attempts_key, 1)
-                .map_err(|e| TwoFaCodeStoreError::UnexpectedError(e.to_string()))?;
-            let _: () = client
-                .expire(&attempts_key, TEN_MINUTES_IN_SECONDS as i64)
-                .map_err(|e| TwoFaCodeStoreError::UnexpectedError(e.to_string()))?;
-
-            if attempts >= self.max_attempts {
-                let _: Result<(), _> = client.del(get_key(user_id));
-                let _: Result<(), _> = client.del(&attempts_key);
-                return Err(TwoFaCodeStoreError::TooManyAttempts);
-            }
-            return Err(TwoFaCodeStoreError::Invalid2FACode);
-        }
-
-        Ok(())
     }
 
     async fn get_login_attempt_id_and_two_fa_code(
         &self,
         user_id: &Email,
     ) -> Result<(TwoFaAttemptId, TwoFaCode), TwoFaCodeStoreError> {
-        let key = get_key(user_id);
-
-        let json_value: String = self
-            .client
-            .write()
-            .await
-            .get(key)
-            .map_err(|_| TwoFaCodeStoreError::UserNotFound)?;
-
-        let (login_attempt_id, two_fa_code): (TwoFaAttemptId, TwoFaCode) =
-            serde_json::from_str(&json_value)
-                .map_err(|e| TwoFaCodeStoreError::UnexpectedError(e.to_string()))?;
-
-        Ok((login_attempt_id, two_fa_code))
+        let (attempt, code): (Option<String>, Option<String>) = redis::cmd("HMGET")
+            .arg(get_key(user_id))
+            .arg("attempt")
+            .arg("code")
+            .query(&mut *self.client.write().await)
+            .map_err(unexpected)?;
+        let (Some(attempt), Some(code)) = (attempt, code) else {
+            return Err(TwoFaCodeStoreError::UserNotFound);
+        };
+        let attempt = TwoFaAttemptId::parse(&attempt)
+            .map_err(|e| unexpected(format!("stored attempt id: {e}")))?;
+        let code = TwoFaCode::parse(code).map_err(|e| unexpected(format!("stored code: {e}")))?;
+        Ok((attempt, code))
     }
 
     async fn delete(&self, user_id: &Email) -> Result<(), TwoFaCodeStoreError> {
-        let key = get_key(user_id);
-
-        self.client
+        let removed: i64 = self
+            .client
             .write()
             .await
-            .del(key)
-            .map_err(|_| TwoFaCodeStoreError::UserNotFound)
+            .del(get_key(user_id))
+            .map_err(unexpected)?;
+        if removed == 0 {
+            return Err(TwoFaCodeStoreError::UserNotFound);
+        }
+        Ok(())
     }
 }
 
@@ -137,4 +173,16 @@ fn get_attempts_key(email: &Email) -> String {
         TWO_FA_ATTEMPTS_PREFIX,
         email.as_ref().expose_secret()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::{contract, test_support};
+
+    #[tokio::test]
+    async fn meets_the_two_fa_code_store_contract() {
+        let (_redis, connection) = test_support::redis::connection().await;
+        contract::two_fa_code_store(RedisTwoFaCodeStore::new(connection)).await;
+    }
 }
