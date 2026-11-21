@@ -68,6 +68,11 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn meets_the_token_epoch_store_contract() {
+        crate::persistence::contract::token_epoch_store(HashMapTokenEpochStore::new()).await;
+    }
+
+    #[tokio::test]
     async fn no_cutoff_until_revoked() {
         let store = HashMapTokenEpochStore::new();
         assert_eq!(store.min_valid_iat(&email()).await.unwrap(), None);

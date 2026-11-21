@@ -192,6 +192,34 @@ pub(crate) async fn email_verification_token_store(
     assert_eq!(store.consume_token(&bobs).await.unwrap(), bob);
 }
 
+/// [`TokenEpochStore`](tempered_core::TokenEpochStore): the cutoff only
+/// ever rises, per user, and the credential lock.
+pub(crate) async fn token_epoch_store(store: impl tempered_core::TokenEpochStore) {
+    let alice = email("alice@example.com");
+    let bob = email("bob@example.com");
+
+    assert_eq!(store.min_valid_iat(&alice).await.unwrap(), None);
+    store.revoke_before(&alice, 100).await.unwrap();
+    assert_eq!(store.min_valid_iat(&alice).await.unwrap(), Some(100));
+    // An older cutoff (a slower instance's revocation) never lowers it.
+    store.revoke_before(&alice, 90).await.unwrap();
+    assert_eq!(store.min_valid_iat(&alice).await.unwrap(), Some(100));
+    store.revoke_before(&alice, 120).await.unwrap();
+    assert_eq!(store.min_valid_iat(&alice).await.unwrap(), Some(120));
+    assert_eq!(store.min_valid_iat(&bob).await.unwrap(), None);
+
+    // The lock: one holder at a time; only the holder releases it.
+    assert!(!store.is_user_locked(&alice).await.unwrap());
+    assert!(store.try_lock_user(&alice, "a", 10).await.unwrap());
+    assert!(!store.try_lock_user(&alice, "b", 10).await.unwrap());
+    assert!(store.is_user_locked(&alice).await.unwrap());
+    assert!(!store.is_user_locked(&bob).await.unwrap());
+    store.unlock_user(&alice, "b").await.unwrap();
+    assert!(store.is_user_locked(&alice).await.unwrap());
+    store.unlock_user(&alice, "a").await.unwrap();
+    assert!(!store.is_user_locked(&alice).await.unwrap());
+}
+
 /// [`TwoFaCodeStore`](tempered_core::TwoFaCodeStore) with the default cap
 /// of 5: single use, the per-account guessing budget (which a new code does
 /// not reset), and success clearing it.

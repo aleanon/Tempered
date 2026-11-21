@@ -42,19 +42,22 @@ impl TokenEpochStore for RedisTokenEpochStore {
     }
 
     async fn revoke_before(&self, email: &Email, cutoff: i64) -> Result<(), TokenEpochStoreError> {
-        let key = get_key(email);
-        let mut client = self.client.write().await;
-
-        // Keep the highest cutoff (contract: never lower it). Cutoffs are
-        // wall-clock "now" values, so a lost race between two near-simultaneous
-        // revocations writes an equivalent value.
-        let existing: Option<i64> = client
-            .get(&key)
-            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))?;
-        let cutoff = existing.map_or(cutoff, |e| e.max(cutoff));
-
-        let _: () = client
-            .set_ex(&key, cutoff, self.ttl_seconds)
+        // Keep the highest cutoff (contract: never lower it), compared and
+        // written in one script. A GET followed by a SET let two instances
+        // interleave: A reads 100, B writes 105, A writes 101, and tokens
+        // B meant to revoke validated again.
+        let script = redis::Script::new(
+            "local current = tonumber(redis.call('get', KEYS[1])) \
+             local cutoff = tonumber(ARGV[1]) \
+             if current and current > cutoff then cutoff = current end \
+             redis.call('set', KEYS[1], cutoff, 'EX', ARGV[2]) \
+             return cutoff",
+        );
+        let _: i64 = script
+            .key(get_key(email))
+            .arg(cutoff)
+            .arg(self.ttl_seconds)
+            .invoke(&mut *self.client.write().await)
             .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))?;
         Ok(())
     }
@@ -82,4 +85,16 @@ impl TokenEpochStore for RedisTokenEpochStore {
 
 fn get_key(email: &Email) -> String {
     format!("{}{}", TOKEN_EPOCH_PREFIX, email.as_ref().expose_secret())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::{contract, test_support};
+
+    #[tokio::test]
+    async fn meets_the_token_epoch_store_contract() {
+        let (_redis, connection) = test_support::redis::connection().await;
+        contract::token_epoch_store(RedisTokenEpochStore::new(connection, 3600)).await;
+    }
 }
