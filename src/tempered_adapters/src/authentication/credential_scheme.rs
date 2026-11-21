@@ -395,6 +395,40 @@ impl<TE: TokenStrategy> ElevatedCookieName for Elevation<TE> {
     }
 }
 
+/// Revokes a user's elevated tokens wherever the primary ones are revoked
+/// (password change, reset, deletion, securing an unproven account).
+///
+/// An elevated strategy may keep its own state: `SessionScheme`'s elevation
+/// has its own session store, which revoking the primary sessions never
+/// reaches. For JWT the two strategies share an epoch store, so this revokes
+/// the same cutoff twice, which is harmless. `()` (no elevation) has nothing
+/// to revoke.
+#[async_trait]
+trait ElevationRevoke {
+    async fn revoke_all_elevated(&self, email: &Email) -> Result<(), ElevatedRevokeError>;
+}
+
+/// An elevated strategy's revocation error, boxed: its type is the elevation
+/// slot's, not the scheme's primary token error.
+pub type ElevatedRevokeError = Box<dyn std::error::Error + Send + Sync>;
+
+#[async_trait]
+impl ElevationRevoke for () {
+    async fn revoke_all_elevated(&self, _email: &Email) -> Result<(), ElevatedRevokeError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<TE: TokenStrategy> ElevationRevoke for Elevation<TE> {
+    async fn revoke_all_elevated(&self, email: &Email) -> Result<(), ElevatedRevokeError> {
+        self.tokens
+            .revoke_all_for_user(email)
+            .await
+            .map_err(|e| Box::new(e) as ElevatedRevokeError)
+    }
+}
+
 // ============================================================================
 // Builders (token-agnostic): from_tokens() + supports_*()
 // ============================================================================
@@ -734,6 +768,26 @@ where
     }
 }
 
+// Private helper: the slot trait in the bound is internal by design.
+#[allow(private_bounds)]
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    T: TokenStrategy,
+    L: ElevationRevoke + Sync,
+{
+    /// Void every token the user holds, primary and elevated, on every device.
+    async fn revoke_all_tokens(&self, email: &Email) -> Result<(), CredentialError<T::Error>> {
+        self.tokens
+            .revoke_all_for_user(email)
+            .await
+            .map_err(CredentialError::Token)?;
+        self.elevation
+            .revoke_all_elevated(email)
+            .await
+            .map_err(CredentialError::ElevatedToken)
+    }
+}
+
 const LOCK_ATTEMPTS: u32 = 20;
 const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -936,7 +990,7 @@ where
     U: UserStore + Clone + 'static,
     T: TokenStrategy,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
-    L: Clone + Send + Sync + 'static,
+    L: ElevationRevoke + Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
     O: Clone + Send + Sync + 'static,
@@ -956,10 +1010,7 @@ where
         // A password change must strand whoever was holding the old password's
         // sessions — revoke every outstanding token (all devices).
         self.two_fa.cancel_pending(&email).await?;
-        self.tokens
-            .revoke_all_for_user(&email)
-            .await
-            .map_err(CredentialError::Token)?;
+        self.revoke_all_tokens(&email).await?;
         Ok(())
     }
 }
@@ -970,7 +1021,7 @@ where
     U: UserStore + Clone + 'static,
     T: TokenStrategy,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
-    L: Clone + Send + Sync + 'static,
+    L: ElevationRevoke + Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: EmailProof + Clone + Send + Sync + 'static,
     O: OAuthCleanup + Clone + Send + Sync + 'static,
@@ -1000,10 +1051,7 @@ where
             // A deleted user's token would otherwise keep validating until it
             // expires (JWT validation is signature-based, not a user-store read).
             self.two_fa.cancel_pending(&email).await?;
-            self.tokens
-                .revoke_all_for_user(&email)
-                .await
-                .map_err(CredentialError::Token)?;
+            self.revoke_all_tokens(&email).await?;
             self.user_store.delete_user(&email).await?;
             // Both once more now that the account is gone. A password login that
             // began after the first pass, while the account still existed, may
@@ -1011,10 +1059,7 @@ where
             // attempt is cancelled and the token voided. A login that begins
             // after this finds no account.
             self.two_fa.cancel_pending(&email).await?;
-            self.tokens
-                .revoke_all_for_user(&email)
-                .await
-                .map_err(CredentialError::Token)?;
+            self.revoke_all_tokens(&email).await?;
             Ok(())
         }
         .await;
@@ -1201,7 +1246,7 @@ where
     U: UserStore + Clone + 'static,
     T: TokenStrategy,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
-    L: Clone + Send + Sync + 'static,
+    L: ElevationRevoke + Clone + Send + Sync + 'static,
     P: PasswordResetTokenStore + Clone + Send + Sync + 'static,
     E: EmailClient + Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
@@ -1260,10 +1305,7 @@ where
         // A reset is a password change — typically *because* the account may
         // be compromised — so strand every outstanding session.
         self.two_fa.cancel_pending(&email).await?;
-        self.tokens
-            .revoke_all_for_user(&email)
-            .await
-            .map_err(CredentialError::Token)?;
+        self.revoke_all_tokens(&email).await?;
 
         Ok(())
     }
@@ -1340,7 +1382,7 @@ where
     U: UserStore + Clone + 'static,
     T: TokenStrategy,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
-    L: Clone + Send + Sync + 'static,
+    L: ElevationRevoke + Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: EmailProof + Clone + Send + Sync + 'static,
     ST: OAuthStateStore + Clone + Send + Sync + 'static,
@@ -1435,7 +1477,7 @@ where
     HC: OAuthHttpClient + Send + Sync,
     K: PasskeyCleanup + Send + Sync,
     F: TwoFaChallenge + Send + Sync,
-    L: Send + Sync,
+    L: ElevationRevoke + Send + Sync,
     R: Send + Sync,
 {
     /// Get `email`'s account ready for the first login through a provider
@@ -1517,10 +1559,7 @@ where
             }
             self.passkeys.forget_user(email).await?;
             self.two_fa.cancel_pending(email).await?;
-            self.tokens
-                .revoke_all_for_user(email)
-                .await
-                .map_err(CredentialError::Token)?;
+            self.revoke_all_tokens(email).await?;
             self.passkeys.forget_user(email).await?;
             Ok(())
         }
@@ -1547,7 +1586,7 @@ where
     U: UserStore + Clone + 'static,
     T: TokenStrategy,
     F: TwoFaChallenge + Clone + Send + Sync + 'static,
-    L: ElevatedCookieName + Clone + Send + Sync + 'static,
+    L: ElevatedCookieName + ElevationRevoke + Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: EmailProof + Clone + Send + Sync + 'static,
     ST: OAuthStateStore + Clone + Send + Sync + 'static,
@@ -1808,6 +1847,9 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
 
     #[error("The account is being updated")]
     AccountBusy,
+
+    #[error("Elevated token error: {0}")]
+    ElevatedToken(ElevatedRevokeError),
 }
 
 impl<TE> ClassifyError for CredentialError<TE>
@@ -1880,6 +1922,10 @@ where
             }
 
             CredentialError::AccountBusy => (ErrorCategory::Conflict, ACCOUNT_BUSY.to_string()),
+            CredentialError::ElevatedToken(e) => {
+                tracing::error!(error = %e, "elevated token revocation error");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
 
             CredentialError::OAuth(e) => e.classify(),
             CredentialError::Passkey(e) => e.classify(),

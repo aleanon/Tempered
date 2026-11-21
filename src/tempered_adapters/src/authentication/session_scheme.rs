@@ -519,4 +519,42 @@ mod tests {
             Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
         );
     }
+
+    /// An elevated session lives in its own store, so revoking the primary
+    /// sessions does not reach it. Password change and account deletion must
+    /// revoke it as well, or a stolen elevated session outlives a password
+    /// reset and can set a password of its own.
+    #[tokio::test]
+    async fn revoking_a_user_also_revokes_their_elevated_sessions() {
+        use tempered_core::{SupportsAccountDeletion, SupportsPasswordChange};
+
+        let email = || Email::try_from(Secret::new("user@example.com".to_string())).unwrap();
+        let password = || Password::try_from(Secret::new("passwordpassword".to_string())).unwrap();
+        for revoke in ["change password", "delete account"] {
+            let scheme = scheme_with_user("user@example.com", "passwordpassword")
+                .await
+                .supports_elevation(
+                    HashMapSessionStore::new(),
+                    SessionConfig {
+                        cookie_name: "elevated_session".to_string(),
+                        ttl_in_seconds: 300,
+                    },
+                    |e| e,
+                );
+            let elevated = scheme.elevate(email(), password()).await.unwrap();
+            let parts = parts_with_cookie("elevated_session", &elevated.0.to_string());
+            assert!(scheme.elevated_validator().validate(&parts).await.is_ok());
+
+            match revoke {
+                "change password" => {
+                    let new = Password::try_from(Secret::new("another-password".to_string()));
+                    scheme.change_password(email(), new.unwrap()).await.unwrap();
+                }
+                _ => scheme.delete_account(email()).await.unwrap(),
+            }
+
+            let result = scheme.elevated_validator().validate(&parts).await;
+            assert!(result.is_err(), "{revoke} left the elevated session valid");
+        }
+    }
 }
