@@ -457,8 +457,16 @@ pub trait SupportsApiKeyIssuance: AuthenticationScheme {
         scopes: Vec<String>,
     ) -> Result<(ApiKeyId, String), Self::IssuanceError>;
 
-    /// Revoke a previously-issued key.
-    async fn revoke_api_key(&self, id: &ApiKeyId) -> Result<(), Self::IssuanceError>;
+    /// Revoke `owner`'s key `id`. Pass the authenticated caller as `owner`:
+    /// a key id taken from a request names someone else's key just as
+    /// easily, and that is refused like a missing key.
+    async fn revoke_api_key(&self, owner: &Email, id: &ApiKeyId)
+    -> Result<(), Self::IssuanceError>;
+
+    /// Revoke every key `owner` holds. An API-key scheme is separate from
+    /// the scheme that owns the account, so the app calls this when it
+    /// deletes the account; otherwise the keys keep working.
+    async fn revoke_all_api_keys(&self, owner: &Email) -> Result<(), Self::IssuanceError>;
 
     /// List non-secret metadata for all of a user's keys.
     async fn list_api_keys(

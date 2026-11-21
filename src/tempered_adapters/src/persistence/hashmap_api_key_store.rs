@@ -24,10 +24,11 @@ impl HashMapApiKeyStore {
 #[async_trait::async_trait]
 impl ApiKeyStore for HashMapApiKeyStore {
     async fn create_key(&self, record: ApiKeyRecord) -> Result<(), ApiKeyStoreError> {
-        self.by_prefix
-            .write()
-            .await
-            .insert(record.prefix.clone(), record);
+        let mut map = self.by_prefix.write().await;
+        if map.contains_key(&record.prefix) {
+            return Err(ApiKeyStoreError::PrefixTaken);
+        }
+        map.insert(record.prefix.clone(), record);
         Ok(())
     }
 
@@ -40,11 +41,11 @@ impl ApiKeyStore for HashMapApiKeyStore {
             .ok_or(ApiKeyStoreError::NotFound)
     }
 
-    async fn revoke_key(&self, id: &ApiKeyId) -> Result<(), ApiKeyStoreError> {
+    async fn revoke_key(&self, owner: &Email, id: &ApiKeyId) -> Result<(), ApiKeyStoreError> {
         let mut map = self.by_prefix.write().await;
         let prefix = map
             .iter()
-            .find(|(_, r)| &r.id == id)
+            .find(|(_, r)| &r.id == id && &r.owner == owner)
             .map(|(p, _)| p.clone());
         match prefix {
             Some(p) => {
@@ -66,6 +67,14 @@ impl ApiKeyStore for HashMapApiKeyStore {
                 scopes: r.scopes.clone(),
             })
             .collect())
+    }
+
+    async fn delete_all_for_owner(&self, owner: &Email) -> Result<(), ApiKeyStoreError> {
+        self.by_prefix
+            .write()
+            .await
+            .retain(|_, r| &r.owner != owner);
+        Ok(())
     }
 }
 

@@ -41,7 +41,12 @@ impl ApiKeyStore for PostgresApiKeyStore {
         )
         .execute(&self.pool)
         .await
-        .map_err(unexpected)?;
+        .map_err(|e| match e.as_database_error() {
+            // The only unique columns are the random id and prefix; a clash
+            // is a prefix collision (or an id one, handled the same way).
+            Some(db) if db.is_unique_violation() => ApiKeyStoreError::PrefixTaken,
+            _ => unexpected(e),
+        })?;
         Ok(())
     }
 
@@ -65,12 +70,16 @@ impl ApiKeyStore for PostgresApiKeyStore {
     }
 
     #[tracing::instrument(name = "Revoke API key", skip_all)]
-    async fn revoke_key(&self, id: &ApiKeyId) -> Result<(), ApiKeyStoreError> {
-        let deleted = sqlx::query!(r#"DELETE FROM api_keys WHERE id = $1"#, id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(unexpected)?
-            .rows_affected();
+    async fn revoke_key(&self, owner: &Email, id: &ApiKeyId) -> Result<(), ApiKeyStoreError> {
+        let deleted = sqlx::query!(
+            r#"DELETE FROM api_keys WHERE id = $1 AND owner = $2"#,
+            id.to_string(),
+            owner.as_ref().expose_secret()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(unexpected)?
+        .rows_affected();
         if deleted == 0 {
             return Err(ApiKeyStoreError::NotFound);
         }
@@ -95,6 +104,18 @@ impl ApiKeyStore for PostgresApiKeyStore {
             })
         })
         .collect()
+    }
+
+    #[tracing::instrument(name = "Delete an owner's API keys", skip_all)]
+    async fn delete_all_for_owner(&self, owner: &Email) -> Result<(), ApiKeyStoreError> {
+        sqlx::query!(
+            r#"DELETE FROM api_keys WHERE owner = $1"#,
+            owner.as_ref().expose_secret()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(unexpected)?;
+        Ok(())
     }
 }
 

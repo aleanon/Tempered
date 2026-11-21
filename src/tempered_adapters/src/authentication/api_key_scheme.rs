@@ -271,21 +271,42 @@ where
         owner: Email,
         scopes: Vec<String>,
     ) -> Result<(ApiKeyId, String), Self::IssuanceError> {
-        let (prefix, secret) = generate_key();
-        let id = ApiKeyId::new();
-        let record = ApiKeyRecord {
-            id: id.clone(),
-            prefix: prefix.clone(),
-            secret_hash: hash_secret(&secret),
-            owner,
-            scopes,
-        };
-        self.store.create_key(record).await.map_err(store_err)?;
-        Ok((id, format!("{}.{}", prefix, secret)))
+        // A 48-bit prefix clashes rarely, but the store refuses a clash
+        // rather than overwrite another key, so draw again.
+        for _ in 0..ISSUE_ATTEMPTS {
+            let (prefix, secret) = generate_key();
+            let id = ApiKeyId::new();
+            let record = ApiKeyRecord {
+                id: id.clone(),
+                prefix: prefix.clone(),
+                secret_hash: hash_secret(&secret),
+                owner: owner.clone(),
+                scopes: scopes.clone(),
+            };
+            match self.store.create_key(record).await {
+                Ok(()) => return Ok((id, format!("{}.{}", prefix, secret))),
+                Err(ApiKeyStoreError::PrefixTaken) => continue,
+                Err(e) => return Err(store_err(e)),
+            }
+        }
+        Err(ApiKeyAuthError::StoreError(
+            "no free key prefix after several attempts".to_string(),
+        ))
     }
 
-    async fn revoke_api_key(&self, id: &ApiKeyId) -> Result<(), Self::IssuanceError> {
-        self.store.revoke_key(id).await.map_err(store_err)
+    async fn revoke_api_key(
+        &self,
+        owner: &Email,
+        id: &ApiKeyId,
+    ) -> Result<(), Self::IssuanceError> {
+        self.store.revoke_key(owner, id).await.map_err(store_err)
+    }
+
+    async fn revoke_all_api_keys(&self, owner: &Email) -> Result<(), Self::IssuanceError> {
+        self.store
+            .delete_all_for_owner(owner)
+            .await
+            .map_err(store_err)
     }
 
     async fn list_api_keys(
@@ -351,10 +372,15 @@ pub enum ApiKeyAuthError {
     StoreError(String),
 }
 
+/// Fresh keys to draw before giving up on a free prefix.
+const ISSUE_ATTEMPTS: usize = 3;
+
 fn store_err(e: ApiKeyStoreError) -> ApiKeyAuthError {
     match e {
         ApiKeyStoreError::NotFound => ApiKeyAuthError::InvalidKey,
-        ApiKeyStoreError::UnexpectedError(m) => ApiKeyAuthError::StoreError(m),
+        e @ (ApiKeyStoreError::PrefixTaken | ApiKeyStoreError::UnexpectedError(_)) => {
+            ApiKeyAuthError::StoreError(e.to_string())
+        }
     }
 }
 
@@ -437,10 +463,41 @@ mod tests {
         let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
         let (id, plaintext) = scheme.issue_api_key(owner(), vec![]).await.unwrap();
 
-        scheme.revoke_api_key(&id).await.unwrap();
+        scheme.revoke_api_key(&owner(), &id).await.unwrap();
 
         let parts = parts_with_header("x-api-key", &plaintext);
         assert!(scheme.validator().validate(&parts).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_key_id_alone_does_not_revoke_someone_elses_key() {
+        // A handler that revoked whatever id the request named let any
+        // logged-in user revoke anyone's key. The owner must match.
+        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
+        let (id, plaintext) = scheme.issue_api_key(owner(), vec![]).await.unwrap();
+        let mallory = Email::try_from(Secret::new("mallory@example.com".to_string())).unwrap();
+
+        assert!(matches!(
+            scheme.revoke_api_key(&mallory, &id).await,
+            Err(ApiKeyAuthError::InvalidKey)
+        ));
+        let parts = parts_with_header("x-api-key", &plaintext);
+        assert!(scheme.validator().validate(&parts).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn revoking_all_of_an_owners_keys_stops_every_one() {
+        let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
+        let (_, first) = scheme.issue_api_key(owner(), vec![]).await.unwrap();
+        let (_, second) = scheme.issue_api_key(owner(), vec![]).await.unwrap();
+
+        scheme.revoke_all_api_keys(&owner()).await.unwrap();
+
+        for key in [first, second] {
+            let parts = parts_with_header("x-api-key", &key);
+            assert!(scheme.validator().validate(&parts).await.is_err());
+        }
+        assert!(scheme.list_api_keys(&owner()).await.unwrap().is_empty());
     }
 
     #[tokio::test]

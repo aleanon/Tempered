@@ -523,12 +523,33 @@ pub(crate) async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
     listed.sort();
     assert_eq!(listed, ["pa1", "pa2"]);
 
-    store.revoke_key(&a1.id).await.unwrap();
+    // A prefix is never reused: the second record is refused, the first kept.
+    assert!(matches!(
+        store.create_key(record("pa1", &bob, &[])).await,
+        Err(ApiKeyStoreError::PrefixTaken)
+    ));
+    assert_eq!(store.find_by_prefix("pa1").await.unwrap().owner, alice);
+
+    // Only the owner revokes a key; anyone else is told it does not exist.
+    assert!(matches!(
+        store.revoke_key(&bob, &a1.id).await,
+        Err(ApiKeyStoreError::NotFound)
+    ));
+    assert!(store.find_by_prefix("pa1").await.is_ok());
+    store.revoke_key(&alice, &a1.id).await.unwrap();
     assert!(store.find_by_prefix("pa1").await.is_err());
     assert!(matches!(
-        store.revoke_key(&a1.id).await,
+        store.revoke_key(&alice, &a1.id).await,
         Err(ApiKeyStoreError::NotFound)
     ));
     assert_eq!(store.list_for_user(&alice).await.unwrap().len(), 1);
+    assert_eq!(store.find_by_prefix("pb1").await.unwrap().owner, bob);
+
+    // Deleting an owner's keys takes all of theirs and none of Bob's.
+    store.create_key(record("pa3", &alice, &[])).await.unwrap();
+    store.delete_all_for_owner(&alice).await.unwrap();
+    store.delete_all_for_owner(&alice).await.unwrap();
+    assert!(store.list_for_user(&alice).await.unwrap().is_empty());
+    assert!(store.find_by_prefix("pa2").await.is_err());
     assert_eq!(store.find_by_prefix("pb1").await.unwrap().owner, bob);
 }

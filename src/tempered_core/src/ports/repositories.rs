@@ -437,23 +437,35 @@ pub struct ApiKeyMetadata {
 pub enum ApiKeyStoreError {
     #[error("API key not found")]
     NotFound,
+    #[error("API key prefix already in use")]
+    PrefixTaken,
     #[error("Unexpected error: {0}")]
     UnexpectedError(String),
 }
 
 #[async_trait]
 pub trait ApiKeyStore: Send + Sync {
-    /// Persist a newly-issued key record.
+    /// Persist a newly-issued key record. Never overwrites: a record whose
+    /// prefix is already stored fails with [`ApiKeyStoreError::PrefixTaken`]
+    /// (the issuer draws a new key and tries again).
     async fn create_key(&self, record: ApiKeyRecord) -> Result<(), ApiKeyStoreError>;
 
     /// Look up a key record by its non-secret prefix.
     async fn find_by_prefix(&self, prefix: &str) -> Result<ApiKeyRecord, ApiKeyStoreError>;
 
-    /// Revoke (delete) a key by id.
-    async fn revoke_key(&self, id: &ApiKeyId) -> Result<(), ApiKeyStoreError>;
+    /// Revoke (delete) `owner`'s key `id`. A key that does not exist and a
+    /// key that belongs to someone else both fail with
+    /// [`ApiKeyStoreError::NotFound`], so a caller cannot revoke, or learn
+    /// about, another user's keys.
+    async fn revoke_key(&self, owner: &Email, id: &ApiKeyId) -> Result<(), ApiKeyStoreError>;
 
     /// List non-secret metadata for all of a user's keys.
     async fn list_for_user(&self, owner: &Email) -> Result<Vec<ApiKeyMetadata>, ApiKeyStoreError>;
+
+    /// Delete every key `owner` holds, succeeding when there are none. Call
+    /// it when the account is deleted: a key does not check that its owner
+    /// still exists.
+    async fn delete_all_for_owner(&self, owner: &Email) -> Result<(), ApiKeyStoreError>;
 }
 
 // SessionStore port trait and errors
