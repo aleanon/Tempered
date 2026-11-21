@@ -192,6 +192,93 @@ pub(crate) async fn email_verification_token_store(
     assert_eq!(store.consume_token(&bobs).await.unwrap(), bob);
 }
 
+/// [`UserStore`](tempered_core::UserStore): one account per address,
+/// password checks, and `UserNotFound` from every update of a missing
+/// account.
+pub(crate) async fn user_store(store: impl tempered_core::UserStore) {
+    use tempered_core::{Password, User, UserStoreError, ValidatedUser};
+
+    let password = |p: &str| Password::try_from(Secret::new(p.to_string())).unwrap();
+    let alice = email("alice@example.com");
+    let nobody = email("nobody@example.com");
+
+    store
+        .add_user(User::new(alice.clone(), password("alices-password"), false))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .add_user(User::new(alice.clone(), password("another-password"), true))
+            .await,
+        Err(UserStoreError::UserAlreadyExists)
+    );
+    assert_eq!(
+        store
+            .authenticate_user(&alice, &password("alices-password"))
+            .await,
+        Ok(ValidatedUser::No2Fa(alice.clone()))
+    );
+    assert!(
+        store
+            .authenticate_user(&alice, &password("wrong-password"))
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .authenticate_user(&nobody, &password("alices-password"))
+            .await
+            .is_err()
+    );
+
+    // Updates change only what they say.
+    store
+        .set_new_password(&alice, password("a-new-password"))
+        .await
+        .unwrap();
+    store.set_requires_2fa(&alice, true).await.unwrap();
+    assert_eq!(
+        store
+            .authenticate_user(&alice, &password("a-new-password"))
+            .await,
+        Ok(ValidatedUser::Requires2Fa(alice.clone()))
+    );
+    assert!(
+        store
+            .authenticate_user(&alice, &password("alices-password"))
+            .await
+            .is_err()
+    );
+
+    // A missing account is reported, never silently "updated".
+    assert_eq!(
+        store
+            .set_new_password(&nobody, password("a-new-password"))
+            .await,
+        Err(UserStoreError::UserNotFound)
+    );
+    assert_eq!(
+        store.set_requires_2fa(&nobody, true).await,
+        Err(UserStoreError::UserNotFound)
+    );
+    assert_eq!(
+        store.delete_user(&nobody).await,
+        Err(UserStoreError::UserNotFound)
+    );
+
+    store.delete_user(&alice).await.unwrap();
+    assert_eq!(
+        store.get_user(&alice).await.map(|_| ()),
+        Err(UserStoreError::UserNotFound)
+    );
+    assert_eq!(
+        store
+            .set_new_password(&alice, password("a-new-password"))
+            .await,
+        Err(UserStoreError::UserNotFound)
+    );
+}
+
 /// [`PasswordResetTokenStore`]: single-use tokens, and dropping every token
 /// of one address.
 pub(crate) async fn password_reset_token_store(store: impl tempered_core::PasswordResetTokenStore) {

@@ -90,3 +90,14 @@ impl UserStore for HashMapUserStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::HashMapUserStore;
+    use crate::persistence::contract;
+
+    #[tokio::test]
+    async fn meets_the_user_store_contract() {
+        contract::user_store(HashMapUserStore::new()).await;
+    }
+}

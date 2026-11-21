@@ -114,15 +114,16 @@ impl UserStore for PostgresUserStore {
             email.as_ref().expose_secret()
         );
 
-        query.execute(&self.pool).await.map_err(|e| {
-            if let Some(db_err) = e.as_database_error()
-                && db_err.constraint().is_some()
-            {
-                return UserStoreError::UserAlreadyExists;
-            }
-            UserStoreError::UnexpectedError(e.to_string())
-        })?;
+        let updated = query
+            .execute(&self.pool)
+            .await
+            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
 
+        // No row: the account is gone (deleted since a reset link was sent,
+        // say). Report it rather than succeed at changing nothing.
+        if updated.rows_affected() == 0 {
+            return Err(UserStoreError::UserNotFound);
+        }
         Ok(())
     }
 
@@ -360,6 +361,12 @@ mod tests {
             Password::try_from(Secret::from("password123".to_string())).unwrap(),
             true,
         )
+    }
+
+    #[tokio::test]
+    async fn meets_the_user_store_contract() {
+        let (_container, pool) = setup_and_connect_db_container().await;
+        crate::persistence::contract::user_store(PostgresUserStore::new(pool)).await;
     }
 
     #[tokio::test]
