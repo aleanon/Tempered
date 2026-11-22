@@ -51,6 +51,7 @@ pub enum RouteId {
     DeleteAccount,
     Verify2Fa,
     Elevate,
+    VerifyElevation2Fa,
     VerifyElevatedToken,
     PasswordResetInitiate,
     PasswordResetComplete,

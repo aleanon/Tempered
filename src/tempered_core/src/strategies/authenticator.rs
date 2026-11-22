@@ -322,22 +322,35 @@ pub trait SupportsElevation: AuthenticationScheme {
     /// Errors that can occur during elevation
     type ElevationError: std::error::Error + Send + Sync + 'static;
 
-    /// Create an elevated token by re-authenticating the user.
+    /// Re-authenticate the user for an elevated token.
     ///
     /// The user must provide their password again, even if they have a valid
     /// session token. This ensures they are present and consenting to the
-    /// elevated operation.
+    /// elevated operation. An account that requires 2FA must also pass its
+    /// second factor, exactly as at login: the result is then
+    /// [`LoginOutcome::Requires2Fa`] (a code is sent), completed with
+    /// [`verify_elevation_2fa`](Self::verify_elevation_2fa). A scheme that
+    /// cannot challenge must fail rather than skip the second factor.
     ///
     /// # Arguments
-    /// * `email` - User's email (typically from existing auth token)
+    /// * `email` - User's email (from the existing auth token, never the body)
     /// * `password` - User's password for re-authentication
-    ///
-    /// # Returns
-    /// An elevated token with a shorter expiry time and potentially different claims
     async fn elevate(
         &self,
         email: Email,
         password: Password,
+    ) -> Result<LoginOutcome<Self::ElevatedToken>, Self::ElevationError>;
+
+    /// Complete an elevation that [`elevate`](Self::elevate) answered with a
+    /// 2FA challenge: redeem the code and issue the elevated token.
+    ///
+    /// `email` must be the logged-in user's (from the session), so a code
+    /// cannot elevate anyone else.
+    async fn verify_elevation_2fa(
+        &self,
+        email: Email,
+        attempt_id: TwoFaAttemptId,
+        code: TwoFaCode,
     ) -> Result<Self::ElevatedToken, Self::ElevationError>;
 
     /// Get the validator for elevated tokens.

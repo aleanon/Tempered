@@ -432,6 +432,15 @@ where
 
 // ---- Elevation -------------------------------------------------------------
 
+/// Like `/verify-2fa`'s body, without the email: the session names the user.
+#[derive(Deserialize)]
+struct VerifyElevation2FaRequest {
+    #[serde(rename = "loginAttemptId")]
+    login_attempt_id: String,
+    #[serde(rename = "2FACode")]
+    two_factor_code: String,
+}
+
 #[derive(Deserialize)]
 struct ElevateRequest {
     email: Secret<String>,
@@ -455,6 +464,14 @@ where
             RouteId::Elevate,
             Method::POST,
             o.path_or(RouteId::Elevate, "/elevate"),
+            Tier::Verified,
+        ));
+        // The second step for an account with 2FA. Same tier as `/elevate`;
+        // the user is the session's, never the body's.
+        out.push(route(
+            RouteId::VerifyElevation2Fa,
+            Method::POST,
+            o.path_or(RouteId::VerifyElevation2Fa, "/elevate/verify-2fa"),
             Tier::Verified,
         ));
         out.push(route(
@@ -490,6 +507,19 @@ where
                 handlers::handle_elevate(scheme, email, password, HttpResponseBuilder::new())
                     .await
                     .map_err(|(category, message)| error_response(status_for(category), &message))
+            }),
+            RouteId::VerifyElevation2Fa => respond!({
+                let email = who.ok_or_else(not_logged_in)?.clone();
+                let request: VerifyElevation2FaRequest = parse(req)?;
+                handlers::handle_verify_elevation_2fa(
+                    scheme,
+                    email,
+                    &request.login_attempt_id,
+                    &request.two_factor_code,
+                    HttpResponseBuilder::new(),
+                )
+                .await
+                .map_err(|(category, message)| error_response(status_for(category), &message))
             }),
             RouteId::VerifyElevatedToken => respond!({
                 handlers::handle_verify_elevated_token(HttpResponseBuilder::new())

@@ -511,7 +511,9 @@ mod tests {
 
         let email = Email::try_from(Secret::new("user@example.com".to_string())).unwrap();
         let password = Password::try_from(Secret::new("passwordpassword".to_string())).unwrap();
-        let elevated = scheme.elevate(email, password).await.unwrap();
+        let LoginOutcome::Success(elevated) = scheme.elevate(email, password).await.unwrap() else {
+            panic!("no 2FA on this account");
+        };
 
         let parts = parts_with_cookie("elevated_session", &elevated.0.to_string());
         let claims = scheme.elevated_validator().validate(&parts).await.unwrap();
@@ -542,7 +544,11 @@ mod tests {
                     },
                     |e| e,
                 );
-            let elevated = scheme.elevate(email(), password()).await.unwrap();
+            let LoginOutcome::Success(elevated) =
+                scheme.elevate(email(), password()).await.unwrap()
+            else {
+                panic!("no 2FA on this account");
+            };
             let parts = parts_with_cookie("elevated_session", &elevated.0.to_string());
             assert!(scheme.elevated_validator().validate(&parts).await.is_ok());
 

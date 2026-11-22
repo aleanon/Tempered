@@ -153,6 +153,12 @@ fn a_scheme_with_every_capability_serves_the_default_table() {
         row(Verify2Fa, Method::POST, "/verify-2fa", Public),
         row(Elevate, Method::POST, "/elevate", Verified),
         row(
+            VerifyElevation2Fa,
+            Method::POST,
+            "/elevate/verify-2fa",
+            Verified,
+        ),
+        row(
             VerifyElevatedToken,
             Method::POST,
             "/elevated/verify-token",
@@ -298,7 +304,11 @@ fn tier_rules_hold_for_every_scheme_built_here() {
                 // Changing or adding a credential: never below a verified
                 // address (the elevated tier is reached through /elevate,
                 // itself a verified route).
-                ChangePassword | PasskeyRegisterStart | PasskeyRegisterFinish | Elevate => {
+                ChangePassword
+                | PasskeyRegisterStart
+                | PasskeyRegisterFinish
+                | Elevate
+                | VerifyElevation2Fa => {
                     assert!(spec.tier >= Tier::Verified, "{spec:?}")
                 }
                 // Needs the account's login as well as the inbox.

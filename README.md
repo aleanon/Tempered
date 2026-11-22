@@ -96,6 +96,17 @@ change, passkey enrolment and `/elevate` (so everything elevated is reached by
 a verified user). Without email verification the scheme cannot tell, and those
 routes are plain login routes.
 
+`/elevate` asks for the password again and, for an account with 2FA, the
+second factor too: it answers `206 {"loginAttemptId": ..}` like a 2FA login,
+and `POST /elevate/verify-2fa` with `{"loginAttemptId", "2FACode"}` (for the
+logged-in user; there is no email in the body) sets the elevated cookie.
+
+Password change and account deletion ask for no current password: the
+elevated tier is that check. Put them behind it
+(`.supports_elevation(.., |e| e.supports_password_change().supports_account_deletion())`)
+unless a stolen session cookie being enough to set a new password is
+acceptable for your app.
+
 Handlers in those routers read the authenticated identity via
 `Extension<Claims>`. The middleware inserts it after validating the token, so the
 scheme's generics stay fully inferred and never leak into your route code.
@@ -109,7 +120,7 @@ automatically:
 |---|---|---|
 | Registration | `.supports_registration()` | `POST /signup` |
 | Two-factor | `.supports_2fa(store, email_client)` | `POST /verify-2fa` |
-| Elevation ("sudo") | `.supports_elevation(ban_store, config, \|e\| ...)` | `POST /elevate`, elevated routes |
+| Elevation ("sudo") | `.supports_elevation(ban_store, config, \|e\| ...)` | `POST /elevate`, `POST /elevate/verify-2fa`, elevated routes |
 | Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes |
 | Email verification | `.supports_email_verification(...)` | `POST /verify-email`, `POST /verify-email/resend` (both logged in); signup sends the link; credential changes need a verified address |
 | OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes |

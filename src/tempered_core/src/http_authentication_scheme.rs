@@ -166,8 +166,12 @@ pub trait HttpAuthenticationScheme: AuthenticationScheme {
 ///     fn create_elevation_response<B: ResponseBuilder>(
 ///         &self,
 ///         builder: B,
-///         elevated_token: Self::ElevatedToken,
+///         outcome: LoginOutcome<Self::ElevatedToken>,
 ///     ) -> B::Response {
+///         let LoginOutcome::Success(elevated_token) = outcome else {
+///             // 206 + the attempt id, as for a 2FA login.
+///             todo!()
+///         };
 ///         // Store in separate cookie with shorter expiry
 ///         let cookie = Cookie::build("elevated_auth", elevated_token.as_str())
 ///             .http_only(true)
@@ -180,7 +184,8 @@ pub trait HttpAuthenticationScheme: AuthenticationScheme {
 /// }
 /// ```
 pub trait HttpElevationScheme: HttpAuthenticationScheme + SupportsElevation {
-    /// Create an HTTP response containing an elevated token.
+    /// Create the HTTP response to an elevation: the elevated token, or the
+    /// 2FA challenge an account with a second factor must pass first.
     ///
     /// Similar to `create_login_response`, but for elevated tokens.
     /// These tokens typically:
@@ -194,7 +199,7 @@ pub trait HttpElevationScheme: HttpAuthenticationScheme + SupportsElevation {
     fn create_elevation_response<B: ResponseBuilder>(
         &self,
         builder: B,
-        elevated_token: Self::ElevatedToken,
+        outcome: LoginOutcome<Self::ElevatedToken>,
     ) -> Result<B::Response, crate::ResponseBuilderError>;
 
     /// Extract an elevated token from an HTTP request.

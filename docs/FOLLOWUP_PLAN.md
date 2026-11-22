@@ -12,7 +12,7 @@ commits already on this branch are not held behind them.
 
 ---
 
-## Phase 0 — Leaked secrets (urgent) ✅ repo side DONE — rotation (0.1) still owed
+## Phase 0 — Leaked secrets ✅ DONE (2026-11-22: the owner confirmed the leaked values were dummy secrets, so 0.1 needs no rotation)
 
 `.env` is tracked, and it is on `origin/main` of a **public** GitHub repo (11
 commits touch it, 2025-09-05 → 2025-09-24). It holds `JWT_SECRET`,
@@ -327,11 +327,14 @@ As executed:
 
 Raised by the review; they change behaviour, so each needs a decision
 before it is built:
-- `/elevate` ignores `Requires2Fa`: password alone gives sudo on a 2FA
-  account. A two-step elevate (password, then code) fixes it.
-- Login-level `/change-password` needs no current password, so a stolen
-  cookie can set a new one. Require `current_password`, or make the
-  elevated variant the default.
+- ~~`/elevate` ignores `Requires2Fa`~~ ✅ DONE 2026-11-22: two-step
+  elevate (`206` challenge, then `POST /elevate/verify-2fa`);
+  `SupportsElevation::elevate` returns `LoginOutcome` and gains
+  `verify_elevation_2fa`.
+- Login-level `/change-password` needs no current password. **Decided
+  2026-11-22: keep it that way.** The elevated tier is the re-authentication
+  step. Apps that want it put password change behind elevation; the README
+  says so.
 - Account enumeration: signup answers 409 "User already exists", and reset
   initiation is slower for real accounts. A fix is to always answer the
   same, and mail an "already registered" notice.

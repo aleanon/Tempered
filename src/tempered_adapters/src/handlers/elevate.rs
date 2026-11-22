@@ -4,7 +4,8 @@
 //! with their password to receive an elevated token for sensitive operations.
 
 use tempered_core::{
-    ClassifyError, Email, ErrorCategory, HttpElevationScheme, Password, ResponseBuilder,
+    ClassifyError, Email, ErrorCategory, HttpElevationScheme, LoginOutcome, Password,
+    ResponseBuilder, TwoFaAttemptId, TwoFaCode,
 };
 
 /// Framework-agnostic elevation handler.
@@ -37,15 +38,48 @@ where
     S::ElevationError: ClassifyError,
     B: ResponseBuilder,
 {
-    // Re-authenticate the user to create elevated token
-    let elevated_token = scheme
+    // Re-authenticate: the elevated token, or a 2FA challenge for an account
+    // with a second factor.
+    let outcome = scheme
         .elevate(email, password)
         .await
         .map_err(ClassifyError::classify)?;
 
     // Create HTTP response with elevated token
     scheme
-        .create_elevation_response(builder, elevated_token)
+        .create_elevation_response(builder, outcome)
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to build the elevation response");
+            (ErrorCategory::Internal, "Internal error".to_string())
+        })
+}
+
+/// Second step of an elevation for an account with 2FA: redeem the code
+/// [`handle_elevate`] had sent and deliver the elevated token.
+///
+/// `email` must come from the validated session, not the request body.
+/// Malformed ids or codes are `BadRequest`; the rest are classified.
+pub async fn handle_verify_elevation_2fa<S, B>(
+    scheme: &S,
+    email: Email,
+    attempt_id: &str,
+    code: &str,
+    builder: B,
+) -> Result<B::Response, (ErrorCategory, String)>
+where
+    S: HttpElevationScheme,
+    S::ElevationError: ClassifyError,
+    B: ResponseBuilder,
+{
+    let bad = |e: tempered_core::TwoFaError| (ErrorCategory::BadRequest, e.to_string());
+    let attempt_id = TwoFaAttemptId::parse(attempt_id).map_err(bad)?;
+    let code = TwoFaCode::parse(code.to_string()).map_err(bad)?;
+    let token = scheme
+        .verify_elevation_2fa(email, attempt_id, code)
+        .await
+        .map_err(ClassifyError::classify)?;
+    scheme
+        .create_elevation_response(builder, LoginOutcome::Success(token))
         .map_err(|e| {
             tracing::error!(error = %e, "failed to build the elevation response");
             (ErrorCategory::Internal, "Internal error".to_string())

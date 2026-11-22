@@ -310,6 +310,14 @@ trait TwoFaChallenge {
     /// the account is deleted: the first factor that login passed no longer
     /// stands. Succeeds when there is none.
     async fn cancel_pending(&self, email: &Email) -> Result<(), TwoFaChallengeError>;
+
+    /// Redeem a code issued by [`issue_challenge`](Self::issue_challenge).
+    async fn redeem(
+        &self,
+        email: &Email,
+        attempt_id: &TwoFaAttemptId,
+        code: &TwoFaCode,
+    ) -> Result<(), TwoFaChallengeError>;
 }
 
 #[async_trait]
@@ -320,6 +328,15 @@ impl TwoFaChallenge for () {
 
     async fn cancel_pending(&self, _email: &Email) -> Result<(), TwoFaChallengeError> {
         Ok(())
+    }
+
+    async fn redeem(
+        &self,
+        _email: &Email,
+        _attempt_id: &TwoFaAttemptId,
+        _code: &TwoFaCode,
+    ) -> Result<(), TwoFaChallengeError> {
+        Err(TwoFaChallengeError::NotConfigured)
     }
 }
 
@@ -350,6 +367,15 @@ where
             Ok(()) | Err(TwoFaCodeStoreError::UserNotFound) => Ok(()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    async fn redeem(
+        &self,
+        email: &Email,
+        attempt_id: &TwoFaAttemptId,
+        code: &TwoFaCode,
+    ) -> Result<(), TwoFaChallengeError> {
+        Ok(self.store.redeem_code(email, attempt_id, code).await?)
     }
 }
 
@@ -1210,7 +1236,7 @@ where
         &self,
         email: Email,
         password: Password,
-    ) -> Result<Self::ElevatedToken, Self::ElevationError> {
+    ) -> Result<LoginOutcome<Self::ElevatedToken>, Self::ElevationError> {
         // Re-authenticate, then mint a token via the *elevated* strategy.
         let ticket = self
             .elevation
@@ -1218,7 +1244,40 @@ where
             .begin(&email)
             .await
             .map_err(CredentialError::Token)?;
-        self.user_store.authenticate_user(&email, &password).await?;
+        match self.user_store.authenticate_user(&email, &password).await? {
+            // The second factor guards sudo as it guards login: a password
+            // alone (say, phished, plus a stolen session) must not reach the
+            // elevated routes. Fails closed without the 2FA capability.
+            ValidatedUser::Requires2Fa(email) => {
+                let attempt_id = self.two_fa.issue_challenge(&email).await?;
+                Ok(LoginOutcome::Requires2Fa { email, attempt_id })
+            }
+            ValidatedUser::No2Fa(email) => Ok(LoginOutcome::Success(
+                self.elevation
+                    .tokens
+                    .issue(&email, ticket)
+                    .await
+                    .map_err(CredentialError::Token)?,
+            )),
+        }
+    }
+
+    #[tracing::instrument(name = "CredentialScheme::verify_elevation_2fa", skip(self, code))]
+    async fn verify_elevation_2fa(
+        &self,
+        email: Email,
+        attempt_id: TwoFaAttemptId,
+        code: TwoFaCode,
+    ) -> Result<Self::ElevatedToken, Self::ElevationError> {
+        let ticket = self
+            .elevation
+            .tokens
+            .begin(&email)
+            .await
+            .map_err(CredentialError::Token)?;
+        self.two_fa.redeem(&email, &attempt_id, &code).await?;
+        // The account may have been deleted since the first factor.
+        self.user_store.get_user(&email).await?;
         Ok(self
             .elevation
             .tokens
@@ -1259,16 +1318,28 @@ where
     fn create_elevation_response<RB: ResponseBuilder>(
         &self,
         builder: RB,
-        elevated_token: Self::ElevatedToken,
+        outcome: LoginOutcome<Self::ElevatedToken>,
     ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
-        builder
-            .status(200)
-            .cookie(&self.elevation.tokens.auth_cookie(&elevated_token))
-            .json_body(serde_json::json!({
-                "status": "elevated",
-                "message": "Elevation successful"
-            }))
-            .build()
+        match outcome {
+            LoginOutcome::Success(elevated_token) => builder
+                .status(200)
+                .cookie(&self.elevation.tokens.auth_cookie(&elevated_token))
+                .json_body(serde_json::json!({
+                    "status": "elevated",
+                    "message": "Elevation successful"
+                }))
+                .build(),
+            // Same shape as a 2FA login: the code was sent, and
+            // `/elevate/verify-2fa` takes it with this attempt id.
+            LoginOutcome::Requires2Fa { attempt_id, .. } => builder
+                .status(206)
+                .json_body(serde_json::json!({
+                    "status": "requires_2fa",
+                    "message": "2FA required",
+                    "loginAttemptId": attempt_id.to_string()
+                }))
+                .build(),
+        }
     }
 
     fn extract_elevated_token_from_request<Req: AuthRequest>(
