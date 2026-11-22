@@ -245,12 +245,15 @@ pub trait SupportsPasskeys: AuthenticationScheme {
         email: Option<Email>,
     ) -> Result<PasskeyCeremony, Self::PasskeyError>;
 
-    /// Authentication leg 2: verify the assertion and issue the primary token.
+    /// Authentication leg 2: verify the assertion and issue the primary
+    /// token, or, if the scheme holds passkey logins to 2FA and the account
+    /// has it, a 2FA challenge (completed through
+    /// [`SupportsTwoFactor`]).
     async fn finish_passkey_authentication(
         &self,
         ceremony_id: CeremonyId,
         response: serde_json::Value,
-    ) -> Result<Self::Token, Self::PasskeyError>;
+    ) -> Result<LoginOutcome<Self::Token>, Self::PasskeyError>;
 }
 
 // ============================================================================

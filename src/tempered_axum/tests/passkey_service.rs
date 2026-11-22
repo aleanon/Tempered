@@ -522,3 +522,87 @@ async fn without_step_up_the_elevated_enrollment_routes_do_not_exist() {
     .await;
     assert!(is_unrouted(&start), "got {}", start.status());
 }
+
+/// Keeps every 2FA code it is asked to send.
+#[derive(Clone, Default)]
+struct Outbox(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl Outbox {
+    fn last(&self) -> String {
+        self.0
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("a code was sent")
+    }
+}
+
+#[async_trait::async_trait]
+impl tempered_core::EmailClient for Outbox {
+    async fn send_email(&self, _: &Email, _: &str, content: &str) -> Result<(), String> {
+        self.0.lock().unwrap().push(content.to_string());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_scheme_can_hold_passkey_logins_to_the_second_factor() {
+    let outbox = Outbox::default();
+    let flow = PasskeyFlow::new(
+        HashMapPasskeyCredentialStore::new(),
+        HashMapChallengeStore::new(),
+        MockVerifier,
+    );
+    let scheme = JwtScheme::new(
+        HashMapUserStore::new(),
+        JwtAuthConfig {
+            jwt_cookie_name: "jwt".to_string(),
+            jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+            token_ttl_in_seconds: 3600,
+            audience: None,
+            issuer: None,
+        },
+        HashSetBannedTokenStore::new(),
+        HashMapTokenEpochStore::new(),
+    )
+    .supports_registration()
+    .supports_2fa(
+        tempered_adapters::persistence::HashMapTwoFaCodeStore::new(),
+        outbox.clone(),
+    )
+    .supports_passkeys(flow)
+    .passkey_login_requires_2fa();
+    let app: Router = auth_service(scheme, ".".to_string())
+        .validated_router(Router::new().route("/whoami", get(whoami)))
+        .into();
+
+    // A 2FA account signs in with its password and code, then enrolls a passkey.
+    let credentials = json!({ "email": VICTIM, "password": PASSWORD, "requires2FA": true });
+    post(&app, "/signup", None, credentials.clone()).await;
+    let login = json_body(post(&app, "/login", None, credentials).await).await;
+    let verify = json!({
+        "email": VICTIM,
+        "loginAttemptId": login["loginAttemptId"],
+        "2FACode": outbox.last(),
+    });
+    let session = auth_cookie(&post(&app, "/verify-2fa", None, verify).await);
+    enroll(&app, &session, json!({}), "cred-1").await;
+
+    // A usernameless passkey login: no cookie yet, a code instead, and the
+    // email that `/verify-2fa` needs alongside it.
+    let finish = passkey_login(&app, None, "cred-1").await;
+    assert_eq!(finish.status(), StatusCode::PARTIAL_CONTENT);
+    assert!(finish.headers().get(header::SET_COOKIE).is_none());
+    let body = json_body(finish).await;
+    assert_eq!(body["email"], VICTIM);
+
+    let verify = json!({
+        "email": body["email"],
+        "loginAttemptId": body["loginAttemptId"],
+        "2FACode": outbox.last(),
+    });
+    let done = post(&app, "/verify-2fa", None, verify).await;
+    assert_eq!(done.status(), StatusCode::OK);
+    assert_eq!(whoami_of(&app, &auth_cookie(&done)).await, VICTIM);
+}

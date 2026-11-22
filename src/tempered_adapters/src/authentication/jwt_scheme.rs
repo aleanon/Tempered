@@ -825,7 +825,7 @@ mod passkey_tests {
     };
     use secrecy::Secret;
     use tempered_core::{
-        AuthValidator, AuthenticationScheme, CredentialId, Email, PasskeyCredential,
+        AuthValidator, AuthenticationScheme, CredentialId, Email, LoginOutcome, PasskeyCredential,
         PasskeyCredentialStore, PasskeyStoreError, Password, SupportsAccountDeletion,
         SupportsPasskeys, User, UserStore, UserStoreError,
     };
@@ -901,13 +901,16 @@ mod passkey_tests {
             .start_passkey_authentication(Some(email()))
             .await
             .unwrap();
-        let token = scheme
+        let LoginOutcome::Success(token) = scheme
             .finish_passkey_authentication(
                 ceremony.ceremony_id.clone(),
                 reply_with_count(&ceremony, "cred-abc", 1),
             )
             .await
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("no second factor asked by default");
+        };
 
         let parts = http::Request::builder()
             .header("cookie", format!("jwt={}", token.as_str()))
@@ -916,6 +919,102 @@ mod passkey_tests {
             .into_parts()
             .0;
         assert!(scheme.validator().validate(&parts).await.is_ok());
+    }
+
+    /// Keeps every 2FA code it is asked to send.
+    #[derive(Clone, Default)]
+    struct Outbox(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl tempered_core::EmailClient for Outbox {
+        async fn send_email(&self, _: &Email, _: &str, content: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push(content.to_string());
+            Ok(())
+        }
+    }
+
+    /// A 2FA account with an enrolled passkey; `hold` turns on
+    /// `passkey_login_requires_2fa`. Returns the outcome of a passkey login.
+    async fn passkey_login_of_a_2fa_account(
+        hold: bool,
+        outbox: &Outbox,
+    ) -> (
+        impl SupportsPasskeys<Token = crate::authentication::token_strategy::JwtToken>
+        + tempered_core::SupportsTwoFactor
+        + use<>,
+        LoginOutcome<crate::authentication::token_strategy::JwtToken>,
+    ) {
+        let users = HashMapUserStore::new();
+        let password = Password::try_from(Secret::new("a-long-password".to_string())).unwrap();
+        users
+            .add_user(User::new(email(), password, true))
+            .await
+            .unwrap();
+        let flow = PasskeyFlow::new(
+            HashMapPasskeyCredentialStore::new(),
+            HashMapChallengeStore::new(),
+            MockVerifier,
+        );
+        let scheme = JwtScheme::new(
+            users,
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_2fa(
+            crate::persistence::HashMapTwoFaCodeStore::new(),
+            outbox.clone(),
+        )
+        .supports_passkeys(flow);
+        let scheme = if hold {
+            scheme.passkey_login_requires_2fa()
+        } else {
+            scheme
+        };
+
+        let ceremony = scheme.start_passkey_registration(email()).await.unwrap();
+        let response = reply_with_count(&ceremony, "cred-abc", 0);
+        scheme
+            .finish_passkey_registration(email(), ceremony.ceremony_id, response)
+            .await
+            .unwrap();
+        let ceremony = scheme.start_passkey_authentication(None).await.unwrap();
+        let outcome = scheme
+            .finish_passkey_authentication(
+                ceremony.ceremony_id.clone(),
+                reply_with_count(&ceremony, "cred-abc", 1),
+            )
+            .await
+            .unwrap();
+        (scheme, outcome)
+    }
+
+    #[tokio::test]
+    async fn by_default_a_passkey_stands_in_for_both_factors() {
+        let outbox = Outbox::default();
+        let (_, outcome) = passkey_login_of_a_2fa_account(false, &outbox).await;
+        assert!(matches!(outcome, LoginOutcome::Success(_)));
+        assert!(outbox.0.lock().unwrap().is_empty(), "no code sent");
+    }
+
+    #[tokio::test]
+    async fn a_scheme_can_hold_passkey_logins_to_the_second_factor() {
+        let outbox = Outbox::default();
+        let (scheme, outcome) = passkey_login_of_a_2fa_account(true, &outbox).await;
+        let LoginOutcome::Requires2Fa {
+            email: who,
+            attempt_id,
+        } = outcome
+        else {
+            panic!("a 2FA account is asked for its code");
+        };
+        assert_eq!(who, email());
+
+        let code = tempered_core::TwoFaCode::parse(outbox.0.lock().unwrap()[0].clone()).unwrap();
+        let token = tempered_core::SupportsTwoFactor::verify_2fa(&scheme, who, attempt_id, code)
+            .await
+            .unwrap();
+        assert!(!token.as_str().is_empty());
     }
 
     #[tokio::test]

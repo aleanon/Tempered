@@ -10,6 +10,7 @@
 //! by reusing the scheme's `create_login_response` (so the passkey session
 //! cookie is identical to a password-login one).
 
+use secrecy::ExposeSecret;
 use serde_json::json;
 use tempered_core::{
     CeremonyId, Email, HttpAuthenticationScheme, HttpResponseBuilderExt, LoginOutcome,
@@ -100,10 +101,27 @@ where
     S: SupportsPasskeys + HttpAuthenticationScheme,
     B: ResponseBuilder,
 {
-    let token = scheme
+    let outcome = scheme
         .finish_passkey_authentication(ceremony_id, response)
         .await
         .map_err(HandlerError::Auth)?;
-    // Reuse the scheme's normal login delivery (sets the auth cookie).
-    Ok(scheme.create_login_response(builder, LoginOutcome::Success(token))?)
+    match outcome {
+        // Reuse the scheme's normal login delivery (sets the auth cookie).
+        LoginOutcome::Success(token) => {
+            Ok(scheme.create_login_response(builder, LoginOutcome::Success(token))?)
+        }
+        // The scheme holds passkey logins to 2FA (`passkey_login_requires_2fa`).
+        // `/verify-2fa` takes the email too, and a usernameless login never
+        // asked for it, so it comes back here. Whoever holds the passkey may
+        // know whose it is.
+        LoginOutcome::Requires2Fa { email, attempt_id } => Ok(builder
+            .status(206)
+            .json_body(json!({
+                "status": "requires_2fa",
+                "message": "2FA required",
+                "loginAttemptId": attempt_id.to_string(),
+                "email": email.as_ref().expose_secret(),
+            }))
+            .build()?),
+    }
 }

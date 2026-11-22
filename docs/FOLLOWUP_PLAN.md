@@ -346,8 +346,10 @@ before it is built:
   notice. The `UserStore::add_user` doc asks stores to hash before they
   detect the clash, so timing matches too (Postgres does). Still open: reset
   initiation is slower for real accounts (it sends mail).
-- Passkey login skips 2FA. That may be intended (a passkey is possession
-  plus user verification), but it should be documented either way.
+- ~~Passkey login skips 2FA~~ ✅ DONE 2026-11-22: the implementor's choice.
+  Default: a passkey stands in for both factors. `.passkey_login_requires_2fa()`
+  holds a 2FA account to its code (`206 { loginAttemptId, email }`, then
+  `/verify-2fa`). `finish_passkey_authentication` returns `LoginOutcome`.
 - Sessions have no absolute lifetime. Store a created-at time and cap the
   age.
 - Smaller items:

@@ -137,6 +137,9 @@ pub struct OAuth<ST, ID, HC> {
 #[derive(Clone)]
 pub struct Passkeys<CS, ChS, V> {
     flow: PasskeyFlow<CS, ChS, V>,
+    /// Whether a passkey login also asks a 2FA account for its code. See
+    /// [`passkey_login_requires_2fa`](CredentialScheme::passkey_login_requires_2fa).
+    requires_2fa: bool,
 }
 
 // ============================================================================
@@ -719,9 +722,33 @@ impl<U, T, F, L, R, M, O> CredentialScheme<U, T, F, L, R, M, O, ()> {
             password_reset: self.password_reset,
             email_verify: self.email_verify,
             oauth: self.oauth,
-            passkeys: Passkeys { flow },
+            passkeys: Passkeys {
+                flow,
+                requires_2fa: false,
+            },
             routes: self.routes,
         }
+    }
+}
+
+impl<U, T, F, L, R, M, O, CS, ChS, V> CredentialScheme<U, T, F, L, R, M, O, Passkeys<CS, ChS, V>> {
+    /// Hold passkey logins to the account's second factor, like password
+    /// logins: an account with 2FA gets a code after the passkey and is
+    /// signed in once it enters it.
+    ///
+    /// Off by default. A passkey checked with user verification is already
+    /// two factors (the device, plus the PIN or biometric that unlocks it),
+    /// which is why most sites let it stand alone. Turn this on when a
+    /// passkey alone is not enough for your accounts. It needs
+    /// [`supports_2fa`](Self::supports_2fa): without it, a 2FA account
+    /// cannot finish a passkey login, as with a password login.
+    ///
+    /// With it on, `/passkey/login/finish` answers a 2FA account with `206`
+    /// and `{ "loginAttemptId", "email" }`. The email is there because a
+    /// usernameless login never asked for one, and `/verify-2fa` takes both.
+    pub fn passkey_login_requires_2fa(mut self) -> Self {
+        self.passkeys.requires_2fa = true;
+        self
     }
 }
 
@@ -1949,7 +1976,7 @@ where
         &self,
         ceremony_id: CeremonyId,
         response: serde_json::Value,
-    ) -> Result<Self::Token, Self::PasskeyError> {
+    ) -> Result<LoginOutcome<Self::Token>, Self::PasskeyError> {
         let (email, credential_id) = self
             .passkeys
             .flow
@@ -1969,12 +1996,20 @@ where
             .await?;
         // A passkey outlives nothing: if the account it was enrolled for is gone
         // (deleted since enrollment), the credential must not mint a session.
-        self.user_store.get_user(&email).await?;
-        Ok(self
-            .tokens
-            .issue(&email, ticket)
-            .await
-            .map_err(CredentialError::Token)?)
+        let user = self.user_store.get_user(&email).await?;
+        if self.passkeys.requires_2fa && user.requires_2fa() {
+            let attempt_id = self
+                .two_fa
+                .issue_challenge(&email, ChallengePurpose::SignIn)
+                .await?;
+            return Ok(LoginOutcome::Requires2Fa { email, attempt_id });
+        }
+        Ok(LoginOutcome::Success(
+            self.tokens
+                .issue(&email, ticket)
+                .await
+                .map_err(CredentialError::Token)?,
+        ))
     }
 }
 
