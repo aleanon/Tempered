@@ -37,6 +37,11 @@ impl PartialEq for UserStoreError {
 
 #[async_trait]
 pub trait UserStore: Send + Sync {
+    /// Add `user`, or fail with `UserAlreadyExists` if the address is taken.
+    ///
+    /// A store that hashes passwords should hash before it finds out the
+    /// address is taken: signup answers a taken address like a new one, and
+    /// a quicker failure would tell the two apart by timing.
     async fn add_user(&self, user: User) -> Result<(), UserStoreError>;
     async fn set_new_password(
         &self,

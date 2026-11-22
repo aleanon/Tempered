@@ -1183,15 +1183,17 @@ mod email_verification_tests {
 
     use super::JwtScheme;
     use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
-    use crate::authentication::credential_scheme::RegistrationData;
+    use crate::authentication::credential_scheme::{
+        ALREADY_REGISTERED_NOTICE, PasswordCredentials, RegistrationData,
+    };
     use crate::persistence::{
         HashMapEmailVerificationTokenStore, HashMapTokenEpochStore, HashMapUserStore,
         HashSetBannedTokenStore,
     };
     use secrecy::Secret;
     use tempered_core::{
-        Email, EmailClient, Password, RequiresEmailVerification,
-        strategies::authenticator::SupportsRegistration,
+        AuthenticationScheme, Email, EmailClient, LoginOutcome, Password,
+        RequiresEmailVerification, strategies::authenticator::SupportsRegistration,
     };
 
     /// Keeps every message it is asked to send.
@@ -1251,6 +1253,51 @@ mod email_verification_tests {
         // Asking again for a verified address sends nothing.
         scheme.initiate_email_verification(email()).await.unwrap();
         assert_eq!(outbox.0.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn signup_for_a_taken_address_mails_its_owner_and_changes_nothing() {
+        let outbox = Outbox::default();
+        let scheme = JwtScheme::new(
+            HashMapUserStore::new(),
+            JwtAuthConfig {
+                jwt_cookie_name: "jwt".to_string(),
+                jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+                token_ttl_in_seconds: 3600,
+                audience: None,
+                issuer: None,
+            },
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_registration()
+        .supports_email_verification(HashMapEmailVerificationTokenStore::new(), outbox.clone());
+        let signup = |password: &str| {
+            let password = Password::try_from(Secret::new(password.to_string())).unwrap();
+            scheme.register(
+                email(),
+                password,
+                RegistrationData {
+                    requires_2fa: false,
+                },
+            )
+        };
+
+        signup("a-long-password").await.unwrap();
+        // The second signup succeeds as far as the caller can tell.
+        signup("someone-elses-password").await.unwrap();
+
+        let sent = outbox.0.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2, "a verification link, then the notice");
+        assert_eq!(sent[1], ALREADY_REGISTERED_NOTICE);
+        let original = PasswordCredentials {
+            email: Secret::new("user@example.com".to_string()),
+            password: Secret::new("a-long-password".to_string()),
+        };
+        assert!(matches!(
+            scheme.login(original).await,
+            Ok(LoginOutcome::Success(_))
+        ));
     }
 
     #[tokio::test]

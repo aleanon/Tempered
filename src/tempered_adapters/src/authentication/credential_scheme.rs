@@ -218,7 +218,16 @@ trait EmailProof {
     async fn mark_verified(&self, email: &Email) -> Result<(), EmailVerificationStoreError>;
     /// Send a verification link, unless the address is already verified.
     async fn send_verification(&self, email: &Email) -> Result<(), VerificationSendError>;
+    /// Tell the owner of `email` that someone tried to sign up with it.
+    /// Signup answers the same either way, so this mail is how the owner
+    /// (perhaps someone who forgot they had an account) learns of it.
+    async fn notify_already_registered(&self, email: &Email) -> Result<(), VerificationSendError>;
 }
+
+/// The body of the mail a signup for a taken address sends its owner.
+pub(crate) const ALREADY_REGISTERED_NOTICE: &str = "Someone tried to create an account with this \
+email address, which already has one. If it was you, sign in, or reset your password if \
+you have forgotten it. If it was not, you can ignore this message: nothing has changed.";
 
 /// Why a verification email could not be sent.
 #[derive(Debug)]
@@ -255,6 +264,10 @@ impl EmailProof for () {
     async fn send_verification(&self, _email: &Email) -> Result<(), VerificationSendError> {
         Ok(())
     }
+
+    async fn notify_already_registered(&self, _email: &Email) -> Result<(), VerificationSendError> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -283,6 +296,17 @@ where
             .map_err(VerificationSendError::Store)?;
         self.email
             .send_email(email, "Verify your email", &token.to_string())
+            .await
+            .map_err(VerificationSendError::Email)
+    }
+
+    async fn notify_already_registered(&self, email: &Email) -> Result<(), VerificationSendError> {
+        self.email
+            .send_email(
+                email,
+                "You already have an account",
+                ALREADY_REGISTERED_NOTICE,
+            )
             .await
             .map_err(VerificationSendError::Email)
     }
@@ -1074,12 +1098,26 @@ where
         data: Self::RegistrationData,
     ) -> Result<(), Self::RegistrationError> {
         let user = User::new(email.clone(), password, data.requires_2fa);
-        self.user_store.add_user(user).await?;
-        // With email verification, the new account is asked to prove its
-        // address. The account exists either way: a failed send is logged and
-        // the user can ask for another link (`/verify-email/resend`).
-        if let Err(e) = self.email_verify.send_verification(&email).await {
-            tracing::error!(error = ?e, "failed to send the verification email after signup");
+        match self.user_store.add_user(user).await {
+            // With email verification, the new account is asked to prove its
+            // address. The account exists either way: a failed send is logged
+            // and the user can ask for another link (`/verify-email/resend`).
+            Ok(()) => {
+                if let Err(e) = self.email_verify.send_verification(&email).await {
+                    tracing::error!(error = ?e, "failed to send the verification email after signup");
+                }
+            }
+            // A taken address answers exactly like a new one, so signup does
+            // not tell anyone which addresses have accounts. The existing
+            // account is untouched; its owner gets a notice instead (when
+            // the scheme can send mail). The store hashes the password before
+            // it finds the clash, so the two paths also take the same time.
+            Err(UserStoreError::UserAlreadyExists) => {
+                if let Err(e) = self.email_verify.notify_already_registered(&email).await {
+                    tracing::error!(error = ?e, "failed to send the already-registered notice");
+                }
+            }
+            Err(e) => return Err(e.into()),
         }
         Ok(())
     }

@@ -118,7 +118,7 @@ automatically:
 
 | Capability | Builder | Adds |
 |---|---|---|
-| Registration | `.supports_registration()` | `POST /signup` |
+| Registration | `.supports_registration()` | `POST /signup` (a taken address gets the same `201`; with email verification its owner is mailed a notice) |
 | Two-factor | `.supports_2fa(store, email_client)` | `POST /verify-2fa` |
 | Elevation ("sudo") | `.supports_elevation(ban_store, config, \|e\| ...)` | `POST /elevate`, `POST /elevate/verify-2fa`, elevated routes |
 | Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes |

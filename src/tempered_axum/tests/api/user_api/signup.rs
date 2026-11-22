@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use tempered_core::ports::repositories::UserStoreError;
 
 #[derive(Deserialize)]
 struct ErrorResponse {
@@ -89,7 +88,7 @@ async fn signup_should_return_400_if_invalid_password() {
 }
 
 #[tokio::test]
-async fn signup_should_return_409_if_email_already_exists() {
+async fn signup_answers_a_taken_address_like_a_new_one() {
     let app = TestApp::new().await;
 
     let body = serde_json::json!({
@@ -97,22 +96,33 @@ async fn signup_should_return_409_if_email_already_exists() {
         "password": "passwordpassword",
         "requires2FA": false,
     });
+    let first = app.post_signup(&body).await;
+    assert_eq!(first.status().as_u16(), 201);
+    let first: serde_json::Value = first.json().await.unwrap();
 
-    let response = app.post_signup(&body).await;
+    // Same status and body: nothing says the address already had an account.
+    let again = serde_json::json!({
+        "email": "example@mail.com",
+        "password": "a-different-password",
+        "requires2FA": false,
+    });
+    let second = app.post_signup(&again).await;
+    assert_eq!(second.status().as_u16(), 201);
+    let second: serde_json::Value = second.json().await.unwrap();
+    assert_eq!(first, second);
 
-    assert_eq!(response.status().as_u16(), 201);
-
-    let response = app.post_signup(&body).await;
-
-    assert_eq!(response.status().as_u16(), 409);
-    assert_eq!(
-        response
-            .json::<ErrorResponse>()
-            .await
-            .expect("Could not deserialize response body to ErrorResponse")
-            .error,
-        UserStoreError::UserAlreadyExists.to_string()
-    );
+    // And the existing account is untouched: its password still works, the
+    // second one does not.
+    let login = app
+        .login(&serde_json::json!({ "email": "example@mail.com", "password": "passwordpassword" }))
+        .await;
+    assert_eq!(login.status().as_u16(), 200);
+    let login = app
+        .login(
+            &serde_json::json!({ "email": "example@mail.com", "password": "a-different-password" }),
+        )
+        .await;
+    assert_eq!(login.status().as_u16(), 401);
 }
 
 #[tokio::test]

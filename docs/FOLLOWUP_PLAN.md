@@ -340,9 +340,12 @@ before it is built:
   2026-11-22: keep it that way.** The elevated tier is the re-authentication
   step. Apps that want it put password change behind elevation; the README
   says so.
-- Account enumeration: signup answers 409 "User already exists", and reset
-  initiation is slower for real accounts. A fix is to always answer the
-  same, and mail an "already registered" notice.
+- ~~Account enumeration at signup~~ ✅ DONE 2026-11-22: a taken address
+  answers the same `201` as a new one and leaves the account untouched;
+  with email verification the owner is mailed an "already registered"
+  notice. The `UserStore::add_user` doc asks stores to hash before they
+  detect the clash, so timing matches too (Postgres does). Still open: reset
+  initiation is slower for real accounts (it sends mail).
 - Passkey login skips 2FA. That may be intended (a passkey is possession
   plus user verification), but it should be documented either way.
 - Sessions have no absolute lifetime. Store a created-at time and cap the
