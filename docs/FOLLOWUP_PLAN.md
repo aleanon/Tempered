@@ -330,7 +330,12 @@ before it is built:
 - ~~`/elevate` ignores `Requires2Fa`~~ ✅ DONE 2026-11-22: two-step
   elevate (`206` challenge, then `POST /elevate/verify-2fa`);
   `SupportsElevation::elevate` returns `LoginOutcome` and gains
-  `verify_elevation_2fa`.
+  `verify_elevation_2fa`. The code's email subject says what it is for
+  (sign-in vs. a sensitive action). Login and elevation codes share the
+  2FA store, so each route accepts the other's code. Neither gains anything:
+  both need the password, and the elevation route also needs the user's
+  session. Hardening, not built: tag each code with its purpose in
+  `TwoFaCodeStore` (port change) and check it in `redeem_code`.
 - Login-level `/change-password` needs no current password. **Decided
   2026-11-22: keep it that way.** The elevated tier is the re-authentication
   step. Apps that want it put password change behind elevation; the README

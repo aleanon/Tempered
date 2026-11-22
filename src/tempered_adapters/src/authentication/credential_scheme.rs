@@ -300,10 +300,31 @@ where
     }
 }
 
+/// What a 2FA code authorises. It sets the email's subject, so the user can
+/// tell a sign-in code from a code for a sensitive action they did not start.
+#[derive(Clone, Copy, Debug)]
+enum ChallengePurpose {
+    SignIn,
+    Elevation,
+}
+
+impl ChallengePurpose {
+    fn subject(self) -> &'static str {
+        match self {
+            ChallengePurpose::SignIn => "Your sign-in code",
+            ChallengePurpose::Elevation => "Code to confirm a sensitive account action",
+        }
+    }
+}
+
 /// Issues the 2FA challenge during `login`. `()` rejects (2FA not configured).
 #[async_trait]
 trait TwoFaChallenge {
-    async fn issue_challenge(&self, email: &Email) -> Result<TwoFaAttemptId, TwoFaChallengeError>;
+    async fn issue_challenge(
+        &self,
+        email: &Email,
+        purpose: ChallengePurpose,
+    ) -> Result<TwoFaAttemptId, TwoFaChallengeError>;
 
     /// Drop a half-finished login for `email` (first factor accepted, code not
     /// yet entered). Called whenever the account's credentials are reset or
@@ -322,7 +343,11 @@ trait TwoFaChallenge {
 
 #[async_trait]
 impl TwoFaChallenge for () {
-    async fn issue_challenge(&self, _email: &Email) -> Result<TwoFaAttemptId, TwoFaChallengeError> {
+    async fn issue_challenge(
+        &self,
+        _email: &Email,
+        _purpose: ChallengePurpose,
+    ) -> Result<TwoFaAttemptId, TwoFaChallengeError> {
         Err(TwoFaChallengeError::NotConfigured)
     }
 
@@ -346,7 +371,11 @@ where
     S: TwoFaCodeStore + Send + Sync,
     E: EmailClient + Send + Sync,
 {
-    async fn issue_challenge(&self, email: &Email) -> Result<TwoFaAttemptId, TwoFaChallengeError> {
+    async fn issue_challenge(
+        &self,
+        email: &Email,
+        purpose: ChallengePurpose,
+    ) -> Result<TwoFaAttemptId, TwoFaChallengeError> {
         let attempt_id = TwoFaAttemptId::new();
         let code = TwoFaCode::new();
 
@@ -355,7 +384,7 @@ where
             .await?;
 
         self.email
-            .send_email(email, "2FA Code", code.as_str())
+            .send_email(email, purpose.subject(), code.as_str())
             .await
             .map_err(TwoFaChallengeError::Email)?;
 
@@ -988,7 +1017,10 @@ where
             ValidatedUser::Requires2Fa(email) => {
                 // Delegate to the 2FA slot: issues + delivers the challenge, or
                 // errors if the scheme was built without `supports_2fa`.
-                let attempt_id = self.two_fa.issue_challenge(&email).await?;
+                let attempt_id = self
+                    .two_fa
+                    .issue_challenge(&email, ChallengePurpose::SignIn)
+                    .await?;
                 Ok(LoginOutcome::Requires2Fa { email, attempt_id })
             }
             ValidatedUser::No2Fa(email) => {
@@ -1249,7 +1281,10 @@ where
             // alone (say, phished, plus a stolen session) must not reach the
             // elevated routes. Fails closed without the 2FA capability.
             ValidatedUser::Requires2Fa(email) => {
-                let attempt_id = self.two_fa.issue_challenge(&email).await?;
+                let attempt_id = self
+                    .two_fa
+                    .issue_challenge(&email, ChallengePurpose::Elevation)
+                    .await?;
                 Ok(LoginOutcome::Requires2Fa { email, attempt_id })
             }
             ValidatedUser::No2Fa(email) => Ok(LoginOutcome::Success(
@@ -1572,7 +1607,10 @@ where
             // The provider stands in for the password, not for the second
             // factor. Same path as password login: issue + deliver the
             // challenge, or error if the scheme was built without 2FA.
-            let attempt_id = self.two_fa.issue_challenge(&email).await?;
+            let attempt_id = self
+                .two_fa
+                .issue_challenge(&email, ChallengePurpose::SignIn)
+                .await?;
             return Ok(LoginOutcome::Requires2Fa { email, attempt_id });
         }
 
