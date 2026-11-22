@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use tempered_core::{Email, SessionId, SessionStore, SessionStoreError};
+use tempered_core::{Email, SessionId, SessionRecord, SessionStore, SessionStoreError};
 
 /// In-memory session store for tests and local development.
 ///
@@ -11,7 +11,7 @@ use tempered_core::{Email, SessionId, SessionStore, SessionStoreError};
 /// is responsible for TTL/sliding-window expiry.
 #[derive(Default, Clone)]
 pub struct HashMapSessionStore {
-    sessions: Arc<RwLock<HashMap<SessionId, Email>>>,
+    sessions: Arc<RwLock<HashMap<SessionId, SessionRecord>>>,
     revocations: Arc<RwLock<HashMap<Email, u64>>>,
     locks: super::user_locks::UserLocks,
 }
@@ -28,12 +28,16 @@ impl HashMapSessionStore {
 
 #[async_trait::async_trait]
 impl SessionStore for HashMapSessionStore {
-    async fn create_session(&self, id: SessionId, email: Email) -> Result<(), SessionStoreError> {
-        self.sessions.write().await.insert(id, email);
+    async fn create_session(
+        &self,
+        id: SessionId,
+        record: SessionRecord,
+    ) -> Result<(), SessionStoreError> {
+        self.sessions.write().await.insert(id, record);
         Ok(())
     }
 
-    async fn get_session(&self, id: &SessionId) -> Result<Email, SessionStoreError> {
+    async fn get_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError> {
         self.sessions
             .read()
             .await
@@ -64,7 +68,7 @@ impl SessionStore for HashMapSessionStore {
             .await
             .entry(email.clone())
             .or_default() += 1;
-        self.sessions.write().await.retain(|_, v| v != email);
+        self.sessions.write().await.retain(|_, v| &v.email != email);
         Ok(())
     }
 

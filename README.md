@@ -150,6 +150,19 @@ verified).
 Login, logout, and verify-token are always present. Every default path can be
 overridden on the service builder (e.g. `.login("/signin")`).
 
+### Session lifetime
+
+`SessionScheme` sessions end two ways. They expire after `ttl_in_seconds`
+unused, and each request restarts that clock. They also end at
+`max_lifetime_in_seconds` after login, however busy they are, which limits how
+long a stolen cookie stays good. `SessionConfig::new(cookie, ttl)` sets the
+absolute lifetime to 24 hours (`DEFAULT_MAX_SESSION_LIFETIME_SECONDS`);
+change it with `.max_lifetime(seconds)`. A JWT has no sliding expiry: its
+`token_ttl_in_seconds` is already its absolute lifetime.
+
+A Redis session stores its creation time. Sessions written by versions
+before this one have none, so they count as logged out.
+
 ## Swapping implementations
 
 Every moving part is a trait, so you choose the backend:

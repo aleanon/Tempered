@@ -17,8 +17,8 @@
 use crate::cookie_util::cookie_value;
 use async_trait::async_trait;
 use tempered_core::{
-    AuthRequest, AuthValidator, ClassifyError, Email, ErrorCategory, SessionId, SessionStore,
-    SessionStoreError, UserStore,
+    AuthRequest, AuthValidator, ClassifyError, Email, ErrorCategory, SessionId, SessionRecord,
+    SessionStore, SessionStoreError, UserStore,
 };
 use thiserror::Error;
 
@@ -31,10 +31,44 @@ use crate::authentication::token_strategy::{
 // Configuration
 // ============================================================================
 
+/// How long a session may live, however often it is used, unless the
+/// config says otherwise: 24 hours, so a user signs in about once a day.
+pub const DEFAULT_MAX_SESSION_LIFETIME_SECONDS: u64 = 24 * 60 * 60;
+
 #[derive(Clone)]
 pub struct SessionConfig {
     pub cookie_name: String,
+    /// Idle timeout: a session unused this long expires. Every request
+    /// restarts it (sliding expiry).
     pub ttl_in_seconds: u64,
+    /// Absolute lifetime: a session this old expires even if it is in use.
+    /// Caps how long a stolen session cookie stays good.
+    pub max_lifetime_in_seconds: u64,
+}
+
+impl SessionConfig {
+    /// A config with the default absolute lifetime
+    /// ([`DEFAULT_MAX_SESSION_LIFETIME_SECONDS`]).
+    pub fn new(cookie_name: impl Into<String>, ttl_in_seconds: u64) -> Self {
+        Self {
+            cookie_name: cookie_name.into(),
+            ttl_in_seconds,
+            max_lifetime_in_seconds: DEFAULT_MAX_SESSION_LIFETIME_SECONDS,
+        }
+    }
+
+    /// Set the absolute lifetime.
+    pub fn max_lifetime(mut self, seconds: u64) -> Self {
+        self.max_lifetime_in_seconds = seconds;
+        self
+    }
+}
+
+/// Seconds since the Unix epoch.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 // ============================================================================
@@ -75,7 +109,14 @@ impl<S> SessionTokens<S>
 where
     S: SessionStore + Clone,
 {
+    /// # Panics
+    ///
+    /// If `config.max_lifetime_in_seconds` is 0: no session could be used.
     pub fn new(store: S, config: SessionConfig) -> Self {
+        assert!(
+            config.max_lifetime_in_seconds > 0,
+            "SessionConfig::max_lifetime_in_seconds must be greater than 0"
+        );
         let validator = SessionValidator::new(store.clone(), config.clone());
         Self {
             store,
@@ -110,7 +151,11 @@ where
         ticket: SessionTicket,
     ) -> Result<SessionToken, SessionError> {
         let id = SessionId::new();
-        self.store.create_session(id.clone(), email.clone()).await?;
+        let record = SessionRecord {
+            email: email.clone(),
+            created_at: unix_now(),
+        };
+        self.store.create_session(id.clone(), record).await?;
 
         // Create first, then look: "delete all" counts before it deletes, so
         // either the count has moved by now (and the session goes here), or
@@ -158,10 +203,13 @@ where
     }
 
     fn auth_cookie(&self, token: &SessionToken) -> String {
+        // The browser may keep the cookie no longer than the session can live.
         build_session_cookie(
             &token.0.to_string(),
             &self.config.cookie_name,
-            self.config.ttl_in_seconds,
+            self.config
+                .ttl_in_seconds
+                .min(self.config.max_lifetime_in_seconds),
         )
     }
 
@@ -239,6 +287,7 @@ impl tempered_core::IdentityClaims for SessionClaims {
 pub struct SessionValidator<S> {
     session_store: S,
     cookie_name: String,
+    max_lifetime_in_seconds: u64,
 }
 
 impl<S> SessionValidator<S> {
@@ -246,6 +295,7 @@ impl<S> SessionValidator<S> {
         Self {
             session_store,
             cookie_name: config.cookie_name,
+            max_lifetime_in_seconds: config.max_lifetime_in_seconds,
         }
     }
 }
@@ -266,13 +316,22 @@ where
 
         let id = SessionId::parse(&raw).ok_or(SessionError::InvalidSession)?;
 
-        let email = self.session_store.get_session(&id).await?;
+        let record = self.session_store.get_session(&id).await?;
+
+        // Past its absolute lifetime: gone, however recently it was used.
+        // Deleting is tidying up (the age check alone already refuses it).
+        if unix_now().saturating_sub(record.created_at) >= self.max_lifetime_in_seconds {
+            let _ = self.session_store.delete_session(&id).await;
+            return Err(SessionError::InvalidSession);
+        }
 
         // Best-effort sliding expiry; failure to touch shouldn't reject a request
         // that just validated successfully.
         let _ = self.session_store.touch_session(&id).await;
 
-        Ok(SessionClaims { email })
+        Ok(SessionClaims {
+            email: record.email,
+        })
     }
 }
 
@@ -333,10 +392,7 @@ mod tests {
     };
 
     fn config() -> SessionConfig {
-        SessionConfig {
-            cookie_name: "session".to_string(),
-            ttl_in_seconds: 3600,
-        }
+        SessionConfig::new("session", 3600)
     }
 
     #[tokio::test]
@@ -359,7 +415,7 @@ mod tests {
         // A login that begins afterwards gets a session, and it is the only one.
         let ticket = tokens.begin(&email).await.unwrap();
         let token = tokens.issue(&email, ticket).await.unwrap();
-        assert_eq!(store.get_session(&token.0).await.unwrap(), email);
+        assert_eq!(store.get_session(&token.0).await.unwrap().email, email);
         tokens.revoke_all_for_user(&email).await.unwrap();
         assert!(store.get_session(&token.0).await.is_err());
     }
@@ -413,6 +469,65 @@ mod tests {
             .unwrap()
             .into_parts()
             .0
+    }
+
+    /// Sliding expiry keeps a busy session alive; the absolute lifetime
+    /// ends it anyway, measured from when it was created.
+    #[tokio::test]
+    async fn a_session_past_its_maximum_lifetime_is_refused_and_removed() {
+        use super::{SessionValidator, unix_now};
+        use tempered_core::{SessionId, SessionRecord, SessionStore};
+
+        let store = HashMapSessionStore::new();
+        let validator = SessionValidator::new(
+            store.clone(),
+            SessionConfig::new("session", 3600).max_lifetime(600),
+        );
+        let email = Email::try_from(Secret::new("user@example.com".to_string())).unwrap();
+        let session = |age: u64| {
+            let id = SessionId::new();
+            let record = SessionRecord {
+                email: email.clone(),
+                created_at: unix_now() - age,
+            };
+            let store = store.clone();
+            async move {
+                store.create_session(id.clone(), record).await.unwrap();
+                id
+            }
+        };
+
+        let young = session(599).await;
+        let parts = parts_with_cookie("session", &young.to_string());
+        assert!(validator.validate(&parts).await.is_ok());
+
+        let old = session(600).await;
+        let parts = parts_with_cookie("session", &old.to_string());
+        assert!(matches!(
+            validator.validate(&parts).await,
+            Err(SessionError::InvalidSession)
+        ));
+        assert!(
+            store.get_session(&old).await.is_err(),
+            "removed from the store"
+        );
+    }
+
+    #[test]
+    fn the_default_lifetime_is_a_day_and_the_cookie_does_not_outlive_it() {
+        use super::{DEFAULT_MAX_SESSION_LIFETIME_SECONDS, SessionTokens};
+        use crate::authentication::token_strategy::TokenStrategy;
+
+        assert_eq!(
+            SessionConfig::new("s", 60).max_lifetime_in_seconds,
+            DEFAULT_MAX_SESSION_LIFETIME_SECONDS
+        );
+        let tokens = SessionTokens::new(
+            HashMapSessionStore::new(),
+            SessionConfig::new("s", 7200).max_lifetime(600),
+        );
+        let cookie = tokens.auth_cookie(&super::SessionToken(tempered_core::SessionId::new()));
+        assert!(cookie.ends_with("Max-Age=600"), "{cookie}");
     }
 
     #[tokio::test]
@@ -502,10 +617,7 @@ mod tests {
         let scheme = SessionScheme::new(user_store, HashMapSessionStore::new(), config())
             .supports_elevation(
                 HashMapSessionStore::new(),
-                SessionConfig {
-                    cookie_name: "elevated_session".to_string(),
-                    ttl_in_seconds: 300,
-                },
+                SessionConfig::new("elevated_session", 300),
                 |e| e,
             );
 
@@ -538,10 +650,7 @@ mod tests {
                 .await
                 .supports_elevation(
                     HashMapSessionStore::new(),
-                    SessionConfig {
-                        cookie_name: "elevated_session".to_string(),
-                        ttl_in_seconds: 300,
-                    },
+                    SessionConfig::new("elevated_session", 300),
                     |e| e,
                 );
             let LoginOutcome::Success(elevated) =

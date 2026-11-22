@@ -350,8 +350,13 @@ before it is built:
   Default: a passkey stands in for both factors. `.passkey_login_requires_2fa()`
   holds a 2FA account to its code (`206 { loginAttemptId, email }`, then
   `/verify-2fa`). `finish_passkey_authentication` returns `LoginOutcome`.
-- Sessions have no absolute lifetime. Store a created-at time and cap the
-  age.
+- ~~Sessions have no absolute lifetime~~ ✅ DONE 2026-11-22:
+  `SessionConfig::max_lifetime_in_seconds` (default 24 h via
+  `SessionConfig::new`, `.max_lifetime(s)` to change). The scheme stamps
+  `SessionRecord::created_at`; the validator refuses and deletes an older
+  session. Port change: `create_session` takes and `get_session` returns a
+  `SessionRecord`. Redis stores `{created_at}:{email}`. Old bare-email
+  values read as not found, so those users are logged out once.
 - Smaller items:
   - `PendingCeremony` does not record whether it is a registration or a
     login.

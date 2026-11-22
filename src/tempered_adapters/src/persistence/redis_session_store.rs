@@ -1,7 +1,7 @@
 use redis::{AsyncCommands, aio::ConnectionManager};
 use secrecy::{ExposeSecret, Secret};
 
-use tempered_core::{Email, SessionId, SessionStore, SessionStoreError};
+use tempered_core::{Email, SessionId, SessionRecord, SessionStore, SessionStoreError};
 
 use super::redis_support::{self, user_key};
 
@@ -12,7 +12,8 @@ const REVOCATIONS_PREFIX: &str = "session_revocations:";
 /// Redis-backed [`SessionStore`].
 ///
 /// Keys:
-/// - `session:{id}` → the owner's email, expiring after `ttl_seconds` and
+/// - `session:{id}` → `{created_at}:{email}` (creation time in Unix
+///   seconds, then the owner's address), expiring after `ttl_seconds` and
 ///   refreshed by [`touch_session`](SessionStore::touch_session) (sliding
 ///   expiry);
 /// - `user_sessions:{email}` → the set of the user's session ids, for
@@ -45,24 +46,43 @@ fn session_key(id: &SessionId) -> String {
     format!("{SESSION_PREFIX}{id}")
 }
 
-fn parse_email(value: String) -> Result<Email, SessionStoreError> {
-    Email::try_from(Secret::new(value))
-        .map_err(|e| SessionStoreError::UnexpectedError(e.to_string()))
+fn encode(record: &SessionRecord) -> String {
+    format!(
+        "{}:{}",
+        record.created_at,
+        record.email.as_ref().expose_secret()
+    )
+}
+
+/// Read a stored `{created_at}:{email}`. A value in another shape (written
+/// before sessions recorded their creation time) counts as no session: its
+/// age is unknown, so it must not live on uncapped.
+fn decode(value: Option<String>) -> Result<SessionRecord, SessionStoreError> {
+    let value = value.ok_or(SessionStoreError::SessionNotFound)?;
+    let (created_at, email) = value
+        .split_once(':')
+        .ok_or(SessionStoreError::SessionNotFound)?;
+    let created_at = created_at
+        .parse()
+        .map_err(|_| SessionStoreError::SessionNotFound)?;
+    let email = Email::try_from(Secret::new(email.to_string()))
+        .map_err(|e| SessionStoreError::UnexpectedError(e.to_string()))?;
+    Ok(SessionRecord { email, created_at })
 }
 
 #[async_trait::async_trait]
 impl SessionStore for RedisSessionStore {
-    async fn create_session(&self, id: SessionId, email: Email) -> Result<(), SessionStoreError> {
-        let user_sessions = user_key(USER_SESSIONS_PREFIX, &email);
+    async fn create_session(
+        &self,
+        id: SessionId,
+        record: SessionRecord,
+    ) -> Result<(), SessionStoreError> {
+        let user_sessions = user_key(USER_SESSIONS_PREFIX, &record.email);
         // One transaction: a "delete all" listing the user's sessions sees
         // this one together with its key, or neither.
         redis::pipe()
             .atomic()
-            .set_ex(
-                session_key(&id),
-                email.as_ref().expose_secret(),
-                self.ttl_seconds,
-            )
+            .set_ex(session_key(&id), encode(&record), self.ttl_seconds)
             .ignore()
             .sadd(&user_sessions, id.to_string())
             .ignore()
@@ -73,23 +93,23 @@ impl SessionStore for RedisSessionStore {
             .map_err(unexpected)
     }
 
-    async fn get_session(&self, id: &SessionId) -> Result<Email, SessionStoreError> {
-        let email: Option<String> = self
+    async fn get_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError> {
+        let value: Option<String> = self
             .client
             .clone()
             .get(session_key(id))
             .await
             .map_err(unexpected)?;
-        parse_email(email.ok_or(SessionStoreError::SessionNotFound)?)
+        decode(value)
     }
 
     async fn touch_session(&self, id: &SessionId) -> Result<(), SessionStoreError> {
         let mut client = self.client.clone();
-        let email: Option<String> = client
+        let value: Option<String> = client
             .get_ex(session_key(id), redis::Expiry::EX(self.ttl_seconds))
             .await
             .map_err(unexpected)?;
-        let email = parse_email(email.ok_or(SessionStoreError::SessionNotFound)?)?;
+        let email = decode(value)?.email;
         // The user's set must live as long as their longest session.
         let _: bool = client
             .expire(
@@ -103,8 +123,8 @@ impl SessionStore for RedisSessionStore {
 
     async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError> {
         let mut client = self.client.clone();
-        let email: Option<String> = client.get_del(session_key(id)).await.map_err(unexpected)?;
-        let email = parse_email(email.ok_or(SessionStoreError::SessionNotFound)?)?;
+        let value: Option<String> = client.get_del(session_key(id)).await.map_err(unexpected)?;
+        let email = decode(value)?.email;
         let _: i64 = client
             .srem(user_key(USER_SESSIONS_PREFIX, &email), id.to_string())
             .await
@@ -189,7 +209,13 @@ mod tests {
         let store = RedisSessionStore::new(connection.clone(), 60);
         let id = SessionId::new();
         store
-            .create_session(id.clone(), contract::email("a@example.com"))
+            .create_session(
+                id.clone(),
+                SessionRecord {
+                    email: contract::email("a@example.com"),
+                    created_at: 1,
+                },
+            )
             .await
             .unwrap();
 
@@ -201,5 +227,21 @@ mod tests {
         store.touch_session(&id).await.unwrap();
         let ttl: i64 = connection.ttl(&key).await.unwrap();
         assert!(ttl > 5);
+    }
+
+    #[tokio::test]
+    async fn a_session_stored_without_its_creation_time_is_not_found() {
+        let (_redis, mut connection) = test_support::redis::connection().await;
+        let store = RedisSessionStore::new(connection.clone(), 60);
+        let id = SessionId::new();
+        // The value an older version wrote: the bare address.
+        let _: () = connection
+            .set(session_key(&id), "a@example.com")
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.get_session(&id).await,
+            Err(SessionStoreError::SessionNotFound)
+        ));
     }
 }

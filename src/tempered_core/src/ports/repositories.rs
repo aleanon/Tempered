@@ -485,13 +485,28 @@ pub enum SessionStoreError {
     UnexpectedError(String),
 }
 
+/// What a [`SessionStore`] keeps for a session: whose it is, and when it was
+/// created (Unix seconds). The creation time is what caps a session's age:
+/// sliding expiry alone would let a session that is used often live forever.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRecord {
+    pub email: Email,
+    pub created_at: u64,
+}
+
 #[async_trait]
 pub trait SessionStore: Send + Sync {
-    /// Create a new session for the given user.
-    async fn create_session(&self, id: SessionId, email: Email) -> Result<(), SessionStoreError>;
+    /// Create a new session. Store `record` as given: the scheme sets the
+    /// creation time, and [`get_session`](Self::get_session) must return it
+    /// unchanged.
+    async fn create_session(
+        &self,
+        id: SessionId,
+        record: SessionRecord,
+    ) -> Result<(), SessionStoreError>;
 
-    /// Look up the user associated with a session id.
-    async fn get_session(&self, id: &SessionId) -> Result<Email, SessionStoreError>;
+    /// Look up a session.
+    async fn get_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError>;
 
     /// Refresh a session's expiry (sliding-window). In-memory stores may no-op.
     async fn touch_session(&self, id: &SessionId) -> Result<(), SessionStoreError>;

@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use secrecy::Secret;
-use tempered_core::{Email, SessionId, SessionStore, SessionStoreError};
+use tempered_core::{Email, SessionId, SessionRecord, SessionStore, SessionStoreError};
 
 pub(crate) fn email(address: &str) -> Email {
     Email::try_from(Secret::new(address.to_string())).unwrap()
@@ -19,22 +19,31 @@ pub(crate) async fn session_store(store: impl SessionStore) {
     let a1 = SessionId::new();
     let a2 = SessionId::new();
     let b1 = SessionId::new();
+    let record = |email: &Email, created_at| SessionRecord {
+        email: email.clone(),
+        created_at,
+    };
     store
-        .create_session(a1.clone(), alice.clone())
+        .create_session(a1.clone(), record(&alice, 100))
         .await
         .unwrap();
     store
-        .create_session(a2.clone(), alice.clone())
+        .create_session(a2.clone(), record(&alice, 200))
         .await
         .unwrap();
-    store.create_session(b1.clone(), bob.clone()).await.unwrap();
-    assert_eq!(store.get_session(&a1).await.unwrap(), alice);
+    store
+        .create_session(b1.clone(), record(&bob, 300))
+        .await
+        .unwrap();
+    // The record comes back as stored, creation time included.
+    assert_eq!(store.get_session(&a1).await.unwrap(), record(&alice, 100));
     assert!(matches!(
         store.get_session(&SessionId::new()).await,
         Err(SessionStoreError::SessionNotFound)
     ));
+    // Touching extends the expiry, not the age.
     store.touch_session(&a1).await.unwrap();
-    assert_eq!(store.get_session(&a1).await.unwrap(), alice);
+    assert_eq!(store.get_session(&a1).await.unwrap(), record(&alice, 100));
 
     // One session.
     store.delete_session(&a2).await.unwrap();
@@ -48,7 +57,7 @@ pub(crate) async fn session_store(store: impl SessionStore) {
     assert_eq!(store.revocation_count(&alice).await.unwrap(), 0);
     store.delete_all_for_user(&alice).await.unwrap();
     assert!(store.get_session(&a1).await.is_err());
-    assert_eq!(store.get_session(&b1).await.unwrap(), bob);
+    assert_eq!(store.get_session(&b1).await.unwrap().email, bob);
     assert_eq!(store.revocation_count(&alice).await.unwrap(), 1);
     store.delete_all_for_user(&alice).await.unwrap();
     assert_eq!(store.revocation_count(&alice).await.unwrap(), 2);

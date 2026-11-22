@@ -23,18 +23,12 @@ fn app() -> Router {
     let scheme = SessionScheme::new(
         HashMapUserStore::new(),
         HashMapSessionStore::new(),
-        SessionConfig {
-            cookie_name: "session".to_string(),
-            ttl_in_seconds: 3600,
-        },
+        SessionConfig::new("session", 3600),
     )
     .supports_registration()
     .supports_elevation(
         HashMapSessionStore::new(),
-        SessionConfig {
-            cookie_name: "elevated_session".to_string(),
-            ttl_in_seconds: 900,
-        },
+        SessionConfig::new("elevated_session", 900),
         |elevated| {
             elevated
                 .supports_password_change()
