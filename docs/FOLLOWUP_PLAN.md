@@ -364,8 +364,12 @@ before it is built:
   `SessionRecord`. Redis stores `{created_at}:{email}`. Old bare-email
   values read as not found, so those users are logged out once.
 - Smaller items:
-  - `PendingCeremony` does not record whether it is a registration or a
-    login.
+  - ~~`PendingCeremony` does not record whether it is a registration or a
+    login~~ ✅ DONE 2026-11-23. `PendingCeremony::kind: CeremonyKind`. Each
+    `finish_*` takes only its own kind (the other reads as not found, and
+    is spent). Before, only the verifier's state format kept a login
+    ceremony from being finished as an enrolment. Redis stores the kind;
+    older entries without it read as not found.
   - The `WebAuthnVerifier` port does not say what a verifier must check
     (raw id, user handle).
   - ~~`ServeDir` serves dotfiles, so an `assets_dir` of `"."` would serve

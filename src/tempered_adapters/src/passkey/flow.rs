@@ -16,9 +16,9 @@
 
 use rand::RngCore;
 use tempered_core::{
-    CeremonyId, ChallengeStore, ChallengeStoreError, ClassifyError, CredentialId, Email,
-    ErrorCategory, PasskeyCeremony, PasskeyCredential, PasskeyCredentialStore, PasskeyStoreError,
-    PendingCeremony, WebAuthnError, WebAuthnVerifier,
+    CeremonyId, CeremonyKind, ChallengeStore, ChallengeStoreError, ClassifyError, CredentialId,
+    Email, ErrorCategory, PasskeyCeremony, PasskeyCredential, PasskeyCredentialStore,
+    PasskeyStoreError, PendingCeremony, WebAuthnError, WebAuthnVerifier,
 };
 use thiserror::Error;
 
@@ -57,7 +57,8 @@ where
         // enrolled, so the same one is not registered twice.
         let existing = self.credential_store.list_for_user(&email).await?;
         let start = self.verifier.start_registration(&email, &existing)?;
-        self.park(Some(email), start).await
+        self.park(CeremonyKind::Registration, Some(email), start)
+            .await
     }
 
     /// Registration step 2: verify the attestation and store the credential.
@@ -71,7 +72,9 @@ where
         ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<Email, PasskeyFlowError> {
-        let pending = self.challenge_store.consume_ceremony(&ceremony_id).await?;
+        let pending = self
+            .consume(&ceremony_id, CeremonyKind::Registration)
+            .await?;
         let bound = pending.user.ok_or(PasskeyFlowError::MissingUser)?;
         // Reported exactly like an unknown ceremony, so a caller learns nothing
         // about ceremonies that belong to other users.
@@ -112,7 +115,7 @@ where
             None => Vec::new(),
         };
         let start = self.verifier.start_authentication(&allowed)?;
-        self.park(email, start).await
+        self.park(CeremonyKind::Authentication, email, start).await
     }
 
     /// Authentication step 2: verify the assertion, enforce the sign-count
@@ -137,7 +140,9 @@ where
         response: serde_json::Value,
     ) -> Result<(Email, CredentialId), PasskeyFlowError> {
         // Consume the ceremony regardless of the outcome (single use).
-        let pending = self.challenge_store.consume_ceremony(&ceremony_id).await?;
+        let pending = self
+            .consume(&ceremony_id, CeremonyKind::Authentication)
+            .await?;
 
         let cred_id = response
             .get("id")
@@ -220,6 +225,7 @@ where
     /// what the client needs: the id and the browser options.
     async fn park(
         &self,
+        kind: CeremonyKind,
         user: Option<Email>,
         start: tempered_core::CeremonyStart,
     ) -> Result<PasskeyCeremony, PasskeyFlowError> {
@@ -228,6 +234,7 @@ where
             .store_ceremony(
                 ceremony_id.clone(),
                 PendingCeremony {
+                    kind,
                     user,
                     state: start.state,
                 },
@@ -237,6 +244,26 @@ where
             ceremony_id,
             options: start.options,
         })
+    }
+}
+
+impl<CS, ChS, V> PasskeyFlow<CS, ChS, V>
+where
+    ChS: ChallengeStore,
+{
+    /// Take the ceremony `id` out of the store (it is single use), as long as
+    /// it is a `kind` ceremony. One of the other kind is reported exactly like
+    /// an unknown one, and is spent all the same.
+    async fn consume(
+        &self,
+        id: &CeremonyId,
+        kind: CeremonyKind,
+    ) -> Result<PendingCeremony, PasskeyFlowError> {
+        let pending = self.challenge_store.consume_ceremony(id).await?;
+        if pending.kind != kind {
+            return Err(ChallengeStoreError::ChallengeNotFound.into());
+        }
+        Ok(pending)
     }
 }
 
@@ -737,5 +764,53 @@ mod tests {
             .finish_authentication(CeremonyId("nope".into()), json!({ "id": "x" }))
             .await;
         assert!(matches!(result, Err(PasskeyFlowError::Challenge(_))));
+    }
+
+    /// A login ceremony is not an enrolment. Finishing it as one would store
+    /// a credential against a challenge issued for signing in; the verifier
+    /// is not what should catch that (this test's verifier does not).
+    #[tokio::test]
+    async fn a_login_ceremony_cannot_be_finished_as_an_enrolment() {
+        let f = flow();
+        register(&f, "cred-1").await;
+        let login = f.start_authentication(Some(email())).await.unwrap();
+
+        let result = f
+            .finish_registration(&email(), login.ceremony_id.clone(), reply(&login, "cred-2"))
+            .await;
+        assert!(matches!(
+            result,
+            Err(PasskeyFlowError::Challenge(
+                ChallengeStoreError::ChallengeNotFound
+            ))
+        ));
+        // And it is spent: it cannot be used as a login afterwards either.
+        let result = f
+            .finish_authentication(
+                login.ceremony_id.clone(),
+                reply_with_count(&login, "cred-1", 1),
+            )
+            .await;
+        assert!(matches!(result, Err(PasskeyFlowError::Challenge(_))));
+    }
+
+    #[tokio::test]
+    async fn an_enrolment_ceremony_cannot_be_finished_as_a_login() {
+        let f = flow();
+        register(&f, "cred-1").await;
+        let enrolment = f.start_registration(email()).await.unwrap();
+
+        let result = f
+            .finish_authentication(
+                enrolment.ceremony_id.clone(),
+                reply_with_count(&enrolment, "cred-1", 1),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(PasskeyFlowError::Challenge(
+                ChallengeStoreError::ChallengeNotFound
+            ))
+        ));
     }
 }

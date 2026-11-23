@@ -60,9 +60,19 @@ pub struct CeremonyStart {
     pub state: CeremonyState,
 }
 
+/// Which ceremony a [`PendingCeremony`] is: each `finish_*` accepts only its
+/// own, so a login ceremony cannot be finished as an enrolment, or the other
+/// way round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CeremonyKind {
+    Registration,
+    Authentication,
+}
+
 /// An in-flight ceremony as held by a [`ChallengeStore`](crate::ChallengeStore).
 #[derive(Debug, Clone)]
 pub struct PendingCeremony {
+    pub kind: CeremonyKind,
     /// The user the ceremony was started for. Always set for registration;
     /// `None` for a usernameless (discoverable-credential) authentication.
     pub user: Option<Email>,

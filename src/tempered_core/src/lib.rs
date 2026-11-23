@@ -13,8 +13,8 @@ pub use domain::{
     email_verification_token::EmailVerificationToken,
     oauth::{OAuthProviderConfig, OAuthUserInfo, PendingAuthorization},
     passkey::{
-        CeremonyId, CeremonyStart, CeremonyState, CredentialId, PasskeyCeremony, PasskeyCredential,
-        PendingCeremony,
+        CeremonyId, CeremonyKind, CeremonyStart, CeremonyState, CredentialId, PasskeyCeremony,
+        PasskeyCredential, PendingCeremony,
     },
     password::{MAX_PASSWORD_CHARS, MIN_PASSWORD_CHARS, Password},
     password_reset_token::PasswordResetToken,

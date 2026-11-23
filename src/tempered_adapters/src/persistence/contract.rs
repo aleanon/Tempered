@@ -106,11 +106,19 @@ pub(crate) async fn oauth_state_store(store: impl tempered_core::OAuthStateStore
 
 /// [`ChallengeStore`]: single-use ceremonies, and dropping one user's.
 pub(crate) async fn challenge_store(store: impl tempered_core::ChallengeStore) {
-    use tempered_core::{CeremonyId, CeremonyState, ChallengeStoreError, PendingCeremony};
+    use tempered_core::{
+        CeremonyId, CeremonyKind, CeremonyState, ChallengeStoreError, PendingCeremony,
+    };
 
     let alice = email("alice@example.com");
     let bob = email("bob@example.com");
     let ceremony = |user: Option<&Email>, state: &[u8]| PendingCeremony {
+        // A usernameless ceremony is a login; one with a user, an enrolment.
+        kind: if user.is_some() {
+            CeremonyKind::Registration
+        } else {
+            CeremonyKind::Authentication
+        },
         user: user.cloned(),
         state: CeremonyState(state.to_vec()),
     };
@@ -121,6 +129,7 @@ pub(crate) async fn challenge_store(store: impl tempered_core::ChallengeStore) {
         .await
         .unwrap();
     let found = store.consume_ceremony(&id("c1")).await.unwrap();
+    assert_eq!(found.kind, CeremonyKind::Registration);
     assert_eq!(found.user, Some(alice.clone()));
     assert_eq!(found.state, CeremonyState(b"\x00state-1\xff".to_vec()));
     assert!(matches!(

@@ -40,7 +40,7 @@ pub mod core {
 
 // Re-export most commonly used core types at the root level
 pub use tempered_core::{
-    ApiKeyId, CeremonyId, CeremonyStart, CeremonyState, CredentialId, Email,
+    ApiKeyId, CeremonyId, CeremonyKind, CeremonyStart, CeremonyState, CredentialId, Email,
     EmailVerificationToken, IdentityClaims, MAX_PASSWORD_CHARS, MIN_PASSWORD_CHARS,
     OAuthProviderConfig, OAuthUserInfo, PasskeyCredential, Password, PendingAuthorization,
     SessionId, TwoFaAttemptId, TwoFaCode, TwoFaError, User, UserError, ValidatedUser,
