@@ -102,10 +102,8 @@ impl ResponseBuilder for HttpResponseBuilder {
         if let Some(cookie_name) = key.strip_prefix("cookie:") {
             if value.is_empty() {
                 // Clear cookie by setting Max-Age=0
-                self.cookies.push(format!(
-                    "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
-                    cookie_name
-                ));
+                self.cookies
+                    .push(crate::cookie_util::expired_cookie(cookie_name));
             } else {
                 // Set cookie with value
                 self.cookies.push(format!("{}={}", cookie_name, value));

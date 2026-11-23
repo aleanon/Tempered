@@ -110,6 +110,22 @@ fn bad_request(message: impl std::fmt::Display) -> EndpointResponse {
     error_response(StatusCode::BAD_REQUEST, &message.to_string())
 }
 
+/// A failed OAuth callback spends the state cookie too. A success clears it
+/// in `create_oauth_callback_response`; a failure must as well, or the
+/// cookie lingers until it expires and the next attempt starts beside it.
+fn with_state_cleared<S: HttpOAuth2Scheme>(
+    scheme: &S,
+    mut response: EndpointResponse,
+) -> EndpointResponse {
+    let cookie = crate::cookie_util::expired_cookie(scheme.oauth_state_cookie_name());
+    if let Ok(value) = http::HeaderValue::from_str(&cookie) {
+        response
+            .headers_mut()
+            .append(http::header::SET_COOKIE, value);
+    }
+    response
+}
+
 // ============================================================================
 // CredentialScheme: the always-on routes, the tiers, and the slots
 // ============================================================================
@@ -750,8 +766,26 @@ where
                     .map_err(classified)
             }),
             RouteId::OAuthCallback => respond!({
+                // The provider sends the user back with `error=` when they
+                // cancel or it refuses (RFC 6749 §4.1.2.1). Not a malformed
+                // request: the login just did not happen. The value comes
+                // from the URL, so anyone can set it; it goes to the log
+                // (escaped), not back to the client.
+                if let Some(error) = req.query("error") {
+                    tracing::info!(error = ?error, "OAuth provider did not complete the login");
+                    return Err(with_state_cleared(
+                        scheme,
+                        error_response(
+                            StatusCode::UNAUTHORIZED,
+                            "The login with the provider was not completed",
+                        ),
+                    ));
+                }
                 let (Some(code), Some(state)) = (req.query("code"), req.query("state")) else {
-                    return Err(bad_request("Missing code or state"));
+                    return Err(with_state_cleared(
+                        scheme,
+                        bad_request("Missing code or state"),
+                    ));
                 };
                 // The browser-bound state lives in the cookie the start leg set.
                 let head = req.head();
@@ -767,7 +801,7 @@ where
                     HttpResponseBuilder::new(),
                 )
                 .await
-                .map_err(classified)
+                .map_err(|e| with_state_cleared(scheme, classified(e)))
             }),
             _ => None,
         }

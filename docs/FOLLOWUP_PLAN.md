@@ -383,8 +383,13 @@ before it is built:
     `verify_password_hash` returns `Ok(false)` for a mismatch.
   - An OAuth email change after linking locks the user out of that
     provider.
-  - The OAuth callback rejects a provider `error=` redirect without
-    clearing the state cookie.
+  - ~~The OAuth callback rejects a provider `error=` redirect without
+    clearing the state cookie~~ ✅ DONE 2026-11-23. `error=` now answers
+    401 "The login with the provider was not completed" (the value is logged,
+    not echoed), and every failed callback clears the state cookie. The
+    server-side state entry is left to expire: without its cookie it can't
+    be completed. `cookie_util::expired_cookie` replaces four copies of
+    the clearing `Set-Cookie`.
 
 ## Phase 7 — Performance
 

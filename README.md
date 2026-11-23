@@ -123,7 +123,7 @@ automatically:
 | Elevation ("sudo") | `.supports_elevation(ban_store, config, \|e\| ...)` | `POST /elevate`, `POST /elevate/verify-2fa`, elevated routes |
 | Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes. Initiation answers at once and sends the mail afterwards, so its timing does not reveal whether the address has an account |
 | Email verification | `.supports_email_verification(...)` | `POST /verify-email`, `POST /verify-email/resend` (both logged in); signup sends the link; credential changes need a verified address |
-| OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes |
+| OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes. A callback that fails (including a provider `error=`, e.g. the user cancelled, which answers `401`) clears the state cookie |
 | Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey login routes (public) + enrolment routes (logged-in user only; add `e.supports_passkey_enrollment()` in the elevation closure to require a fresh re-authentication). A passkey login skips 2FA unless you add `.passkey_login_requires_2fa()`: then a 2FA account gets `206 { loginAttemptId, email }` and finishes at `/verify-2fa` |
 
 An OAuth login follows the same rules as a password login: the first login for

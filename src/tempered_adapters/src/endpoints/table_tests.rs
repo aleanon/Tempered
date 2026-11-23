@@ -333,3 +333,63 @@ fn tier_rules_hold_for_every_scheme_built_here() {
         }
     }
 }
+
+/// Run the OAuth callback with `query`, carrying a state cookie.
+async fn oauth_callback(query: &str) -> super::EndpointResponse {
+    let scheme = everything(false);
+    let spec = scheme
+        .routes(&PathOverrides::default())
+        .into_iter()
+        .find(|spec| spec.id == RouteId::OAuthCallback)
+        .unwrap();
+    let (parts, ()) = http::Request::builder()
+        .uri(format!("/oauth/google/callback?{query}"))
+        .header(http::header::COOKIE, "oauth_state=s1")
+        .body(())
+        .unwrap()
+        .into_parts();
+    let params = vec![("provider".to_string(), "google".to_string())];
+    scheme
+        .handle(
+            &spec,
+            super::EndpointRequest::new(parts, bytes::Bytes::new(), params),
+        )
+        .await
+}
+
+fn clears_the_state_cookie(response: &super::EndpointResponse) -> bool {
+    response
+        .headers()
+        .get_all(http::header::SET_COOKIE)
+        .iter()
+        .any(|c| {
+            let c = c.to_str().unwrap();
+            c.starts_with("oauth_state=;") && c.contains("Max-Age=0")
+        })
+}
+
+/// A user who cancels at the provider comes back with `error=`. That is a
+/// login that did not happen, not a malformed request, and the state cookie
+/// is spent either way. The provider is never called (`NoOAuthClient`).
+#[tokio::test]
+async fn a_refused_oauth_login_answers_401_and_clears_the_state_cookie() {
+    let response = oauth_callback("error=access_denied&state=s1").await;
+    assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+    assert!(clears_the_state_cookie(&response));
+    assert!(
+        !response.body().contains("access_denied"),
+        "the URL's value is not echoed"
+    );
+}
+
+#[tokio::test]
+async fn every_failed_oauth_callback_clears_the_state_cookie() {
+    // Malformed: no code.
+    let response = oauth_callback("state=s1").await;
+    assert_eq!(response.status(), http::StatusCode::BAD_REQUEST);
+    assert!(clears_the_state_cookie(&response));
+    // A state the server never issued.
+    let response = oauth_callback("code=c&state=s1").await;
+    assert!(response.status().is_client_error());
+    assert!(clears_the_state_cookie(&response));
+}

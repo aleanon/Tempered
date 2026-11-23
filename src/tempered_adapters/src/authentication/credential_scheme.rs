@@ -1023,18 +1023,12 @@ where
     ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
         let cookie_name = cookie_name.unwrap_or_else(|| self.tokens.cookie_name().to_string());
 
-        let clear_cookie = format!(
-            "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
-            cookie_name
-        );
+        let clear_cookie = crate::cookie_util::expired_cookie(&cookie_name);
         let builder = builder.status(200).cookie(&clear_cookie);
 
         // Also clear the elevated cookie, but only if elevation is enabled.
         let builder = match self.elevation.elevated_cookie_name() {
-            Some(name) => builder.cookie(&format!(
-                "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
-                name
-            )),
+            Some(name) => builder.cookie(&crate::cookie_util::expired_cookie(name)),
             None => builder,
         };
 
@@ -1874,10 +1868,7 @@ where
         outcome: LoginOutcome<Self::Token>,
     ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
         // Either way the state cookie is spent.
-        let clear_state = format!(
-            "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
-            self.oauth.state_cookie_name
-        );
+        let clear_state = crate::cookie_util::expired_cookie(&self.oauth.state_cookie_name);
         let builder = builder.status(302).cookie(&clear_state);
 
         match outcome {
