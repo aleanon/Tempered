@@ -371,8 +371,16 @@ before it is built:
   - `ServeDir` serves dotfiles, so an `assets_dir` of `"."` would serve
     `.env`.
   - No `__Host-` cookie prefix and no Origin check.
-  - Redis 2FA and reset stores map errors to "not found".
-  - `authenticate_user` maps DB errors to `UserNotFound`.
+  - ~~Redis 2FA and reset stores map errors to "not found"~~ ✅ DONE
+    2026-11-23. The stores were already right (fixed in 6.6/6.8). The
+    leak was one level up: the scheme answered every 2FA store error
+    with 401 "Invalid or expired 2FA code", outages included. Now
+    `UnexpectedError` is a logged 500. OAuth store errors are now logged too.
+  - ~~`authenticate_user` maps DB errors to `UserNotFound`~~ ✅ DONE
+    2026-11-23. `PostgresUserStore` `authenticate_user` and `get_user`
+    reported a query failure as `UserNotFound`, and a corrupt stored hash
+    as `IncorrectPassword`. Both are now `UnexpectedError` (500).
+    `verify_password_hash` returns `Ok(false)` for a mismatch.
   - An OAuth email change after linking locks the user out of that
     provider.
   - The OAuth callback rejects a provider `error=` redirect without

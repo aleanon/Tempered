@@ -2138,13 +2138,16 @@ where
                 ErrorCategory::TooManyRequests,
                 "Too many failed attempts; try again later".to_string(),
             ),
-            CredentialError::TwoFaCodeStoreError(e) => {
+            // The store could not answer: the code was never checked, so
+            // "invalid code" would send the user to retype a good one.
+            CredentialError::TwoFaCodeStoreError(TwoFaCodeStoreError::UnexpectedError(e)) => {
                 tracing::error!(error = %e, "2FA code store error");
-                (
-                    ErrorCategory::Unauthorized,
-                    "Invalid or expired 2FA code".to_string(),
-                )
+                (ErrorCategory::Internal, "Internal error".to_string())
             }
+            CredentialError::TwoFaCodeStoreError(_) => (
+                ErrorCategory::Unauthorized,
+                "Invalid or expired 2FA code".to_string(),
+            ),
             CredentialError::TwoFaNotConfigured => (
                 ErrorCategory::Internal,
                 "Two-factor authentication is required but not configured".to_string(),

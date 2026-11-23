@@ -359,7 +359,8 @@ impl ClassifyError for OAuthFlowError {
                 ErrorCategory::BadGateway,
                 "OAuth provider error".to_string(),
             ),
-            OAuthFlowError::State(_) | OAuthFlowError::Identity(_) => {
+            e @ (OAuthFlowError::State(_) | OAuthFlowError::Identity(_)) => {
+                tracing::error!(error = %e, "OAuth store error");
                 (ErrorCategory::Internal, "Internal error".to_string())
             }
         }

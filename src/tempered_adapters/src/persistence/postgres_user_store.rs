@@ -145,7 +145,7 @@ impl UserStore for PostgresUserStore {
         let row = query
             .fetch_optional(&self.pool)
             .await
-            .map_err(|_| UserStoreError::UserNotFound)?;
+            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
 
         let Some(row) = row else {
             // Run a verification against a throwaway hash so the "no such user"
@@ -155,9 +155,14 @@ impl UserStore for PostgresUserStore {
             return Err(UserStoreError::UserNotFound);
         };
 
-        verify_password_hash(Secret::from(row.password_hash), password.clone())
+        // Only a mismatch is a wrong password. A stored hash that does not
+        // parse, or a hashing task that died, is the server's fault.
+        if !verify_password_hash(Secret::from(row.password_hash), password.clone())
             .await
-            .map_err(|_| UserStoreError::IncorrectPassword)?;
+            .map_err(UserStoreError::UnexpectedError)?
+        {
+            return Err(UserStoreError::IncorrectPassword);
+        }
 
         let email = Email::try_from(Secret::from(row.email))
             .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
@@ -178,7 +183,7 @@ impl UserStore for PostgresUserStore {
         let row = query
             .fetch_optional(&self.pool)
             .await
-            .map_err(|_| UserStoreError::UserNotFound)?;
+            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
 
         let Some(row) = row else {
             return Err(UserStoreError::UserNotFound);
@@ -218,10 +223,12 @@ impl UserStore for PostgresUserStore {
 }
 
 #[tracing::instrument(name = "Verify password hash", skip_all)]
+/// Whether `password_candidate` matches the hash. `Err` only for a hash that
+/// does not parse or a hashing task that failed, never for a mismatch.
 async fn verify_password_hash(
     expected_password_hash: Secret<String>,
     password_candidate: Password,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let current_span: tracing::Span = tracing::Span::current();
 
     tokio::task::spawn_blocking(move || {
@@ -230,17 +237,20 @@ async fn verify_password_hash(
                 PasswordHash::new(expected_password_hash.expose_secret())
                     .map_err(|e| e.to_string())?;
 
-            Argon2::new(
+            let argon2 = Argon2::new(
                 Algorithm::Argon2id,
                 Version::V0x13,
                 Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, None)
                     .map_err(|e| e.to_string())?,
-            )
-            .verify_password(
+            );
+            match argon2.verify_password(
                 password_candidate.as_ref().expose_secret().as_bytes(),
                 &expected_password_hash,
-            )
-            .map_err(|e| e.to_string())
+            ) {
+                Ok(()) => Ok(true),
+                Err(argon2::password_hash::Error::Password) => Ok(false),
+                Err(e) => Err(e.to_string()),
+            }
         })
     })
     .await
@@ -591,8 +601,7 @@ mod tests {
         let password = Password::try_from(Secret::from("testpassword123".to_owned())).unwrap();
         let hash = compute_password_hash(password.clone()).await.unwrap();
 
-        let result = verify_password_hash(hash, password).await;
-        assert!(result.is_ok());
+        assert_eq!(verify_password_hash(hash, password).await, Ok(true));
     }
 
     #[tokio::test]
@@ -601,8 +610,8 @@ mod tests {
         let wrong_password = Password::try_from(Secret::from("wrongpassword".to_owned())).unwrap();
         let hash = compute_password_hash(password).await.unwrap();
 
-        let result = verify_password_hash(hash, wrong_password).await;
-        assert!(result.is_err());
+        // A mismatch is an answer, not an error.
+        assert_eq!(verify_password_hash(hash, wrong_password).await, Ok(false));
     }
 
     #[tokio::test]
@@ -624,7 +633,57 @@ mod tests {
         assert_ne!(hash1.expose_secret(), hash2.expose_secret());
 
         // But both should verify successfully
-        assert!(verify_password_hash(hash1, password.clone()).await.is_ok());
-        assert!(verify_password_hash(hash2, password.clone()).await.is_ok());
+        assert_eq!(
+            verify_password_hash(hash1, password.clone()).await,
+            Ok(true)
+        );
+        assert_eq!(
+            verify_password_hash(hash2, password.clone()).await,
+            Ok(true)
+        );
+    }
+
+    /// A database outage is not "no such user": the login must fail as a
+    /// server error, and a caller deciding whether to create an account must
+    /// not be told the address is free.
+    #[tokio::test]
+    async fn an_unreachable_database_is_reported_as_such() {
+        let (_container, pool) = setup_and_connect_db_container().await;
+        let store = PostgresUserStore::new(pool.clone());
+        pool.close().await;
+        let email = Email::try_from(Secret::from("a@example.com".to_owned())).unwrap();
+        let password = Password::try_from(Secret::from("testpassword123".to_owned())).unwrap();
+
+        assert!(matches!(
+            store.authenticate_user(&email, &password).await,
+            Err(UserStoreError::UnexpectedError(_))
+        ));
+        assert!(matches!(
+            store.get_user(&email).await,
+            Err(UserStoreError::UnexpectedError(_))
+        ));
+    }
+
+    /// A stored hash that does not parse is the server's fault, not a wrong
+    /// password.
+    #[tokio::test]
+    async fn a_corrupt_stored_hash_is_not_a_wrong_password() {
+        let (_container, pool) = setup_and_connect_db_container().await;
+        let store = PostgresUserStore::new(pool.clone());
+        sqlx::query(
+            "INSERT INTO users (email, password_hash, requires_2fa) VALUES ($1, $2, false)",
+        )
+        .bind("a@example.com")
+        .bind("not-a-phc-string")
+        .execute(&pool)
+        .await
+        .unwrap();
+        let email = Email::try_from(Secret::from("a@example.com".to_owned())).unwrap();
+        let password = Password::try_from(Secret::from("testpassword123".to_owned())).unwrap();
+
+        assert!(matches!(
+            store.authenticate_user(&email, &password).await,
+            Err(UserStoreError::UnexpectedError(_))
+        ));
     }
 }
