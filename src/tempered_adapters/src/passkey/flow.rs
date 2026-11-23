@@ -166,6 +166,11 @@ where
         let verified = self
             .verifier
             .finish_authentication(&pending.state, &response, &stored)?;
+        // The verifier must have checked the assertion against the
+        // credential that was looked up, not some other one.
+        if verified.credential_id != stored.credential_id {
+            return Err(PasskeyFlowError::WrongCredential);
+        }
 
         // Detect cloned authenticators: the counter must advance, unless the
         // authenticator does not implement one (both sides remain 0).
@@ -764,6 +769,69 @@ mod tests {
             .finish_authentication(CeremonyId("nope".into()), json!({ "id": "x" }))
             .await;
         assert!(matches!(result, Err(PasskeyFlowError::Challenge(_))));
+    }
+
+    /// Says it verified a credential other than the one it was handed.
+    #[derive(Clone)]
+    struct OtherCredentialVerifier;
+
+    impl WebAuthnVerifier for OtherCredentialVerifier {
+        fn start_registration(
+            &self,
+            email: &Email,
+            existing: &[PasskeyCredential],
+        ) -> Result<tempered_core::CeremonyStart, WebAuthnError> {
+            MockVerifier.start_registration(email, existing)
+        }
+        fn finish_registration(
+            &self,
+            state: &tempered_core::CeremonyState,
+            response: &serde_json::Value,
+        ) -> Result<tempered_core::VerifiedRegistration, WebAuthnError> {
+            MockVerifier.finish_registration(state, response)
+        }
+        fn start_authentication(
+            &self,
+            allowed: &[PasskeyCredential],
+        ) -> Result<tempered_core::CeremonyStart, WebAuthnError> {
+            MockVerifier.start_authentication(allowed)
+        }
+        fn finish_authentication(
+            &self,
+            state: &tempered_core::CeremonyState,
+            response: &serde_json::Value,
+            stored: &PasskeyCredential,
+        ) -> Result<tempered_core::VerifiedAssertion, WebAuthnError> {
+            let mut verified = MockVerifier.finish_authentication(state, response, stored)?;
+            verified.credential_id = CredentialId("someone-elses".to_string());
+            Ok(verified)
+        }
+    }
+
+    #[tokio::test]
+    async fn an_assertion_verified_for_another_credential_is_refused() {
+        let f = PasskeyFlow::new(
+            HashMapPasskeyCredentialStore::new(),
+            HashMapChallengeStore::new(),
+            OtherCredentialVerifier,
+        );
+        let ceremony = f.start_registration(email()).await.unwrap();
+        f.finish_registration(
+            &email(),
+            ceremony.ceremony_id.clone(),
+            reply(&ceremony, "cred-1"),
+        )
+        .await
+        .unwrap();
+
+        let login = f.start_authentication(None).await.unwrap();
+        let result = f
+            .finish_authentication(
+                login.ceremony_id.clone(),
+                reply_with_count(&login, "cred-1", 1),
+            )
+            .await;
+        assert!(matches!(result, Err(PasskeyFlowError::WrongCredential)));
     }
 
     /// A login ceremony is not an enrolment. Finishing it as one would store

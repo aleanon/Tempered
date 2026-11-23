@@ -370,8 +370,14 @@ before it is built:
     is spent). Before, only the verifier's state format kept a login
     ceremony from being finished as an enrolment. Redis stores the kind;
     older entries without it read as not found.
-  - The `WebAuthnVerifier` port does not say what a verifier must check
-    (raw id, user handle).
+  - ~~The `WebAuthnVerifier` port does not say what a verifier must check
+    (raw id, user handle)~~ ✅ DONE 2026-11-23. The trait doc now lists
+    the WebAuthn §7.1/§7.2 checks that are the verifier's job: challenge,
+    type, origin, rpIdHash, UP/UV, signature with the stored key, raw id,
+    user handle, attestation, counter. It also says what the flow does
+    itself. The flow now refuses an assertion whose
+    `VerifiedAssertion::credential_id` is not the looked-up credential.
+    Phase 4's `webauthn-rs` verifier must meet this list.
   - ~~`ServeDir` serves dotfiles, so an `assets_dir` of `"."` would serve
     `.env`~~ ✅ DONE 2026-11-23. `tempered_axum::assets::hide_dotfiles`
     gives a 404 to any path whose percent-decoded segments include one

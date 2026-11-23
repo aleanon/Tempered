@@ -94,6 +94,48 @@ pub struct VerifiedAssertion {
 /// back to the matching `finish_*`. This is the shape WebAuthn libraries expose
 /// (they do not accept an externally generated challenge), and it keeps
 /// challenge generation next to the code that verifies it.
+///
+/// # What a verifier must check
+///
+/// The flow around it handles what is not cryptography. It keeps each
+/// ceremony single-use and of one kind, looks up the credential by the
+/// response's `id`, ties a ceremony started for a user to that user's
+/// credentials, and refuses a counter that does not advance. Everything
+/// else is the verifier's job, and a verifier that skips a step opens the
+/// account it guards. Following the WebAuthn Level 3 verification
+/// procedures (§7.1 registration, §7.2 authentication), it must check:
+///
+/// - **Challenge:** `clientDataJSON.challenge` is the one this ceremony's
+///   `state` issued.
+/// - **Type:** `clientDataJSON.type` is `webauthn.create` when
+///   registering and `webauthn.get` when authenticating.
+/// - **Origin:** `clientDataJSON.origin` is one of the app's origins, and
+///   `crossOrigin` is not true unless the app allows that.
+/// - **Relying party:** `authenticatorData.rpIdHash` is SHA-256 of the
+///   app's RP ID.
+/// - **User presence and verification:** the UP flag is set, and the UV
+///   flag is set when the app requires user verification. A passkey that
+///   stands in for 2FA (see `passkey_login_requires_2fa`) needs UV.
+/// - **Signature (authentication):** made over `authenticatorData ||
+///   SHA-256(clientDataJSON)` with **`stored`'s** public key, never with a
+///   key found in the response.
+/// - **Credential (authentication):** the response's raw id is `stored`'s
+///   [`credential_id`](PasskeyCredential::credential_id), and the returned
+///   [`VerifiedAssertion::credential_id`] says so. The flow checks the
+///   latter.
+/// - **User handle (authentication):** if the response carries a
+///   `userHandle`, it is the handle issued for `stored.owner` at
+///   registration. A usernameless login has nothing else that ties the
+///   assertion to the account.
+/// - **Attestation (registration):** the attestation statement verifies,
+///   to the level of trust the app asks for (`none` is common for passkeys),
+///   and the public key uses an algorithm the app allows.
+/// - **Counter:** report the authenticator's signature counter as received.
+///   The flow does the comparison.
+///
+/// The credential ids it returns must use the same encoding as the
+/// response's `id` (base64url, as browsers send it), since that is the key
+/// the flow looks credentials up by.
 pub trait WebAuthnVerifier: Send + Sync {
     /// Start enrolling a credential for `email`.
     ///
