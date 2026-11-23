@@ -20,6 +20,7 @@
 //! ```
 
 pub mod adapters;
+mod assets;
 pub mod auth_service;
 pub mod error;
 pub mod middleware;

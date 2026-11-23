@@ -368,8 +368,12 @@ before it is built:
     login.
   - The `WebAuthnVerifier` port does not say what a verifier must check
     (raw id, user handle).
-  - `ServeDir` serves dotfiles, so an `assets_dir` of `"."` would serve
-    `.env`.
+  - ~~`ServeDir` serves dotfiles, so an `assets_dir` of `"."` would serve
+    `.env`~~ ✅ DONE 2026-11-23. `tempered_axum::assets::hide_dotfiles`
+    gives a 404 to any path whose percent-decoded segments include one
+    starting with `.` (`/.env`, `/%2Eenv`, `/a%2F.env`, `/.git/config`).
+    A leading `/.well-known/` stays served. Other framework adapters
+    serve their own assets and need the same rule.
   - No `__Host-` cookie prefix and no Origin check.
   - ~~Redis 2FA and reset stores map errors to "not found"~~ ✅ DONE
     2026-11-23. The stores were already right (fixed in 6.6/6.8). The

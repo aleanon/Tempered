@@ -51,7 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // `auth_service` reads the declared capabilities and mounts the routes
     // (`/login`, `/logout`, `/signup`, `/verify-token`, ...) at the right authz
-    // level. `assets_dir` serves an optional SPA; pass an empty dir for API-only.
+    // level. `assets_dir` serves an optional SPA (never its dotfiles); pass an
+    // empty dir for API-only.
     let service = auth_service(scheme, "assets".to_string())
         // Attach your own protected routes — see below.
         .validated_router(Router::new().route("/whoami", get(whoami)));

@@ -40,8 +40,9 @@ use crate::adapters::into_axum_response;
 type LayerFn<S> = fn(Router<S>, S) -> Router<S>;
 
 /// Serve `scheme`'s routes, and static files from `assets_dir` for anything
-/// else. `assets_dir` must be a directory of public files only: everything
-/// in it, dotfiles included, is served.
+/// else. `assets_dir` should hold public files only: everything in it is
+/// served, except paths with a segment that starts with `.` (`.env`,
+/// `.git/`), which get a 404. `/.well-known/` is the exception.
 pub fn auth_service<S>(scheme: S, assets_dir: String) -> AuthService<S>
 where
     S: Endpoints + AuthenticationScheme + Clone + Send + Sync + 'static,
@@ -187,9 +188,13 @@ where
             router = router.merge(apply(elevated, scheme.clone()));
         }
 
-        // 3. State + static assets.
-        let assets = ServeDir::new(&self.assets_dir)
+        // 3. State + static assets, with hidden files (`.env`, `.git/`)
+        //    refused before the directory is read.
+        let files = ServeDir::new(&self.assets_dir)
             .not_found_service(ServeFile::new(format!("{}/index.html", self.assets_dir)));
+        let assets = Router::new()
+            .fallback_service(files)
+            .layer(middleware::from_fn(crate::assets::hide_dotfiles));
         router.with_state(scheme).fallback_service(assets)
     }
 }
