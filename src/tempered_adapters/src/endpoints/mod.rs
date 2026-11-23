@@ -222,6 +222,70 @@ pub fn status_for(category: ErrorCategory) -> StatusCode {
     }
 }
 
+// ============================================================================
+// Cross-site requests
+// ============================================================================
+
+/// Whether a request was sent by a page on another site, as far as the
+/// browser says. Library routes that change state refuse such requests
+/// (403), and adapters can do the same for the app's routes.
+///
+/// This is defence in depth against CSRF. The main defences are already in
+/// place: auth cookies are `SameSite=Lax`, so a cross-site POST arrives
+/// without them, and JSON bodies need a CORS preflight that a foreign page
+/// cannot pass. What this adds is cover for the routes that need no cookie
+/// (login, signup, password reset), so a foreign page cannot sign the
+/// visitor in to an account it chose (login CSRF), even through a
+/// misconfigured CORS policy.
+///
+/// - `Sec-Fetch-Site` (all current browsers) decides when present:
+///   `cross-site` is refused. `same-origin`, `same-site` (a sibling
+///   subdomain, for apps split across `app.` and `api.`) and `none` (typed
+///   or bookmarked) are let through. `__Host-` cookie names keep a sibling
+///   subdomain from planting cookies.
+/// - Without it (Safari before 16.4), `Origin` is compared with `Host`: a
+///   different host, or `Origin: null`, is refused. This is stricter than the
+///   header above, since it cannot tell a sibling subdomain from another site.
+/// - With neither header (curl, mobile apps, server-to-server), the request
+///   passes: only browsers are open to CSRF, and they send at least one.
+pub fn is_cross_site(parts: &Parts) -> bool {
+    let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok());
+    if let Some(site) = header("sec-fetch-site") {
+        return site.eq_ignore_ascii_case("cross-site");
+    }
+    let Some(origin) = header("origin") else {
+        return false;
+    };
+    if origin == "null" {
+        return true;
+    }
+    let (scheme, origin_host) = origin.split_once("://").unwrap_or(("", origin));
+    let origin_host = without_default_port(origin_host.trim_end_matches('/'), scheme);
+    let host = header("host").or_else(|| parts.uri.authority().map(|a| a.as_str()));
+    match host {
+        // A proxy may spell the default port out; the browser never does.
+        Some(host) => !origin_host.eq_ignore_ascii_case(without_default_port(host, scheme)),
+        // Nothing to compare against: let it through rather than guess.
+        None => false,
+    }
+}
+
+/// `authority` without the default port for `scheme` (`:443` for https,
+/// `:80` for http).
+fn without_default_port<'a>(authority: &'a str, scheme: &str) -> &'a str {
+    let default = match scheme {
+        "https" => ":443",
+        "http" => ":80",
+        _ => return authority,
+    };
+    authority.strip_suffix(default).unwrap_or(authority)
+}
+
+/// The answer to a refused cross-site request.
+pub fn cross_site_refused() -> EndpointResponse {
+    error_response(StatusCode::FORBIDDEN, "Cross-site request refused")
+}
+
 /// `status` with a JSON body.
 pub fn json_response(status: StatusCode, body: serde_json::Value) -> EndpointResponse {
     http::Response::builder()
@@ -285,6 +349,54 @@ pub fn subject_email<C: IdentityClaims>(claims: &C) -> Result<Email, EndpointRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parts(headers: &[(&str, &str)]) -> Parts {
+        let mut request = http::Request::builder().uri("/login");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request.body(()).unwrap().into_parts().0
+    }
+
+    #[test]
+    fn sec_fetch_site_decides_when_the_browser_sends_it() {
+        assert!(is_cross_site(&parts(&[("sec-fetch-site", "cross-site")])));
+        for site in ["same-origin", "same-site", "none"] {
+            assert!(
+                !is_cross_site(&parts(&[("sec-fetch-site", site)])),
+                "{site}"
+            );
+        }
+        // It wins over a mismatched Origin (a same-site sibling, say).
+        assert!(!is_cross_site(&parts(&[
+            ("sec-fetch-site", "same-site"),
+            ("origin", "https://app.example.com"),
+            ("host", "api.example.com"),
+        ])));
+    }
+
+    #[test]
+    fn without_sec_fetch_site_origin_must_match_host() {
+        let check =
+            |origin: &str, host: &str| is_cross_site(&parts(&[("origin", origin), ("host", host)]));
+        assert!(!check("https://example.com", "example.com"));
+        assert!(!check("https://example.com", "example.com:443"));
+        assert!(!check("http://localhost:3000", "localhost:3000"));
+        assert!(!check("https://EXAMPLE.com", "example.com"));
+        assert!(check("https://evil.test", "example.com"));
+        assert!(check("https://example.com.evil.test", "example.com"));
+        assert!(check("http://localhost:4000", "localhost:3000"));
+        assert!(is_cross_site(&parts(&[
+            ("origin", "null"),
+            ("host", "example.com")
+        ])));
+    }
+
+    #[test]
+    fn a_request_with_neither_header_is_not_a_browser_and_passes() {
+        assert!(!is_cross_site(&parts(&[])));
+        assert!(!is_cross_site(&parts(&[("host", "example.com")])));
+    }
 
     fn spec(path: &str) -> RouteSpec {
         RouteSpec {

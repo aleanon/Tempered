@@ -736,7 +736,11 @@ mod oauth_tests {
         assert_eq!(header(&response, "location"), ["/app"]);
         let cookies = header(&response, "set-cookie");
         assert!(cookies.iter().any(|c| c.starts_with("jwt=ey")));
-        assert!(cookies.iter().any(|c| c.starts_with("oauth_state=;")));
+        assert!(
+            cookies
+                .iter()
+                .any(|c| c.starts_with("__Host-oauth_state=;"))
+        );
     }
 
     #[tokio::test]
@@ -768,7 +772,11 @@ mod oauth_tests {
         // No session cookie: only the cleared state cookie and the hand-off.
         let cookies = header(&response, "set-cookie");
         assert_eq!(cookies.len(), 2);
-        assert!(cookies.iter().any(|c| c.starts_with("oauth_state=;")));
+        assert!(
+            cookies
+                .iter()
+                .any(|c| c.starts_with("__Host-oauth_state=;"))
+        );
         assert!(!cookies.iter().any(|c| c.starts_with("jwt=")));
 
         // The URL carries only a marker: no email, no attempt id.

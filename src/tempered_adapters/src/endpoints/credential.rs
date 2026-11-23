@@ -238,6 +238,13 @@ where
     }
 
     async fn handle(&self, spec: &RouteSpec, req: EndpointRequest) -> EndpointResponse {
+        // Before anything else: a page on another site does not get to log
+        // the visitor in, sign them up or change their account. Reads (the
+        // OAuth start and callback, which a provider redirect makes
+        // cross-site by design) are left alone.
+        if !matches!(spec.method, Method::GET | Method::HEAD) && super::is_cross_site(&req.parts) {
+            return super::cross_site_refused();
+        }
         let who = match self.admit(spec.tier, &req.parts).await {
             Ok(who) => who,
             Err(response) => return response,

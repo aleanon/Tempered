@@ -13,6 +13,11 @@ use thiserror::Error;
 
 #[derive(Clone)]
 pub struct JwtAuthConfig {
+    /// The auth cookie's name. Prefer one starting with `__Host-` (e.g.
+    /// `__Host-jwt`): the browser then accepts the cookie only from this
+    /// exact host, so a sibling subdomain cannot overwrite it with a session
+    /// of its own. The cookies this crate sets already meet the prefix's
+    /// rules (`Secure`, `Path=/`, no `Domain`).
     pub jwt_cookie_name: String,
     pub jwt_secret: Secret<String>,
     pub token_ttl_in_seconds: u64,

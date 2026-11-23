@@ -98,3 +98,23 @@ where
         .map_err(into_axum_response)?;
     Ok(next.run(req).await)
 }
+
+/// Refuse state-changing requests (anything but GET and HEAD) sent by a
+/// page on another site, with 403. The library's own routes already do this
+/// (see [`endpoints::is_cross_site`] for the rules); layer it over an app
+/// router that should do the same:
+///
+/// ```ignore
+/// Router::new()
+///     .route("/settings", post(save))
+///     .layer(axum::middleware::from_fn(tempered_axum::middleware::refuse_cross_site))
+/// ```
+#[allow(clippy::result_large_err)]
+pub async fn refuse_cross_site(req: Request, next: Next) -> Result<Response, Response> {
+    let safe = matches!(*req.method(), http::Method::GET | http::Method::HEAD);
+    let (parts, body) = req.into_parts();
+    if !safe && endpoints::is_cross_site(&parts) {
+        return Err(into_axum_response(endpoints::cross_site_refused()));
+    }
+    Ok(next.run(Request::from_parts(parts, body)).await)
+}

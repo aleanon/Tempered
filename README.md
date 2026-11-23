@@ -151,6 +151,29 @@ verified).
 Login, logout, and verify-token are always present. Every default path can be
 overridden on the service builder (e.g. `.login("/signin")`).
 
+### Cookie names
+
+Name your auth cookies with the `__Host-` prefix (`__Host-jwt`,
+`__Host-elevated_jwt`, `__Host-session`). The browser then takes the cookie
+only from this exact host, so a sibling subdomain (a forgotten staging site,
+user content on `*.example.com`) cannot overwrite it with a session it
+controls. The cookies this library sets already meet the prefix's rules
+(`Secure`, `Path=/`, no `Domain`). The OAuth state cookie uses the prefix by
+default (`__Host-oauth_state`).
+
+### Cross-site requests
+
+The library's state-changing routes (everything but GET and HEAD) answer
+`403` to a request a browser marks as cross-site: `Sec-Fetch-Site:
+cross-site`, or, from browsers that don't send that header, an `Origin` that
+is not the `Host`. Same-site requests (`app.example.com` calling
+`api.example.com`) pass, and so do clients that send neither header (curl,
+mobile apps). It backs up `SameSite=Lax` cookies and JSON-only bodies. Its
+main job is the routes that need no cookie: it keeps another site from
+logging a visitor in to an account it picked. Layer
+`tempered_axum::middleware::refuse_cross_site` over your own routers for the
+same rule.
+
 ### Session lifetime
 
 `SessionScheme` sessions end two ways. They expire after `ttl_in_seconds`

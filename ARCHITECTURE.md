@@ -92,7 +92,8 @@ Turns a scheme into a running service:
 - **Route table** (`tempered_adapters::endpoints`, framework-neutral): the
   scheme's `Endpoints::routes` lists exactly the routes its capability slots
   imply (`RouteId`, method, path, `Tier`: public / login / verified /
-  elevated), and `Endpoints::handle` checks the route's tier, then runs it.
+  elevated), and `Endpoints::handle` refuses a cross-site state-changing
+  request (`endpoints::is_cross_site`), checks the route's tier, then runs it.
   `auth_service` only mounts each route and forwards the request, so an
   adapter cannot put a route behind the wrong check. The scheme is the single
   source of truth: there are no per-route opt-ins, only path overrides
@@ -137,7 +138,8 @@ alongside the always-present `/login`, `/logout`, and `/verify-token`.
 
 1. axum receives `POST /login`; the route `auth_service` mounted from the table
    hands the request head and body to `Endpoints::handle`.
-2. `handle` checks the route's tier (public here), parses the JSON body, and
+2. `handle` refuses the request if a browser marks it cross-site, checks
+   the route's tier (public here), parses the JSON body, and
    calls the framework-agnostic handler in `tempered_adapters/handlers/`, which
    runs `scheme.login(...)` and builds the response through a `ResponseBuilder`.
 3. The scheme's `create_login_response` (an `HttpAuthenticationScheme` method,

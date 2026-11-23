@@ -384,7 +384,12 @@ before it is built:
     starting with `.` (`/.env`, `/%2Eenv`, `/a%2F.env`, `/.git/config`).
     A leading `/.well-known/` stays served. Other framework adapters
     serve their own assets and need the same rule.
-  - No `__Host-` cookie prefix and no Origin check.
+  - ~~No `__Host-` cookie prefix and no Origin check~~ ✅ DONE
+    2026-11-23. The OAuth state cookie defaults to `__Host-oauth_state`
+    (`DEFAULT_OAUTH_STATE_COOKIE`), against cookie tossing from a sibling
+    subdomain. Auth cookie names are the app's; their field docs and the
+    README recommend the prefix. The `oauth_2fa` hand-off cookie keeps
+    its name, which pages read. The Origin check is 8.5, built here.
   - ~~Redis 2FA and reset stores map errors to "not found"~~ ✅ DONE
     2026-11-23. The stores were already right (fixed in 6.6/6.8). The
     leak was one level up: the scheme answered every 2FA store error
@@ -442,9 +447,15 @@ Must-have for a working framework:
   `PendingAuthorization`) and read `.well-known` discovery. Add provider
   presets for Google, Microsoft and Apple, and GitHub with its emails
   endpoint. The README says "OIDC"; today it is OAuth2 plus userinfo.
-- **8.5 CSRF defence in depth.** Add an `Origin` / `Sec-Fetch-Site` check on
-  state-changing cookie routes. Today the only defence is `SameSite=Lax`
-  plus JSON bodies.
+- **8.5 CSRF defence in depth.** ✅ DONE 2026-11-23.
+  `endpoints::is_cross_site`: `Sec-Fetch-Site: cross-site` is refused, with
+  `Origin` vs `Host` as the fallback (`null` refused, default ports
+  ignored). With neither header, the request passes. `CredentialScheme::handle`
+  answers 403 to non-GET/HEAD library routes before the tier check.
+  `tempered_axum::middleware::refuse_cross_site` is the opt-in for app
+  routers. Same-site passes (apps split across subdomains). If 8.4 adds
+  `response_mode=form_post` (Apple), that callback is a cross-site POST
+  and needs an exemption.
 
 Should-have:
 - **8.6 Refresh tokens** with rotation and reuse detection, short-lived

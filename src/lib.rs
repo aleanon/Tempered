@@ -97,8 +97,8 @@ pub use tempered_adapters::{
     auth_validation::local_jwt_validator::{Claims, JwtAuthConfig},
     authentication::api_key_scheme::{ApiKeyClaims, ApiKeyScheme, Issuance},
     authentication::credential_scheme::{
-        Authz, CredentialError, CredentialScheme, ElevatedCapabilities, ElevatedRevokeError,
-        RouteFlags,
+        Authz, CredentialError, CredentialScheme, DEFAULT_OAUTH_STATE_COOKIE, ElevatedCapabilities,
+        ElevatedRevokeError, OAUTH_TWO_FA_COOKIE, RouteFlags,
     },
     authentication::jwt_scheme::{
         Elevation, EmailVerify, JwtScheme, OAuth, Passkeys, PasswordReset, TwoFa,

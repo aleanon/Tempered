@@ -37,6 +37,11 @@ pub const DEFAULT_MAX_SESSION_LIFETIME_SECONDS: u64 = 24 * 60 * 60;
 
 #[derive(Clone)]
 pub struct SessionConfig {
+    /// The auth cookie's name. Prefer one starting with `__Host-` (e.g.
+    /// `__Host-session`): the browser then accepts the cookie only from this
+    /// exact host, so a sibling subdomain cannot overwrite it with a session
+    /// of its own. The cookies this crate sets already meet the prefix's
+    /// rules (`Secure`, `Path=/`, no `Domain`).
     pub cookie_name: String,
     /// Idle timeout: a session unused this long expires. Every request
     /// restarts it (sliding expiry).

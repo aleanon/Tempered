@@ -344,7 +344,7 @@ async fn oauth_callback(query: &str) -> super::EndpointResponse {
         .unwrap();
     let (parts, ()) = http::Request::builder()
         .uri(format!("/oauth/google/callback?{query}"))
-        .header(http::header::COOKIE, "oauth_state=s1")
+        .header(http::header::COOKIE, "__Host-oauth_state=s1")
         .body(())
         .unwrap()
         .into_parts();
@@ -364,7 +364,7 @@ fn clears_the_state_cookie(response: &super::EndpointResponse) -> bool {
         .iter()
         .any(|c| {
             let c = c.to_str().unwrap();
-            c.starts_with("oauth_state=;") && c.contains("Max-Age=0")
+            c.starts_with("__Host-oauth_state=;") && c.contains("Max-Age=0")
         })
 }
 
@@ -392,4 +392,31 @@ async fn every_failed_oauth_callback_clears_the_state_cookie() {
     let response = oauth_callback("code=c&state=s1").await;
     assert!(response.status().is_client_error());
     assert!(clears_the_state_cookie(&response));
+}
+
+/// A page on another site cannot post to the library's routes, logged in
+/// or not: refused before the body is read or the tier is checked.
+#[tokio::test]
+async fn a_cross_site_post_is_refused_before_anything_else() {
+    let scheme = everything(false);
+    let routes = scheme.routes(&PathOverrides::default());
+    let login = routes.iter().find(|s| s.id == RouteId::Login).unwrap();
+    let post = |site: &str| {
+        let (parts, ()) = http::Request::builder()
+            .method(Method::POST)
+            .uri("/login")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header("sec-fetch-site", site)
+            .body(())
+            .unwrap()
+            .into_parts();
+        let body = bytes::Bytes::from(r#"{"email":"a@example.com","password":"long-enough-pw"}"#);
+        super::EndpointRequest::new(parts, body, Vec::new())
+    };
+
+    let refused = scheme.handle(login, post("cross-site")).await;
+    assert_eq!(refused.status(), http::StatusCode::FORBIDDEN);
+    // Same origin reaches the route (no such user here: 401).
+    let allowed = scheme.handle(login, post("same-origin")).await;
+    assert_eq!(allowed.status(), http::StatusCode::UNAUTHORIZED);
 }

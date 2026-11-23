@@ -718,7 +718,7 @@ impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
             email_verify: self.email_verify,
             oauth: OAuth {
                 flow,
-                state_cookie_name: "oauth_state".to_string(),
+                state_cookie_name: DEFAULT_OAUTH_STATE_COOKIE.to_string(),
                 post_login_redirect: "/".to_string(),
                 two_fa_redirect: "/".to_string(),
             },
@@ -777,7 +777,9 @@ impl<U, T, F, L, R, M, O, CS, ChS, V> CredentialScheme<U, T, F, L, R, M, O, Pass
 
 impl<U, T, F, L, R, M, ST, ID, HC, K> CredentialScheme<U, T, F, L, R, M, OAuth<ST, ID, HC>, K> {
     /// Override the cookie name used to bind the OAuth `state` to the browser
-    /// (default `oauth_state`).
+    /// (default [`DEFAULT_OAUTH_STATE_COOKIE`], `__Host-oauth_state`). Keep the
+    /// `__Host-` prefix: it stops a sibling subdomain from planting its own
+    /// state cookie, which would log the victim into the attacker's account.
     pub fn oauth_state_cookie(mut self, name: impl Into<String>) -> Self {
         self.oauth.state_cookie_name = name.into();
         self
@@ -1887,6 +1889,13 @@ where
         }
     }
 }
+
+/// The OAuth state cookie's default name. The `__Host-` prefix makes the
+/// browser refuse the cookie unless it is `Secure`, has `Path=/` and no
+/// `Domain`, so only this exact host can set it: a sibling subdomain cannot
+/// plant a state of its own (cookie tossing) and so cannot complete its own
+/// provider login in the victim's browser.
+pub const DEFAULT_OAUTH_STATE_COOKIE: &str = "__Host-oauth_state";
 
 /// Name of the cookie that hands a pending OAuth 2FA login to the page.
 pub const OAUTH_TWO_FA_COOKIE: &str = "oauth_2fa";

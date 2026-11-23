@@ -215,3 +215,34 @@ async fn elevated_routes_reject_a_plain_session() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+/// The app's own router opts in with `refuse_cross_site`.
+#[tokio::test]
+async fn an_app_router_can_refuse_cross_site_posts() {
+    use axum::routing::post;
+    let app: Router = Router::new()
+        .route("/settings", post(|| async { "saved" }))
+        .layer(axum::middleware::from_fn(
+            tempered_axum::middleware::refuse_cross_site,
+        ));
+    let request = |site: &str, method: &str| {
+        Request::builder()
+            .method(method)
+            .uri("/settings")
+            .header("sec-fetch-site", site)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = app
+        .clone()
+        .oneshot(request("cross-site", "POST"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = app
+        .clone()
+        .oneshot(request("same-origin", "POST"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
