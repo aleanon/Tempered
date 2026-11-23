@@ -1674,8 +1674,10 @@ where
             .begin(&email)
             .await
             .map_err(CredentialError::Token)?;
-        // The provider vouches for the address (the flow refuses one it has
-        // not verified), so the account now counts as proven. Under the
+        // When the provider vouches for the address (it reported this one,
+        // verified), the account now counts as proven. It does not once the
+        // user changed their address at the provider: the identity still
+        // logs in, but proves nothing about the old address. Under the
         // credential lock, so a deletion cannot clear the mark between the
         // link check and the write and leave it behind for the next account
         // at this address.
@@ -1685,7 +1687,10 @@ where
                 // Unlinked since it was verified: the account was deleted.
                 return Err(UserStoreError::UserNotFound.into());
             }
-            Ok(self.email_verify.mark_verified(&email).await?)
+            if identity.vouches_for_email() {
+                self.email_verify.mark_verified(&email).await?;
+            }
+            Ok(())
         }
         .await;
         self.unlock_credentials(&email, lock).await;

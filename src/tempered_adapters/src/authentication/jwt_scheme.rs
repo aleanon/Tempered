@@ -543,6 +543,56 @@ mod oauth_tests {
         assert!(users.authenticate_user(&email(), &password).await.is_err());
     }
 
+    /// The user changed their address at the provider after linking. The
+    /// identity still logs in to its account (no lockout, nothing secured
+    /// or moved), but the provider no longer vouches for the old address, so
+    /// it is not marked verified on the strength of this login.
+    #[tokio::test]
+    async fn a_provider_email_change_keeps_the_login_but_proves_nothing() {
+        let account = Account::signed_up().await;
+        account
+            .identities
+            .link_identity("google".to_string(), "sub-123".to_string(), email())
+            .await
+            .unwrap();
+        let scheme = JwtScheme::new(
+            account.users.clone(),
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            account.epochs.clone(),
+        )
+        .supports_email_verification(account.verified.clone(), MockEmailClient::new())
+        .supports_oauth(
+            OAuthFlow::new(
+                HashMapOAuthStateStore::new(),
+                account.identities.clone(),
+                MockClient {
+                    email: "renamed@example.com".to_string(),
+                },
+            )
+            .with_provider(provider()),
+        );
+
+        let outcome = oauth_login(&scheme).await.unwrap();
+        let LoginOutcome::Success(token) = outcome else {
+            panic!("no 2FA on this account");
+        };
+        assert!(validates(&scheme, &token).await);
+        assert!(!account.verified.is_verified(&email()).await.unwrap());
+        assert!(
+            account.password_works(SIGNUP_PASSWORD).await,
+            "not secured again"
+        );
+        assert!(
+            account
+                .users
+                .get_user(&Email::try_from(Secret::new("renamed@example.com".to_string())).unwrap())
+                .await
+                .is_err(),
+            "no account made for the new address"
+        );
+    }
+
     #[tokio::test]
     async fn oauth_login_does_not_skip_two_factor() {
         let users = HashMapUserStore::new();

@@ -148,6 +148,12 @@ their first provider login. A provider login marks the address verified: the
 provider vouches for it (the flow refuses an address the provider has not
 verified).
 
+Once linked, a provider identity is its `subject`, not its email. If the user
+changes their address at the provider, the identity still logs in to the
+account it was linked to. The link is not moved to the new address, and that
+login no longer marks the account's (old) address verified. Changing the
+account's own address is a separate feature (plan 8.9).
+
 Login, logout, and verify-token are always present. Every default path can be
 overridden on the service builder (e.g. `.login("/signin")`).
 

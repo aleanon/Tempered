@@ -400,8 +400,15 @@ before it is built:
     reported a query failure as `UserNotFound`, and a corrupt stored hash
     as `IncorrectPassword`. Both are now `UnexpectedError` (500).
     `verify_password_hash` returns `Ok(false)` for a mismatch.
-  - An OAuth email change after linking locks the user out of that
-    provider.
+  - ~~An OAuth email change after linking locks the user out of that
+    provider~~ ✅ DONE 2026-11-23. A linked identity is keyed by `subject`
+    (OIDC Core §5.7), so it logs in to its linked account whatever email
+    the provider now reports, even an unverified one. The link is never
+    moved. `VerifiedIdentity::vouches_for_email` is false when the
+    reported address isn't the account's, and the scheme then doesn't mark
+    the account verified. Before, this answered 409 `IdentityConflict`, and
+    the user could not get back in through that provider. Updating the
+    account's address to follow is 8.9.
   - ~~The OAuth callback rejects a provider `error=` redirect without
     clearing the state cookie~~ ✅ DONE 2026-11-23. `error=` now answers
     401 "The login with the provider was not completed" (the value is logged,

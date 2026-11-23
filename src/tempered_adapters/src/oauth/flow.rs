@@ -44,6 +44,7 @@ pub struct VerifiedIdentity {
     subject: String,
     email: Email,
     already_linked: bool,
+    vouches_for_email: bool,
 }
 
 impl VerifiedIdentity {
@@ -56,6 +57,14 @@ impl VerifiedIdentity {
     /// `false` means this is the first time it is used to reach the account.
     pub fn already_linked(&self) -> bool {
         self.already_linked
+    }
+
+    /// Whether the provider vouches for [`email`](Self::email) right now: it
+    /// reported that very address, verified. Always true for a first link.
+    /// A linked identity whose address changed at the provider still logs
+    /// in to its account, but no longer proves that account's address.
+    pub fn vouches_for_email(&self) -> bool {
+        self.vouches_for_email
     }
 }
 
@@ -209,26 +218,35 @@ where
             .fetch_user_info(config, &access_token)
             .await?;
 
-        // Never derive identity from an unverified provider email: an attacker
-        // could register a victim's address (unverified) at the provider and
-        // take over the linked local account.
+        // A linked identity is the provider's `subject`, which is stable;
+        // the email is not (OIDC Core §5.7: do not key on it). So a linked
+        // identity logs in to the account it was linked to, even after the
+        // address changed at the provider. The link is never moved to the new
+        // address, and whatever account that address may have is not touched.
+        if let Some(linked) = self.linked_email(provider, &info.subject).await? {
+            let reported = Email::try_from(Secret::new(info.email)).ok();
+            return Ok(VerifiedIdentity {
+                provider: provider.to_string(),
+                subject: info.subject,
+                vouches_for_email: info.email_verified && reported.as_ref() == Some(&linked),
+                email: linked,
+                already_linked: true,
+            });
+        }
+
+        // A first link does go by the email, so it must be verified: an
+        // attacker could otherwise register a victim's address (unverified)
+        // at the provider and take over the local account.
         if !info.email_verified {
             return Err(OAuthFlowError::EmailNotVerified);
         }
-
         let email = Email::try_from(Secret::new(info.email))?;
-        let already_linked = match self.linked_email(provider, &info.subject).await? {
-            Some(linked) if linked == email => true,
-            // The identity belongs to another account: never move it silently.
-            Some(_) => return Err(OAuthFlowError::IdentityConflict),
-            None => false,
-        };
-
         Ok(VerifiedIdentity {
             provider: provider.to_string(),
             subject: info.subject,
             email,
-            already_linked,
+            already_linked: false,
+            vouches_for_email: true,
         })
     }
 
@@ -669,7 +687,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relinking_identity_to_a_different_email_is_rejected() {
+    async fn a_linked_identity_keeps_its_account_when_the_provider_email_changes() {
         let identity_store = HashMapOAuthIdentityStore::new();
 
         let link = |email: &'static str| {
@@ -690,11 +708,50 @@ mod tests {
             .unwrap();
         f1.link(&first).await.unwrap();
 
-        // The same provider identity now returning a different email must not
-        // silently re-bind the account.
+        // The same provider identity now reports another address. It logs in
+        // to the account it is linked to: the link is not moved to b@ (whose
+        // account, if any, it never reaches), and the user is not locked out.
         let f2 = link("b@example.com");
         let r2 = f2.begin("google").await.unwrap();
-        let result = f2.complete("google", "code", &r2.state, &r2.state).await;
-        assert!(matches!(result, Err(OAuthFlowError::IdentityConflict)));
+        let second = f2
+            .complete("google", "code", &r2.state, &r2.state)
+            .await
+            .unwrap();
+        assert_eq!(second.email(), first.email());
+        assert!(second.already_linked());
+        // But the provider no longer vouches for a@.
+        assert!(first.vouches_for_email());
+        assert!(!second.vouches_for_email());
+    }
+
+    #[tokio::test]
+    async fn a_linked_identity_logs_in_even_if_its_new_address_is_unverified() {
+        let identity_store = HashMapOAuthIdentityStore::new();
+        let flow = |email: &'static str, verified| {
+            OAuthFlow::new(
+                HashMapOAuthStateStore::new(),
+                identity_store.clone(),
+                MockClient::new("sub-123", email, verified),
+            )
+            .with_provider(provider())
+        };
+        let f1 = flow("a@example.com", true);
+        let r1 = f1.begin("google").await.unwrap();
+        let first = f1
+            .complete("google", "code", &r1.state, &r1.state)
+            .await
+            .unwrap();
+        f1.link(&first).await.unwrap();
+
+        // The address is not what identifies the user, so its state does not
+        // matter once the identity is linked.
+        let f2 = flow("new-unconfirmed@example.com", false);
+        let r2 = f2.begin("google").await.unwrap();
+        let second = f2
+            .complete("google", "code", &r2.state, &r2.state)
+            .await
+            .unwrap();
+        assert_eq!(second.email(), first.email());
+        assert!(!second.vouches_for_email());
     }
 }
