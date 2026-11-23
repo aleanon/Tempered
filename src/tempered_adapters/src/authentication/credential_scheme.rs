@@ -32,6 +32,7 @@ use tempered_core::{
 };
 use thiserror::Error;
 
+use crate::authentication::deferred::Deferred;
 use crate::authentication::token_strategy::{ACCOUNT_BUSY, TokenStrategy, UserLock};
 use crate::oauth::{OAuthFlow, OAuthFlowError};
 use crate::passkey::{PasskeyFlow, PasskeyFlowError};
@@ -114,6 +115,7 @@ impl<TE> Elevation<TE> {
 pub struct PasswordReset<P, E> {
     store: P,
     email: E,
+    deferred: Deferred,
 }
 
 /// Enabled email-verification slot: a verification store plus the email client used to deliver links.
@@ -121,6 +123,7 @@ pub struct PasswordReset<P, E> {
 pub struct EmailVerify<V, E> {
     store: V,
     email: E,
+    deferred: Deferred,
 }
 
 /// Enabled OAuth2/OIDC slot: the authorization-code flow plus the cookie/redirect
@@ -221,10 +224,12 @@ trait EmailProof {
     async fn mark_verified(&self, email: &Email) -> Result<(), EmailVerificationStoreError>;
     /// Send a verification link, unless the address is already verified.
     async fn send_verification(&self, email: &Email) -> Result<(), VerificationSendError>;
-    /// Tell the owner of `email` that someone tried to sign up with it.
-    /// Signup answers the same either way, so this mail is how the owner
-    /// (perhaps someone who forgot they had an account) learns of it.
-    async fn notify_already_registered(&self, email: &Email) -> Result<(), VerificationSendError>;
+    /// The mail a signup sends, after the response: a verification link to
+    /// a `new_account`, otherwise a notice to the owner of the taken address.
+    /// Signup answers the same either way, so the notice is how the owner
+    /// (perhaps someone who forgot they had an account) learns of it, and
+    /// deferring both keeps the response time from telling them apart.
+    fn after_signup(&self, email: Email, new_account: bool);
 }
 
 /// The body of the mail a signup for a taken address sends its owner.
@@ -268,16 +273,14 @@ impl EmailProof for () {
         Ok(())
     }
 
-    async fn notify_already_registered(&self, _email: &Email) -> Result<(), VerificationSendError> {
-        Ok(())
-    }
+    fn after_signup(&self, _email: Email, _new_account: bool) {}
 }
 
 #[async_trait]
 impl<V, E> EmailProof for EmailVerify<V, E>
 where
-    V: EmailVerificationTokenStore + Send + Sync,
-    E: EmailClient + Send + Sync,
+    V: EmailVerificationTokenStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
 {
     async fn mark_verified(&self, email: &Email) -> Result<(), EmailVerificationStoreError> {
         self.store.mark_verified(email).await
@@ -303,15 +306,27 @@ where
             .map_err(VerificationSendError::Email)
     }
 
-    async fn notify_already_registered(&self, email: &Email) -> Result<(), VerificationSendError> {
-        self.email
-            .send_email(
-                email,
-                "You already have an account",
-                ALREADY_REGISTERED_NOTICE,
-            )
-            .await
-            .map_err(VerificationSendError::Email)
+    fn after_signup(&self, email: Email, new_account: bool) {
+        let this = self.clone();
+        self.deferred.run("signup mail", async move {
+            // The account exists either way: a failed link is logged and the
+            // user can ask for another (`/verify-email/resend`).
+            if new_account {
+                if let Err(e) = this.send_verification(&email).await {
+                    tracing::error!(error = ?e, "failed to send the verification email after signup");
+                }
+            } else if let Err(e) = this
+                .email
+                .send_email(
+                    &email,
+                    "You already have an account",
+                    ALREADY_REGISTERED_NOTICE,
+                )
+                .await
+            {
+                tracing::error!(error = ?e, "failed to send the already-registered notice");
+            }
+        });
     }
 
     async fn proof(&self, email: &Email) -> Result<AddressProof, EmailVerificationStoreError> {
@@ -646,7 +661,11 @@ impl<U, T, F, L, M, O, K> CredentialScheme<U, T, F, L, (), M, O, K> {
             tokens: self.tokens,
             two_fa: self.two_fa,
             elevation: self.elevation,
-            password_reset: PasswordReset { store, email },
+            password_reset: PasswordReset {
+                store,
+                email,
+                deferred: Deferred::default(),
+            },
             email_verify: self.email_verify,
             oauth: self.oauth,
             passkeys: self.passkeys,
@@ -668,7 +687,11 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
             two_fa: self.two_fa,
             elevation: self.elevation,
             password_reset: self.password_reset,
-            email_verify: EmailVerify { store, email },
+            email_verify: EmailVerify {
+                store,
+                email,
+                deferred: Deferred::default(),
+            },
             oauth: self.oauth,
             passkeys: self.passkeys,
             routes: self.routes,
@@ -1125,27 +1148,17 @@ where
         data: Self::RegistrationData,
     ) -> Result<(), Self::RegistrationError> {
         let user = User::new(email.clone(), password, data.requires_2fa);
-        match self.user_store.add_user(user).await {
-            // With email verification, the new account is asked to prove its
-            // address. The account exists either way: a failed send is logged
-            // and the user can ask for another link (`/verify-email/resend`).
-            Ok(()) => {
-                if let Err(e) = self.email_verify.send_verification(&email).await {
-                    tracing::error!(error = ?e, "failed to send the verification email after signup");
-                }
-            }
-            // A taken address answers exactly like a new one, so signup does
-            // not tell anyone which addresses have accounts. The existing
-            // account is untouched; its owner gets a notice instead (when
-            // the scheme can send mail). The store hashes the password before
-            // it finds the clash, so the two paths also take the same time.
-            Err(UserStoreError::UserAlreadyExists) => {
-                if let Err(e) = self.email_verify.notify_already_registered(&email).await {
-                    tracing::error!(error = ?e, "failed to send the already-registered notice");
-                }
-            }
+        // A taken address answers exactly like a new one, so signup does not
+        // tell anyone which addresses have accounts. The existing account is
+        // untouched. The store hashes the password before it finds the
+        // clash, and the mail either way goes out after the response, so the
+        // two paths also take the same time.
+        let new_account = match self.user_store.add_user(user).await {
+            Ok(()) => true,
+            Err(UserStoreError::UserAlreadyExists) => false,
             Err(e) => return Err(e.into()),
-        }
+        };
+        self.email_verify.after_signup(email, new_account);
         Ok(())
     }
 }
@@ -1472,21 +1485,36 @@ where
 
     #[tracing::instrument(name = "CredentialScheme::initiate_password_reset", skip(self))]
     async fn initiate_password_reset(&self, email: Email) -> Result<(), Self::PasswordResetError> {
-        // Silent Ok if the user doesn't exist (prevents email enumeration).
-        if self.user_store.get_user(&email).await.is_err() {
-            return Ok(());
-        }
-
-        let token = PasswordResetToken::new();
+        // Everything that depends on whether the account exists happens
+        // after the response, so neither the answer nor its timing says
+        // which addresses are registered (see `deferred`). Failures are
+        // logged; the caller would not have been told either way.
+        let users = self.user_store.clone();
+        let reset = self.password_reset.clone();
         self.password_reset
-            .store
-            .store_token(token.clone(), email.clone())
-            .await?;
-        self.password_reset
-            .email
-            .send_email(&email, "Password Reset", &token.to_string())
-            .await
-            .map_err(CredentialError::EmailError)?;
+            .deferred
+            .run("password reset mail", async move {
+                match users.get_user(&email).await {
+                    Ok(_) => {}
+                    Err(UserStoreError::UserNotFound) => return,
+                    Err(e) => {
+                        tracing::error!(error = ?e, "password reset: user lookup failed");
+                        return;
+                    }
+                }
+                let token = PasswordResetToken::new();
+                if let Err(e) = reset.store.store_token(token.clone(), email.clone()).await {
+                    tracing::error!(error = ?e, "password reset: failed to store the token");
+                    return;
+                }
+                if let Err(e) = reset
+                    .email
+                    .send_email(&email, "Password Reset", &token.to_string())
+                    .await
+                {
+                    tracing::error!(error = e, "password reset: failed to send the mail");
+                }
+            });
         Ok(())
     }
 

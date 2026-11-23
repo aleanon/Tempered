@@ -1299,6 +1299,20 @@ mod email_verification_tests {
     #[derive(Clone, Default)]
     struct Outbox(Arc<Mutex<Vec<String>>>);
 
+    impl Outbox {
+        /// Mail `n` (from 0), waiting for it: signup and reset mails go out
+        /// after the call returns (`authentication::deferred`).
+        async fn mail(&self, n: usize) -> String {
+            for _ in 0..1000 {
+                if let Some(mail) = self.0.lock().unwrap().get(n).cloned() {
+                    return mail;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            panic!("mail {n} was never sent");
+        }
+    }
+
     #[async_trait::async_trait]
     impl EmailClient for Outbox {
         async fn send_email(&self, _: &Email, _: &str, content: &str) -> Result<(), String> {
@@ -1341,12 +1355,13 @@ mod email_verification_tests {
             .await
             .unwrap();
 
-        let sent = outbox.0.lock().unwrap().clone();
-        assert_eq!(sent.len(), 1, "signup sends one verification link");
-        scheme
-            .verify_email(&email(), sent[0].clone())
-            .await
-            .unwrap();
+        let link = outbox.mail(0).await;
+        assert_eq!(
+            outbox.0.lock().unwrap().len(),
+            1,
+            "signup sends one verification link"
+        );
+        scheme.verify_email(&email(), link).await.unwrap();
         assert!(scheme.is_email_verified(&email()).await.unwrap());
 
         // Asking again for a verified address sends nothing.
@@ -1386,9 +1401,9 @@ mod email_verification_tests {
         // The second signup succeeds as far as the caller can tell.
         signup("someone-elses-password").await.unwrap();
 
-        let sent = outbox.0.lock().unwrap().clone();
-        assert_eq!(sent.len(), 2, "a verification link, then the notice");
-        assert_eq!(sent[1], ALREADY_REGISTERED_NOTICE);
+        // A verification link, then the notice.
+        outbox.mail(0).await;
+        assert_eq!(outbox.mail(1).await, ALREADY_REGISTERED_NOTICE);
         let original = PasswordCredentials {
             email: Secret::new("user@example.com".to_string()),
             password: Secret::new("a-long-password".to_string()),
@@ -1452,13 +1467,16 @@ mod password_reset_tests {
     struct Outbox(Arc<Mutex<Vec<String>>>);
 
     impl Outbox {
-        fn last(&self) -> String {
-            self.0
-                .lock()
-                .unwrap()
-                .last()
-                .cloned()
-                .expect("a mail was sent")
+        /// Mail `n` (from 0), waiting for it: signup and reset mails go out
+        /// after the call returns (`authentication::deferred`).
+        async fn mail(&self, n: usize) -> String {
+            for _ in 0..1000 {
+                if let Some(mail) = self.0.lock().unwrap().get(n).cloned() {
+                    return mail;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            panic!("mail {n} was never sent");
         }
     }
 
@@ -1513,6 +1531,61 @@ mod password_reset_tests {
             .unwrap();
     }
 
+    /// An email client that holds every send until released.
+    #[derive(Clone)]
+    struct Stalled(Arc<tokio::sync::Notify>, Outbox);
+
+    #[async_trait::async_trait]
+    impl EmailClient for Stalled {
+        async fn send_email(&self, to: &Email, subject: &str, body: &str) -> Result<(), String> {
+            self.0.notified().await;
+            self.1.send_email(to, subject, body).await
+        }
+    }
+
+    /// The call answers before the account lookup and the mail, so a real
+    /// address takes no longer than an unknown one.
+    #[tokio::test]
+    async fn initiating_a_reset_does_not_wait_for_the_mail() {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let outbox = Outbox::default();
+        let scheme = JwtScheme::new(
+            HashMapUserStore::new(),
+            JwtAuthConfig {
+                jwt_cookie_name: "jwt".to_string(),
+                jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+                token_ttl_in_seconds: 3600,
+                audience: None,
+                issuer: None,
+            },
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_registration()
+        .supports_password_reset(
+            HashMapPasswordResetTokenStore::new(),
+            Stalled(release.clone(), outbox.clone()),
+        );
+        sign_up(&scheme, "the-original-password").await;
+
+        // Returns although the mail cannot go out yet.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            scheme.initiate_password_reset(email()),
+        )
+        .await
+        .expect("answered without waiting for the mail")
+        .unwrap();
+        assert!(outbox.0.lock().unwrap().is_empty());
+
+        release.notify_one();
+        let link = outbox.mail(0).await;
+        scheme
+            .complete_password_reset(link, password("the-new-password"))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn a_reset_link_dies_with_the_account() {
         // The old owner asks for a reset, then deletes the account; someone
@@ -1522,7 +1595,7 @@ mod password_reset_tests {
         let scheme = scheme(&outbox);
         sign_up(&scheme, "the-first-owners-password").await;
         scheme.initiate_password_reset(email()).await.unwrap();
-        let link = outbox.last();
+        let link = outbox.mail(0).await;
 
         scheme.delete_account(email()).await.unwrap();
         sign_up(&scheme, "the-new-owners-password").await;
@@ -1539,7 +1612,7 @@ mod password_reset_tests {
         let scheme = scheme(&outbox);
         sign_up(&scheme, "the-original-password").await;
         scheme.initiate_password_reset(email()).await.unwrap();
-        let link = outbox.last();
+        let link = outbox.mail(0).await;
 
         scheme
             .change_password(email(), password("a-fresh-password"))
@@ -1558,9 +1631,9 @@ mod password_reset_tests {
         let scheme = scheme(&outbox);
         sign_up(&scheme, "the-original-password").await;
         scheme.initiate_password_reset(email()).await.unwrap();
-        let first = outbox.last();
+        let first = outbox.mail(0).await;
         scheme.initiate_password_reset(email()).await.unwrap();
-        let second = outbox.last();
+        let second = outbox.mail(1).await;
 
         scheme
             .complete_password_reset(second, password("the-new-password"))

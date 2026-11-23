@@ -121,7 +121,7 @@ automatically:
 | Registration | `.supports_registration()` | `POST /signup` (a taken address gets the same `201`; with email verification its owner is mailed a notice) |
 | Two-factor | `.supports_2fa(store, email_client)` | `POST /verify-2fa` |
 | Elevation ("sudo") | `.supports_elevation(ban_store, config, \|e\| ...)` | `POST /elevate`, `POST /elevate/verify-2fa`, elevated routes |
-| Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes |
+| Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes. Initiation answers at once and sends the mail afterwards, so its timing does not reveal whether the address has an account |
 | Email verification | `.supports_email_verification(...)` | `POST /verify-email`, `POST /verify-email/resend` (both logged in); signup sends the link; credential changes need a verified address |
 | OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes |
 | Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey login routes (public) + enrolment routes (logged-in user only; add `e.supports_passkey_enrollment()` in the elevation closure to require a fresh re-authentication). A passkey login skips 2FA unless you add `.passkey_login_requires_2fa()`: then a 2FA account gets `206 { loginAttemptId, email }` and finishes at `/verify-2fa` |
@@ -162,6 +162,18 @@ change it with `.max_lifetime(seconds)`. A JWT has no sliding expiry: its
 
 A Redis session stores its creation time. Sessions written by versions
 before this one have none, so they count as logged out.
+
+### Mail sent after the response
+
+Signup and password-reset initiation answer the same whether or not the
+address has an account. They also take the same time, because everything that
+depends on the account happens after the response: looking it up, storing the
+token, and sending the mail. Those jobs run on the Tokio runtime (`tokio::spawn`)
+and are bounded at 64 in flight per capability (`MAX_DEFERRED_JOBS`). When the
+limit is reached, new jobs are dropped and logged; they are not run inline,
+since that would bring the timing difference back under load. A job still
+running when the process stops is lost, and the user asks again. Failures are
+logged, never returned.
 
 ## Swapping implementations
 

@@ -344,8 +344,14 @@ before it is built:
   answers the same `201` as a new one and leaves the account untouched;
   with email verification the owner is mailed an "already registered"
   notice. The `UserStore::add_user` doc asks stores to hash before they
-  detect the clash, so timing matches too (Postgres does). Still open: reset
-  initiation is slower for real accounts (it sends mail).
+  detect the clash, so timing matches too (Postgres does).
+- ~~Reset initiation is slower for real accounts~~ ✅ DONE 2026-11-23: the
+  account lookup, token and mail run after the response
+  (`authentication::deferred`), as do signup's mails. The runner is bounded
+  (`MAX_DEFERRED_JOBS` = 64 per slot); a full queue drops and logs rather
+  than run inline. A job in flight when the process stops is lost (the user
+  asks again). A durable-queue hook is 9.2's `DeferredRunner`. Mail flooding
+  of one address is rate limiting's job (Phase 8).
 - ~~Passkey login skips 2FA~~ ✅ DONE 2026-11-22: the implementor's choice.
   Default: a passkey stands in for both factors. `.passkey_login_requires_2fa()`
   holds a 2FA account to its code (`206 { loginAttemptId, email }`, then
@@ -451,6 +457,9 @@ OAuth slot instead.
     logs and "new sign-in" emails. Default it to tracing; it is a
     constructor parameter.
   - Custom claims (roles, tenant) via the validator's `Claims` type.
+  - `DeferredRunner`: hand the after-the-response jobs (reset and signup
+    mails) to the app's durable job queue instead of the in-process bounded
+    `tokio::spawn`, for apps that must not lose a mail on restart.
 - **9.3 Split `credential_scheme.rs`** (1,888 lines) into per-capability
   modules, keeping each slot's types and impls together.
 - **9.4 Error sources.** Store errors carry `String`. Keep the underlying

@@ -289,7 +289,10 @@ pub trait SupportsPasswordReset: AuthenticationScheme {
 
     /// Initiate a password reset flow.
     ///
-    /// Typically sends a reset link/code to the user's email.
+    /// Typically sends a reset link/code to the user's email. The answer must
+    /// not say whether `email` has an account, by its content or by how long
+    /// it takes: do the account-dependent work (lookup, token, mail) after
+    /// returning, as `CredentialScheme` does.
     async fn initiate_password_reset(&self, email: Email) -> Result<(), Self::PasswordResetError>;
 
     /// Complete a password reset with a new password.

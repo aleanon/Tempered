@@ -34,8 +34,17 @@ const PASSWORD: &str = "correct-horse-battery";
 struct Outbox(Arc<Mutex<Vec<String>>>);
 
 impl Outbox {
-    fn sent(&self) -> Vec<String> {
-        self.0.lock().unwrap().clone()
+    /// Every mail sent, once there are at least `n`. Signup mails go out
+    /// after the response, so a test waits for them.
+    async fn sent(&self, n: usize) -> Vec<String> {
+        for _ in 0..1000 {
+            let sent = self.0.lock().unwrap().clone();
+            if sent.len() >= n {
+                return sent;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        panic!("fewer than {n} mails were sent");
     }
 }
 
@@ -122,7 +131,11 @@ async fn an_unverified_user_is_logged_in_but_kept_out_of_the_verified_tier() {
     let outbox = Outbox::default();
     let app = app(&outbox);
     let cookie = signed_in(&app).await;
-    assert_eq!(outbox.sent().len(), 1, "signup sends the verification link");
+    assert_eq!(
+        outbox.sent(1).await.len(),
+        1,
+        "signup sends the verification link"
+    );
 
     // Login tier: open.
     let profile = request("GET", "/profile", Some(&cookie), json!({}));
@@ -155,7 +168,7 @@ async fn verifying_opens_the_verified_tier_without_a_new_login() {
     // A lost email: ask for another link from the login tier.
     let resend = request("POST", "/verify-email/resend", Some(&cookie), json!({}));
     assert_eq!(status(&app, resend).await, StatusCode::OK);
-    let sent = outbox.sent();
+    let sent = outbox.sent(2).await;
     assert_eq!(sent.len(), 2);
 
     // The token alone is not enough: verifying needs the account's login.
@@ -184,7 +197,7 @@ async fn verifying_opens_the_verified_tier_without_a_new_login() {
     let fresh = signed_in_again(&app).await;
     let resend = request("POST", "/verify-email/resend", Some(&fresh), json!({}));
     assert_eq!(status(&app, resend).await, StatusCode::OK);
-    assert_eq!(outbox.sent().len(), 2);
+    assert_eq!(outbox.sent(2).await.len(), 2);
 }
 
 #[tokio::test]
@@ -206,7 +219,7 @@ async fn the_inbox_owner_cannot_verify_an_account_someone_else_created() {
     let outbox = Outbox::default();
     let app = app(&outbox);
     let attackers = signed_in(&app).await;
-    let link = outbox.sent()[0].clone();
+    let link = outbox.sent(1).await[0].clone();
 
     let victims = signed_in_as(&app, "victim-own@example.com").await;
     let verify = request(

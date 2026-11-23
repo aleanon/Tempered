@@ -91,6 +91,20 @@ impl<S: Endpoints> App<S> {
 #[derive(Clone, Default)]
 struct Outbox(Arc<Mutex<Vec<String>>>);
 
+impl Outbox {
+    /// Mail `n` (from 0), waiting for it: signup mails go out after the
+    /// response.
+    async fn mail(&self, n: usize) -> String {
+        for _ in 0..1000 {
+            if let Some(mail) = self.0.lock().unwrap().get(n).cloned() {
+                return mail;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        panic!("mail {n} was never sent");
+    }
+}
+
 #[async_trait::async_trait]
 impl EmailClient for Outbox {
     async fn send_email(&self, _: &Email, _: &str, content: &str) -> Result<(), String> {
@@ -181,7 +195,7 @@ async fn the_route_table_runs_without_a_web_framework() {
         .call(post("/change-password", &[&session], Some(change.clone())))
         .await;
     assert_eq!(early.status(), StatusCode::FORBIDDEN);
-    let token = outbox.0.lock().unwrap()[0].clone();
+    let token = outbox.mail(0).await;
     let verified = app
         .call(post(
             "/verify-email",
