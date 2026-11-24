@@ -40,7 +40,7 @@ jobs:
       # uses the Docker daemon preinstalled on the runner.
       - run: cargo test --workspace
       # The webauthn-rs verifier is off by default (it links OpenSSL).
-      - run: cargo test -p tempered_adapters --features passkeys-webauthn --lib passkey::
+      - run: "cargo test -p tempered_adapters --features passkeys-webauthn --lib passkey::"
 
   lean:
     name: lean build (no default features)
