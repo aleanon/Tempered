@@ -19,6 +19,8 @@ pub mod redis_oauth_state_store;
 #[cfg(feature = "redis")]
 pub mod redis_password_reset_token_store;
 #[cfg(feature = "redis")]
+pub mod redis_rate_limit_store;
+#[cfg(feature = "redis")]
 pub mod redis_session_store;
 #[cfg(feature = "redis")]
 mod redis_support;
@@ -35,6 +37,7 @@ pub mod hashmap_oauth_identity_store;
 pub mod hashmap_oauth_state_store;
 pub mod hashmap_passkey_credential_store;
 pub mod hashmap_password_reset_token_store;
+pub mod hashmap_rate_limit_store;
 pub mod hashmap_session_store;
 pub mod hashmap_token_epoch_store;
 pub mod hashmap_two_fa_code_store;
@@ -68,6 +71,8 @@ pub use redis_oauth_state_store::RedisOAuthStateStore;
 #[cfg(feature = "redis")]
 pub use redis_password_reset_token_store::RedisPasswordResetTokenStore;
 #[cfg(feature = "redis")]
+pub use redis_rate_limit_store::RedisRateLimitStore;
+#[cfg(feature = "redis")]
 pub use redis_session_store::RedisSessionStore;
 #[cfg(feature = "redis")]
 pub use redis_token_epoch_store::RedisTokenEpochStore;
@@ -81,6 +86,7 @@ pub use hashmap_oauth_identity_store::HashMapOAuthIdentityStore;
 pub use hashmap_oauth_state_store::HashMapOAuthStateStore;
 pub use hashmap_passkey_credential_store::HashMapPasskeyCredentialStore;
 pub use hashmap_password_reset_token_store::HashMapPasswordResetTokenStore;
+pub use hashmap_rate_limit_store::HashMapRateLimitStore;
 pub use hashmap_session_store::HashMapSessionStore;
 pub use hashmap_token_epoch_store::HashMapTokenEpochStore;
 pub use hashmap_two_fa_code_store::HashMapTwoFaCodeStore;

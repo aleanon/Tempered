@@ -63,10 +63,10 @@ pub use core::{
     ApiKeyStore, ApiKeyStoreError, AuthorizationRequest, BannedTokenStore, BannedTokenStoreError,
     ChallengeStore, ChallengeStoreError, ClassifyError, EmailClient, EmailVerificationStoreError,
     EmailVerificationTokenStore, ErrorCategory, HttpOAuth2Scheme, OAuthHttpClient, OAuthHttpError,
-    OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, PasskeyStoreError,
-    RequiresEmailVerification, SessionRecord, SessionStore, SessionStoreError,
+    OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, PasskeyStoreError, RateLimitStore,
+    RateLimitStoreError, RequiresEmailVerification, SessionRecord, SessionStore, SessionStoreError,
     SupportsApiKeyIssuance, SupportsOAuth2, SupportsPasskeys, TwoFaCodeStore, TwoFaCodeStoreError,
-    UserStore, UserStoreError, WebAuthnVerifier,
+    UserStore, UserStoreError, WebAuthnVerifier, WindowCount,
 };
 
 // ============================================================================
@@ -103,6 +103,7 @@ pub use tempered_adapters::{
     authentication::jwt_scheme::{
         Elevation, EmailVerify, JwtScheme, OAuth, Passkeys, PasswordReset, TwoFa,
     },
+    authentication::rate_limit::{Limit, RateLimitGroup, RateLimiter, RateLimits},
     authentication::session_scheme::{
         DEFAULT_MAX_SESSION_LIFETIME_SECONDS, SessionClaims, SessionConfig, SessionError,
         SessionScheme, SessionTicket, SessionToken, SessionTokens,
@@ -117,9 +118,9 @@ pub use tempered_adapters::{
     persistence::{
         Argon2Hasher, Argon2Params, HashMapApiKeyStore, HashMapChallengeStore,
         HashMapEmailVerificationTokenStore, HashMapOAuthIdentityStore, HashMapOAuthStateStore,
-        HashMapPasskeyCredentialStore, HashMapPasswordResetTokenStore, HashMapSessionStore,
-        HashMapTokenEpochStore, HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
-        PasswordVerdict,
+        HashMapPasskeyCredentialStore, HashMapPasswordResetTokenStore, HashMapRateLimitStore,
+        HashMapSessionStore, HashMapTokenEpochStore, HashMapTwoFaCodeStore, HashMapUserStore,
+        HashSetBannedTokenStore, PasswordVerdict,
     },
 };
 
@@ -138,8 +139,8 @@ pub use tempered_adapters::persistence::{
 #[cfg(feature = "redis")]
 pub use tempered_adapters::persistence::{
     RedisBannedTokenStore, RedisChallengeStore, RedisEmailVerificationTokenStore,
-    RedisOAuthStateStore, RedisPasswordResetTokenStore, RedisSessionStore, RedisTokenEpochStore,
-    RedisTwoFaCodeStore,
+    RedisOAuthStateStore, RedisPasswordResetTokenStore, RedisRateLimitStore, RedisSessionStore,
+    RedisTokenEpochStore, RedisTwoFaCodeStore,
 };
 
 // ============================================================================

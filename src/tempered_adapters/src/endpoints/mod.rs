@@ -226,6 +226,14 @@ pub fn status_for(category: ErrorCategory) -> StatusCode {
 // Cross-site requests
 // ============================================================================
 
+/// The address of the client that sent a request, as a request extension.
+///
+/// A framework adapter inserts it from the connection (the axum adapter does
+/// when served with connect info, as `AuthService::run` does). Rate
+/// limits read it to count attempts per client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientAddr(pub std::net::IpAddr);
+
 /// Whether a request was sent by a page on another site, as far as the
 /// browser says. Library routes that change state refuse such requests
 /// (403), and adapters can do the same for the app's routes.

@@ -90,6 +90,18 @@ fn route(id: RouteId, method: Method, path: String, tier: Tier) -> RouteSpec {
     }
 }
 
+/// The account a public request names: its JSON body's `email`, if it parses
+/// as an address (normalised like every other lookup). Anything else names
+/// none, and only the per-client limit applies.
+fn account_named_in(req: &EndpointRequest) -> Option<Email> {
+    #[derive(serde::Deserialize)]
+    struct Named {
+        email: String,
+    }
+    let named: Named = serde_json::from_slice(&req.body).ok()?;
+    Email::try_from(secrecy::Secret::new(named.email)).ok()
+}
+
 fn not_logged_in() -> EndpointResponse {
     error_response(StatusCode::UNAUTHORIZED, "Not logged in")
 }
@@ -250,6 +262,17 @@ where
             Err(response) => return response,
         };
         let who = who.as_ref();
+        // Count the attempt before doing anything for it. The account is the
+        // admitted user, or for public routes the address the body names.
+        if let Some(limiter) = self.rate_limiter() {
+            let named = who.is_none().then(|| account_named_in(&req)).flatten();
+            if let Err(response) = limiter
+                .check(spec.id, &req.parts, who.or(named.as_ref()))
+                .await
+            {
+                return response;
+            }
+        }
         if let Some(response) = self.handle_core(spec.id, &req, who).await {
             return response;
         }

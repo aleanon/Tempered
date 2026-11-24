@@ -64,6 +64,8 @@ pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()
     oauth: O,
     passkeys: K,
     routes: RouteFlags,
+    /// Rate limits on the routes, when turned on (see [`Self::rate_limited`]).
+    rate_limit: Option<crate::authentication::rate_limit::RateLimiter>,
 }
 
 /// Authorization level a route requires.
@@ -591,6 +593,7 @@ where
             oauth: (),
             passkeys: (),
             routes: RouteFlags::default(),
+            rate_limit: None,
         }
     }
 }
@@ -612,6 +615,7 @@ impl<U, T, L, R, M, O, K> CredentialScheme<U, T, (), L, R, M, O, K> {
             oauth: self.oauth,
             passkeys: self.passkeys,
             routes: self.routes,
+            rate_limit: self.rate_limit,
         }
     }
 }
@@ -654,6 +658,7 @@ impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
             oauth: self.oauth,
             passkeys: self.passkeys,
             routes: self.routes,
+            rate_limit: self.rate_limit,
         }
     }
 }
@@ -679,6 +684,7 @@ impl<U, T, F, L, M, O, K> CredentialScheme<U, T, F, L, (), M, O, K> {
             oauth: self.oauth,
             passkeys: self.passkeys,
             routes: self.routes,
+            rate_limit: self.rate_limit,
         }
     }
 }
@@ -704,6 +710,7 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
             oauth: self.oauth,
             passkeys: self.passkeys,
             routes: self.routes,
+            rate_limit: self.rate_limit,
         }
     }
 }
@@ -733,6 +740,7 @@ impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
             },
             passkeys: self.passkeys,
             routes: self.routes,
+            rate_limit: self.rate_limit,
         }
     }
 }
@@ -759,6 +767,7 @@ impl<U, T, F, L, R, M, O> CredentialScheme<U, T, F, L, R, M, O, ()> {
                 requires_2fa: false,
             },
             routes: self.routes,
+            rate_limit: self.rate_limit,
         }
     }
 }
@@ -822,6 +831,21 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
     /// Finalizer for readability; the scheme is already usable. Returns `self`.
     pub fn build(self) -> Self {
         self
+    }
+
+    /// Limit how often the routes an attacker would hammer (logins, 2FA,
+    /// `/elevate`, password reset, verification mail) may be tried, per
+    /// account and per client address. Over a limit a route answers `429`
+    /// with `Retry-After`. See [`RateLimiter`](crate::authentication::rate_limit::RateLimiter)
+    /// for the defaults and how the client address is found.
+    pub fn rate_limited(mut self, limiter: crate::authentication::rate_limit::RateLimiter) -> Self {
+        self.rate_limit = Some(limiter);
+        self
+    }
+
+    /// The rate limiter, if [`rate_limited`](Self::rate_limited) set one.
+    pub fn rate_limiter(&self) -> Option<&crate::authentication::rate_limit::RateLimiter> {
+        self.rate_limit.as_ref()
     }
 
     pub fn user_store(&self) -> &U {

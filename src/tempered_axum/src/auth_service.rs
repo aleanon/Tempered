@@ -14,16 +14,18 @@
 //! [`Endpoints::handle`]; this module only mounts them. Your routers get the
 //! same checks from [`crate::middleware`].
 
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
     body::Bytes,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     middleware,
     routing::{MethodFilter, MethodRouter, on},
 };
-use tempered_adapters::endpoints::{EndpointRequest, Endpoints, PathOverrides, RouteId, RouteSpec};
+use tempered_adapters::endpoints::{
+    ClientAddr, EndpointRequest, Endpoints, PathOverrides, RouteId, RouteSpec,
+};
 use tempered_core::{
     AuthValidator, AuthenticationScheme, ClassifyError, IdentityClaims, RequiresEmailVerification,
     SupportsElevation,
@@ -149,7 +151,10 @@ where
         self
     }
 
-    /// Runs the service on `listener`.
+    /// Runs the service on `listener`, with each connection's peer address
+    /// available to the routes (for per-client rate limits). Serving the
+    /// router yourself? Use `into_make_service_with_connect_info::<SocketAddr>()`
+    /// to keep that.
     pub async fn run(self, listener: TcpListener) -> Result<(), std::io::Error> {
         let router = self.into_router();
         info!(
@@ -158,7 +163,11 @@ where
                 .local_addr()
                 .expect("Failed to get address from listener")
         );
-        axum::serve(listener, router).await
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
     }
 
     fn into_router(self) -> Router {
@@ -199,6 +208,15 @@ where
     }
 }
 
+/// Copy the connection's peer address (present when served with connect
+/// info) into the framework-neutral [`ClientAddr`] the scheme reads.
+fn with_client_addr(mut parts: http::request::Parts) -> http::request::Parts {
+    if let Some(ConnectInfo(addr)) = parts.extensions.get::<ConnectInfo<SocketAddr>>().copied() {
+        parts.extensions.insert(ClientAddr(addr.ip()));
+    }
+    parts
+}
+
 /// Mount one library route: read the request, hand it to the scheme.
 fn mount<S>(spec: RouteSpec) -> MethodRouter<S>
 where
@@ -214,7 +232,7 @@ where
             move |State(scheme): State<S>, parts: http::request::Parts, body: Bytes| {
                 let spec = spec.clone();
                 async move {
-                    let request = EndpointRequest::new(parts, body, Vec::new());
+                    let request = EndpointRequest::new(with_client_addr(parts), body, Vec::new());
                     into_axum_response(scheme.handle(&spec, request).await)
                 }
             },
@@ -228,7 +246,7 @@ where
                   body: Bytes| {
                 let spec = spec.clone();
                 async move {
-                    let request = EndpointRequest::new(parts, body, params);
+                    let request = EndpointRequest::new(with_client_addr(parts), body, params);
                     into_axum_response(scheme.handle(&spec, request).await)
                 }
             },

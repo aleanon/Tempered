@@ -190,8 +190,30 @@ absolute lifetime to 24 hours (`DEFAULT_MAX_SESSION_LIFETIME_SECONDS`);
 change it with `.max_lifetime(seconds)`. A JWT has no sliding expiry: its
 `token_ttl_in_seconds` is already its absolute lifetime.
 
-A Redis session stores its creation time. Sessions written by versions
-before this one have none, so they count as logged out.
+### Rate limits
+
+`.rate_limited(RateLimiter::new(store))` on the scheme limits how often the
+routes an attacker would hammer may be tried: logins (password, passkey,
+OAuth start), 2FA codes, `/elevate`, password reset, and the routes that
+send a verification mail (signup, resend). Each group has a limit per
+account (the address the request names, or the logged-in user) and per
+client address; over either, the route answers `429` with `Retry-After`
+and does nothing. Every attempt counts, right or wrong, so a `429` says
+nothing about whether an account exists.
+
+The defaults (`RateLimits::default()`) are 10 logins, 2FA codes or
+elevations per account per 15 minutes (100 per client), and 5 reset or
+verification mails per account per hour (30 per client). Change them with
+`RateLimits::none().per_account(group, Some(Limit::new(max, window)))` and
+`.per_client(...)`, passed to `.limits(...)`.
+
+Count in `RedisRateLimitStore` in production (`HashMapRateLimitStore`
+counts per process). The client address comes from the connection when you
+serve with `AuthService::run`. Behind a reverse proxy that is the proxy:
+pass `.client_address(|parts| ...)` reading the header your proxy sets
+(and overwrites, so clients cannot forge it). IPv6 clients count per /64.
+If the counter store is down, attempts are let through and the error is
+logged.
 
 ### Mail sent after the response
 

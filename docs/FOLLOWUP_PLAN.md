@@ -472,10 +472,19 @@ before it is built:
 ## Phase 8 — Missing features
 
 Must-have for a working framework:
-- **8.1 Rate limiting and lockout.** Add a `RateLimitStore` port (Redis +
+- **8.1 Rate limiting and lockout.** ✅ DONE 2026-11-25. Add a `RateLimitStore` port (Redis +
   in-memory) and per-account and per-IP limits on `/login`, `/elevate`,
   `/verify-2fa`, reset, resend (absorbs the backlog item) and the passkey and
   OAuth starts. Answer 429 (`ErrorCategory::TooManyRequests` exists).
+  As built: `RateLimitStore::hit` (fixed window; Redis in one Lua script)
+  and `RateLimiter` held by the scheme as data, not a slot
+  (`.rate_limited(limiter)`), checked in `CredentialScheme::handle` after
+  the tier check. Groups: login (+ passkey login, OAuth start), second
+  factor, elevate, password reset, verification mail (signup + resend,
+  which settles the backlog item). The account is the admitted user or
+  the body's `email`; the client is `endpoints::ClientAddr`, which the
+  axum adapter fills from connect info (`run` serves with it). Fails open
+  on store errors. Not done: progressive delays or permanent lockout.
 - **8.2 Real WebAuthn verifier**: Phase 4.
 - **8.3 TOTP and recovery codes.** Today the only second factor is a code
   sent by email, and `requires_2fa` is a flag with no enrol route. Make the
@@ -567,7 +576,7 @@ parsers.
 
 ## Backlog
 
-- **Configurable rate limit on `/verify-email/resend`** (requested
+- ~~**Configurable rate limit on `/verify-email/resend`**~~ ✅ DONE in 8.1 (requested
   2026-11-20). A logged-in user, including one squatting on someone else's
   address, can make the library mail that address as often as they like.
   Add a per-address limit (count per window, set on the email-verification

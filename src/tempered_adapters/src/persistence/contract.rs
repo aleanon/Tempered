@@ -713,3 +713,31 @@ pub(crate) async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
     assert!(store.find_by_prefix("pa2").await.is_err());
     assert_eq!(store.find_by_prefix("pb1").await.unwrap().owner, bob);
 }
+
+/// Hits count up within a window, keys are separate, and a window ends.
+pub(crate) async fn rate_limit_store(store: impl tempered_core::RateLimitStore) {
+    let first = store.hit("login:a@example.com", 60).await.unwrap();
+    assert_eq!(first.count, 1);
+    assert!((1..=60).contains(&first.resets_in_seconds));
+    assert_eq!(store.hit("login:a@example.com", 60).await.unwrap().count, 2);
+    // Another key starts at one.
+    assert_eq!(store.hit("login:b@example.com", 60).await.unwrap().count, 1);
+
+    // Concurrent hits are all counted, each once.
+    let (a, b, c, d, e) = tokio::join!(
+        store.hit("burst", 60),
+        store.hit("burst", 60),
+        store.hit("burst", 60),
+        store.hit("burst", 60),
+        store.hit("burst", 60),
+    );
+    let mut counts = [a, b, c, d, e].map(|r| r.unwrap().count);
+    counts.sort_unstable();
+    assert_eq!(counts, [1, 2, 3, 4, 5]);
+
+    // A window ends, and the count starts again.
+    store.hit("short", 1).await.unwrap();
+    store.hit("short", 1).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    assert_eq!(store.hit("short", 1).await.unwrap().count, 1);
+}
