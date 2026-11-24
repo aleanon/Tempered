@@ -798,7 +798,7 @@ impl<U, T, F, L, R, M, ST, ID, HC, K> CredentialScheme<U, T, F, L, R, M, OAuth<S
     /// No session is issued on that redirect. The URL gets a single marker,
     /// `oauth_2fa=required`. What the page needs to call the 2FA verification
     /// route — the login attempt id and the email — is delivered in a
-    /// short-lived `oauth_2fa` cookie instead of the URL, so it does not end
+    /// short-lived `__Host-oauth_2fa` cookie instead of the URL, so it does not end
     /// up in server logs, browser history or `Referer` headers. The cookie is
     /// readable by the page's script (it is not `HttpOnly`) and holds a query
     /// string: `new URLSearchParams(value)` yields `loginAttemptId` and
@@ -1902,8 +1902,10 @@ where
 /// provider login in the victim's browser.
 pub const DEFAULT_OAUTH_STATE_COOKIE: &str = "__Host-oauth_state";
 
-/// Name of the cookie that hands a pending OAuth 2FA login to the page.
-pub const OAUTH_TWO_FA_COOKIE: &str = "oauth_2fa";
+/// Name of the cookie that hands a pending OAuth 2FA login to the page. The
+/// `__Host-` prefix keeps a sibling subdomain from planting a hand-off of its
+/// own, as for [`DEFAULT_OAUTH_STATE_COOKIE`].
+pub const OAUTH_TWO_FA_COOKIE: &str = "__Host-oauth_2fa";
 
 /// The hand-off cookie: `loginAttemptId` and `email` as a query string.
 ///

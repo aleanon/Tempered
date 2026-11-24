@@ -37,10 +37,7 @@ impl RedisChallengeStore {
 
 #[derive(Serialize, Deserialize)]
 struct Stored {
-    /// Absent in ceremonies stored by an earlier version; those read as not
-    /// found (a ceremony lasts minutes, so the user just starts again).
-    #[serde(default)]
-    kind: Option<StoredKind>,
+    kind: StoredKind,
     user: Option<String>,
     /// Base64 of the opaque state bytes.
     state: String,
@@ -87,7 +84,7 @@ impl ChallengeStore for RedisChallengeStore {
         ceremony: PendingCeremony,
     ) -> Result<(), ChallengeStoreError> {
         let value = serde_json::to_string(&Stored {
-            kind: Some(ceremony.kind.into()),
+            kind: ceremony.kind.into(),
             user: ceremony
                 .user
                 .as_ref()
@@ -136,10 +133,7 @@ impl ChallengeStore for RedisChallengeStore {
                 .map_err(unexpected)?;
         }
         Ok(PendingCeremony {
-            kind: stored
-                .kind
-                .ok_or(ChallengeStoreError::ChallengeNotFound)?
-                .into(),
+            kind: stored.kind.into(),
             user,
             state: CeremonyState(STANDARD.decode(stored.state).map_err(unexpected)?),
         })
@@ -166,21 +160,5 @@ mod tests {
     async fn meets_the_challenge_store_contract() {
         let (_redis, connection) = test_support::redis::connection().await;
         contract::challenge_store(RedisChallengeStore::new(connection, 300)).await;
-    }
-
-    /// A ceremony stored before ceremonies had a kind cannot be told apart,
-    /// so it is not offered to either `finish_*`.
-    #[tokio::test]
-    async fn a_ceremony_stored_without_its_kind_is_not_found() {
-        let (_redis, mut connection) = test_support::redis::connection().await;
-        let store = RedisChallengeStore::new(connection.clone(), 300);
-        let _: () = connection
-            .set(ceremony_key("old"), r#"{"user":null,"state":"AA=="}"#)
-            .await
-            .unwrap();
-        assert!(matches!(
-            store.consume_ceremony(&CeremonyId("old".to_string())).await,
-            Err(ChallengeStoreError::ChallengeNotFound)
-        ));
     }
 }

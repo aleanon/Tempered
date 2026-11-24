@@ -837,9 +837,11 @@ mod oauth_tests {
         // the page needs to call the 2FA verification route.
         let handoff = cookies
             .iter()
-            .find(|c| c.starts_with("oauth_2fa="))
+            .find(|c| c.starts_with("__Host-oauth_2fa="))
             .expect("hand-off cookie");
-        let (value, attributes) = handoff["oauth_2fa=".len()..].split_once("; ").unwrap();
+        let (value, attributes) = handoff["__Host-oauth_2fa=".len()..]
+            .split_once("; ")
+            .unwrap();
         assert!(attributes.contains("Max-Age=600"));
         assert!(attributes.contains("Secure"));
         assert!(attributes.contains("SameSite=Lax"));

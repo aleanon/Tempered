@@ -132,7 +132,7 @@ an email creates the account, later ones log in to it, and an account that
 requires 2FA is still asked for its code: instead of issuing a session, the
 callback redirects to `.oauth_two_fa_redirect(path)` with `?oauth_2fa=required`
 and hands the `loginAttemptId` and `email` to the page in a short-lived
-`oauth_2fa` cookie, for the usual `verify-2fa` call.
+`__Host-oauth_2fa` cookie, for the usual `verify-2fa` call.
 
 The first time a provider login reaches an account that was created by signup,
 the account is trusted as it is only if its address has been proven: by the

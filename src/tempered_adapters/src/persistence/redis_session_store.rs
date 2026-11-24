@@ -54,17 +54,18 @@ fn encode(record: &SessionRecord) -> String {
     )
 }
 
-/// Read a stored `{created_at}:{email}`. A value in another shape (written
-/// before sessions recorded their creation time) counts as no session: its
-/// age is unknown, so it must not live on uncapped.
+/// Read a stored `{created_at}:{email}`. A value in another shape is corrupt
+/// data, reported as an error rather than as a missing session.
 fn decode(value: Option<String>) -> Result<SessionRecord, SessionStoreError> {
+    let corrupt =
+        |what: &str| SessionStoreError::UnexpectedError(format!("corrupt session: {what}"));
     let value = value.ok_or(SessionStoreError::SessionNotFound)?;
     let (created_at, email) = value
         .split_once(':')
-        .ok_or(SessionStoreError::SessionNotFound)?;
+        .ok_or_else(|| corrupt("no creation time"))?;
     let created_at = created_at
         .parse()
-        .map_err(|_| SessionStoreError::SessionNotFound)?;
+        .map_err(|_| corrupt("creation time is not a number"))?;
     let email = Email::try_from(Secret::new(email.to_string()))
         .map_err(|e| SessionStoreError::UnexpectedError(e.to_string()))?;
     Ok(SessionRecord { email, created_at })
@@ -230,18 +231,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_stored_without_its_creation_time_is_not_found() {
+    async fn a_session_stored_without_its_creation_time_is_an_error() {
         let (_redis, mut connection) = test_support::redis::connection().await;
         let store = RedisSessionStore::new(connection.clone(), 60);
         let id = SessionId::new();
-        // The value an older version wrote: the bare address.
         let _: () = connection
             .set(session_key(&id), "a@example.com")
             .await
             .unwrap();
         assert!(matches!(
             store.get_session(&id).await,
-            Err(SessionStoreError::SessionNotFound)
+            Err(SessionStoreError::UnexpectedError(_))
         ));
     }
 }

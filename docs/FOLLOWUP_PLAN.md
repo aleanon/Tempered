@@ -388,8 +388,8 @@ before it is built:
     2026-11-23. The OAuth state cookie defaults to `__Host-oauth_state`
     (`DEFAULT_OAUTH_STATE_COOKIE`), against cookie tossing from a sibling
     subdomain. Auth cookie names are the app's; their field docs and the
-    README recommend the prefix. The `oauth_2fa` hand-off cookie keeps
-    its name, which pages read. The Origin check is 8.5, built here.
+    README recommend the prefix. The 2FA hand-off cookie is
+    `__Host-oauth_2fa` (renamed 2026-11-25; no consumers to break). The Origin check is 8.5, built here.
   - ~~Redis 2FA and reset stores map errors to "not found"~~ ✅ DONE
     2026-11-23. The stores were already right (fixed in 6.6/6.8). The
     leak was one level up: the scheme answered every 2FA store error
@@ -589,7 +589,7 @@ Consequences for Phase 3: `OAuthStateStore` holds a verifier per state;
    pre-hijacking decision below for the first login to an unproven account);
    account requires 2FA → challenge issued, no token, callback redirects to
    `.oauth_two_fa_redirect(path)?oauth_2fa=required` with the attempt id and
-   email in a short-lived `oauth_2fa` cookie.
+   email in a short-lived `__Host-oauth_2fa` cookie.
 3. **OAuth identity links on account deletion** — deferred on 2026-11-17,
    then decided on 2026-11-18: removed with the account (see below).
 
