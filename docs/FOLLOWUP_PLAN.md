@@ -425,9 +425,12 @@ before it is built:
   This includes the JWT epoch check on every authenticated request. Switch
   to `redis::aio::ConnectionManager` (clone it, no lock). This changes the
   constructors, which is fine before 1.0.
-- **7.2 `Arc` the scheme.** axum clones `State<S>` per request, and the
-  scheme holds `JwtAuthConfig`, strings and the secret, twice, by value. Hold
-  the scheme or its config in an `Arc`.
+- **7.2 `Arc` the scheme.** ✅ DONE 2026-11-25. axum clones `State<S>` per
+  request, and the scheme held `JwtAuthConfig`, strings and the secret,
+  twice, by value. The config is now shared inside the scheme
+  (`JwtTokens`/`LocalJwtValidator`, `SessionTokens`/`SessionValidator`, the
+  OAuth provider map and redirect strings), so a clone copies pointers and
+  every framework adapter benefits; `State<S>` stays the scheme itself.
 - **7.3 Fewer round trips.**
   - Run the JWT ban and epoch checks concurrently.
   - Read and slide a Redis session in one `GETEX` instead of three

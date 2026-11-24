@@ -13,6 +13,8 @@
 //! its trait `impl` is gated on the real slot type, so disabled capabilities do
 //! not exist at the type level.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use secrecy::{ExposeSecret, Secret};
 use serde::Deserialize;
@@ -46,6 +48,11 @@ use crate::passkey::{PasskeyFlow, PasskeyFlowError};
 /// - `M` — email verify    ([`EmailVerify`])
 /// - `O` — OAuth2/OIDC      ([`OAuth`])
 /// - `K` — passkeys        ([`Passkeys`])
+///
+/// Web frameworks clone the scheme for every request, so a clone must be
+/// cheap: the scheme's own configuration is shared behind `Arc`s, and the
+/// stores you pass in should be handles too (a connection pool, an
+/// `Arc`-wrapped map), as every store in this crate is.
 #[derive(Clone)]
 pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()> {
     user_store: U,
@@ -131,9 +138,11 @@ pub struct EmailVerify<V, E> {
 #[derive(Clone)]
 pub struct OAuth<ST, ID, HC> {
     flow: OAuthFlow<ST, ID, HC>,
-    state_cookie_name: String,
-    post_login_redirect: String,
-    two_fa_redirect: String,
+    // `Arc<str>`: the scheme is cloned per request, and these only change
+    // while it is being built.
+    state_cookie_name: Arc<str>,
+    post_login_redirect: Arc<str>,
+    two_fa_redirect: Arc<str>,
 }
 
 /// Enabled passkey (WebAuthn) slot: the credential ceremony flow.
@@ -718,9 +727,9 @@ impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
             email_verify: self.email_verify,
             oauth: OAuth {
                 flow,
-                state_cookie_name: DEFAULT_OAUTH_STATE_COOKIE.to_string(),
-                post_login_redirect: "/".to_string(),
-                two_fa_redirect: "/".to_string(),
+                state_cookie_name: DEFAULT_OAUTH_STATE_COOKIE.into(),
+                post_login_redirect: "/".into(),
+                two_fa_redirect: "/".into(),
             },
             passkeys: self.passkeys,
             routes: self.routes,
@@ -781,14 +790,14 @@ impl<U, T, F, L, R, M, ST, ID, HC, K> CredentialScheme<U, T, F, L, R, M, OAuth<S
     /// `__Host-` prefix: it stops a sibling subdomain from planting its own
     /// state cookie, which would log the victim into the attacker's account.
     pub fn oauth_state_cookie(mut self, name: impl Into<String>) -> Self {
-        self.oauth.state_cookie_name = name.into();
+        self.oauth.state_cookie_name = name.into().into();
         self
     }
 
     /// Override where the browser is redirected after a successful OAuth callback
     /// (default `/`).
     pub fn oauth_post_login_redirect(mut self, path: impl Into<String>) -> Self {
-        self.oauth.post_login_redirect = path.into();
+        self.oauth.post_login_redirect = path.into().into();
         self
     }
 
@@ -804,7 +813,7 @@ impl<U, T, F, L, R, M, ST, ID, HC, K> CredentialScheme<U, T, F, L, R, M, OAuth<S
     /// string: `new URLSearchParams(value)` yields `loginAttemptId` and
     /// `email`. The page should delete it once read.
     pub fn oauth_two_fa_redirect(mut self, path: impl Into<String>) -> Self {
-        self.oauth.two_fa_redirect = path.into();
+        self.oauth.two_fa_redirect = path.into().into();
         self
     }
 }

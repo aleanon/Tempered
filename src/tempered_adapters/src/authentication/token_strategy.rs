@@ -161,7 +161,8 @@ pub const MIN_JWT_SECRET_BYTES: usize = 32;
 /// signature checking plus the ban-list and revocation-cutoff lookups.
 #[derive(Clone)]
 pub struct JwtTokens<B> {
-    config: JwtAuthConfig,
+    /// Shared with the validator; cloning the strategy copies a pointer.
+    config: Arc<JwtAuthConfig>,
     banned: B,
     epoch: Arc<dyn TokenEpochStore>,
     validator: LocalJwtValidator<B>,
@@ -198,6 +199,7 @@ where
             "the JWT secret for cookie {:?} is {length} bytes; use at least {MIN_JWT_SECRET_BYTES} random bytes",
             config.jwt_cookie_name,
         );
+        let config = Arc::new(config);
         let validator = LocalJwtValidator::new(banned.clone(), config.clone(), epoch.clone());
         Self {
             config,
@@ -426,6 +428,16 @@ mod tests {
             HashSetBannedTokenStore::new(),
             HashMapTokenEpochStore::new(),
         );
+    }
+
+    /// The scheme is cloned for every request; its config must be shared,
+    /// not copied.
+    #[test]
+    fn a_clone_shares_the_config() {
+        let tokens = strategy();
+        let copy = tokens.clone();
+        assert!(Arc::ptr_eq(&tokens.config, &copy.config));
+        assert!(Arc::ptr_eq(&tokens.config, &copy.validator.config));
     }
 
     #[tokio::test]

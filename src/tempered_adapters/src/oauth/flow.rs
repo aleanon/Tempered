@@ -14,7 +14,7 @@
 //! All outbound provider calls go through the [`OAuthHttpClient`] port, so the
 //! entire flow is unit-testable offline with a mock client.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use rand::RngCore;
 use secrecy::{ExposeSecret, Secret};
@@ -94,7 +94,9 @@ pub struct OAuthFlow<ST, ID, HC> {
     state_store: ST,
     identity_store: ID,
     http_client: HC,
-    providers: HashMap<String, OAuthProviderConfig>,
+    /// Shared, so cloning the flow (with the scheme, per request) copies a
+    /// pointer rather than every provider's settings.
+    providers: Arc<HashMap<String, OAuthProviderConfig>>,
 }
 
 impl<ST, ID, HC> OAuthFlow<ST, ID, HC>
@@ -108,7 +110,7 @@ where
             state_store,
             identity_store,
             http_client,
-            providers: HashMap::new(),
+            providers: Arc::new(HashMap::new()),
         }
     }
 
@@ -133,7 +135,7 @@ where
                 panic!("OAuth provider {:?}: {field} {problem}", config.name);
             }
         }
-        self.providers.insert(config.name.clone(), config);
+        Arc::make_mut(&mut self.providers).insert(config.name.clone(), config);
         self
     }
 

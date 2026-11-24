@@ -39,19 +39,21 @@ impl JwtAuthConfig {
 #[derive(Clone)]
 pub struct LocalJwtValidator<B> {
     pub banned_token_store: B,
-    pub config: JwtAuthConfig,
+    /// Shared, so cloning the validator (once per request in most web
+    /// frameworks) copies a pointer rather than the strings and secret.
+    pub config: Arc<JwtAuthConfig>,
     pub token_epoch_store: Arc<dyn TokenEpochStore>,
 }
 
 impl<B> LocalJwtValidator<B> {
     pub fn new(
         banned_token_store: B,
-        config: JwtAuthConfig,
+        config: impl Into<Arc<JwtAuthConfig>>,
         token_epoch_store: Arc<dyn TokenEpochStore>,
     ) -> Self {
         Self {
             banned_token_store,
-            config,
+            config: config.into(),
             token_epoch_store,
         }
     }

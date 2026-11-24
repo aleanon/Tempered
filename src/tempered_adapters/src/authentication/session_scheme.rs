@@ -14,6 +14,8 @@
 //! session scheme *without* `supports_2fa` now errors (consistent with JWT)
 //! rather than being granted a session immediately.
 
+use std::sync::Arc;
+
 use crate::cookie_util::cookie_value;
 use async_trait::async_trait;
 use tempered_core::{
@@ -106,7 +108,8 @@ fn build_session_cookie(value: &str, name: &str, ttl_seconds: u64) -> String {
 #[derive(Clone)]
 pub struct SessionTokens<S> {
     store: S,
-    config: SessionConfig,
+    /// Shared with the validator; cloning the strategy copies a pointer.
+    config: Arc<SessionConfig>,
     validator: SessionValidator<S>,
 }
 
@@ -122,7 +125,8 @@ where
             config.max_lifetime_in_seconds > 0,
             "SessionConfig::max_lifetime_in_seconds must be greater than 0"
         );
-        let validator = SessionValidator::new(store.clone(), config.clone());
+        let config = Arc::new(config);
+        let validator = SessionValidator::from_shared(store.clone(), config.clone());
         Self {
             store,
             config,
@@ -291,16 +295,18 @@ impl tempered_core::IdentityClaims for SessionClaims {
 #[derive(Clone)]
 pub struct SessionValidator<S> {
     session_store: S,
-    cookie_name: String,
-    max_lifetime_in_seconds: u64,
+    config: Arc<SessionConfig>,
 }
 
 impl<S> SessionValidator<S> {
     pub fn new(session_store: S, config: SessionConfig) -> Self {
+        Self::from_shared(session_store, Arc::new(config))
+    }
+
+    pub(crate) fn from_shared(session_store: S, config: Arc<SessionConfig>) -> Self {
         Self {
             session_store,
-            cookie_name: config.cookie_name,
-            max_lifetime_in_seconds: config.max_lifetime_in_seconds,
+            config,
         }
     }
 }
@@ -315,7 +321,7 @@ where
     type Error = SessionError;
 
     async fn validate(&self, parts: &Self::RequestParts) -> Result<Self::Claims, Self::Error> {
-        let raw = cookie_value(parts, &self.cookie_name)
+        let raw = cookie_value(parts, &self.config.cookie_name)
             .filter(|v| !v.is_empty())
             .ok_or(SessionError::MissingSession)?;
 
@@ -325,7 +331,7 @@ where
 
         // Past its absolute lifetime: gone, however recently it was used.
         // Deleting is tidying up (the age check alone already refuses it).
-        if unix_now().saturating_sub(record.created_at) >= self.max_lifetime_in_seconds {
+        if unix_now().saturating_sub(record.created_at) >= self.config.max_lifetime_in_seconds {
             let _ = self.session_store.delete_session(&id).await;
             return Err(SessionError::InvalidSession);
         }
@@ -398,6 +404,19 @@ mod tests {
 
     fn config() -> SessionConfig {
         SessionConfig::new("session", 3600)
+    }
+
+    /// The scheme is cloned for every request; its config must be shared,
+    /// not copied.
+    #[test]
+    fn a_clone_shares_the_config() {
+        let tokens = super::SessionTokens::new(HashMapSessionStore::new(), config());
+        let copy = tokens.clone();
+        assert!(std::sync::Arc::ptr_eq(&tokens.config, &copy.config));
+        assert!(std::sync::Arc::ptr_eq(
+            &tokens.config,
+            &copy.validator.config
+        ));
     }
 
     #[tokio::test]
