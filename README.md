@@ -262,10 +262,12 @@ Runnable, self-contained (offline) examples live in [`examples/`](examples/):
 
 ```bash
 cargo run -p tempered-example-jwt       # full JWT service + bundled frontend
+cargo run -p tempered-example-session   # the same with server-side sessions (Redis if REDIS_HOST_NAME is set)
 cargo run -p tempered-example-oauth     # OAuth2/OIDC with an embedded mock provider
 cargo run -p tempered-example-passkey   # WebAuthn/passkeys with a simulated authenticator
 cargo run -p tempered-example-passkey --features webauthn   # real passkeys in your browser
 cargo run -p tempered-example-api-key   # API-key scheme
+cargo run --example composed_scheme     # JWT for people + API keys for services on the same routes
 ```
 
 Each opens on <http://localhost:3000>.

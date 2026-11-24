@@ -3980,6 +3980,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempered-example-session"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "redis",
+ "tempered",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tempered_adapters"
 version = "0.1.0"
 dependencies = [

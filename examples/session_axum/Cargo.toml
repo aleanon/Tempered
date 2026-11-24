@@ -1,0 +1,12 @@
+[package]
+name = "tempered-example-session"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tempered = { path = "../.." }
+axum.workspace = true
+redis.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true

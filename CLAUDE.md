@@ -29,7 +29,7 @@ Dependency direction: `tempered_axum → tempered_adapters → tempered_core`.
 - `src/lib.rs` — the `tempered` facade; everything public is re-exported here.
   Examples import from the facade only.
 - `examples/` — `quickstart.rs` (mirrored in the README), `composed_scheme.rs`,
-  and standalone crates `jwt_standalone`, `oauth_axum`, `passkey_axum`, `api_key_axum`.
+  and standalone crates `jwt_standalone`, `session_axum`, `oauth_axum`, `passkey_axum`, `api_key_axum`.
 
 ## Key patterns
 
@@ -57,7 +57,7 @@ cargo build --workspace
 cargo test --workspace                 # API tests start Postgres/Redis via testcontainers: Docker must be running
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo check -p tempered --no-default-features   # the lean build must keep compiling
-cargo run -p tempered-example-jwt      # also: -example-oauth, -example-passkey, -example-api-key
+cargo run -p tempered-example-jwt      # also: -example-session, -example-oauth, -example-passkey, -example-api-key
 cargo run --example quickstart         # needs JWT_SECRET
 ```
 

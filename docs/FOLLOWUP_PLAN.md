@@ -244,7 +244,7 @@ the example's `DemoVerifier`.
 
 ---
 
-## Phase 5 — Examples
+## Phase 5 — Examples ✅ DONE (2026-11-25)
 
 - **5.1 Finish `examples/composed_scheme.rs`.** ✅ DONE 2026-11-25. Replace the six `todo!()`s with
   a working JWT + API-key enum scheme and a multi-try validator, per the
@@ -256,9 +256,12 @@ the example's `DemoVerifier`.
   validator judges a request that presents a key by the key alone. The
   library's `validate_token::<AppScheme>` guards the shared routes; two
   oneshot tests run under `cargo test` (`[[example]] test = true`).
-- **5.2 `examples/session_axum`.** A `SessionScheme` twin of `jwt_standalone`;
+- **5.2 `examples/session_axum`.** ✅ DONE 2026-11-25. A `SessionScheme` twin of `jwt_standalone`;
   uses the Redis `SessionStore` from Phase 3 when `REDIS_HOST_NAME` is set and
   the in-memory one otherwise. Add it to the README example list.
+  As built: one generic `serve<S: SessionStore>` so the store choice is a
+  `match` in `main`; it reuses `jwt_standalone`'s frontend. Smoke-tested
+  with curl in memory and against a Redis container.
 
 ---
 
