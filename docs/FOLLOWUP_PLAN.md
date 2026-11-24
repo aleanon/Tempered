@@ -191,7 +191,7 @@ Seven ports have only a `HashMap*` implementation. Split by data lifetime:
 
 ---
 
-## Phase 4 — Real WebAuthn verifier
+## Phase 4 — Real WebAuthn verifier ✅ DONE (2026-11-25)
 
 No production `WebAuthnVerifier` exists; the only impls are two test mocks and
 the example's `DemoVerifier`.
@@ -233,9 +233,14 @@ the example's `DemoVerifier`.
   initial counter is read from the serialised `Passkey` (webauthn-rs has
   no getter). CI runs the verifier tests in a separate step, and the lean
   job also keeps webauthn-rs/OpenSSL out.
-- **4.3 Real browser example.** `passkey_axum` gets a second mode using the real
+- **4.3 Real browser example.** ✅ DONE 2026-11-25. `passkey_axum` gets a second mode using the real
   verifier and `navigator.credentials` JS in `assets/index.html`; the simulated
   mode stays for offline runs.
+  As built: the example's `webauthn` feature swaps `DemoVerifier`
+  (now `src/demo.rs`) for `WebAuthnRsVerifier` on `localhost`; the page
+  picks real `navigator.credentials` when the options carry `publicKey`.
+  Checked in headless Chromium with a CDP virtual authenticator (enrol,
+  login, logout, login), in both modes.
 
 ---
 

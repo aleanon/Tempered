@@ -20,10 +20,11 @@
 </head>
 <body>
   <h1>tempered · Passkey login</h1>
-  <p class="muted">Self-contained demo. The authenticator is <em>simulated</em> in
-    JavaScript and the server runs a no-crypto demo verifier — a real app plugs a
-    <code>webauthn-rs</code> verifier and <code>navigator.credentials</code> in
-    without changing the server wiring.</p>
+  <p class="muted" id="mode">Self-contained demo. By default the authenticator
+    is <em>simulated</em> in JavaScript and the server runs a no-crypto demo
+    verifier. Run the server with <code>--features webauthn</code> for real
+    passkeys (<code>webauthn-rs</code> on the server,
+    <code>navigator.credentials</code> here); the server wiring is the same.</p>
 
   <div class="card" id="card"><p>Loading…</p></div>
 
@@ -39,8 +40,58 @@
     const post = (url, body) =>
       fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-    // A real ceremony's credential id comes from the authenticator; here we
-    // mint one per email at enrolment and remember it for login.
+    // --- Real passkeys: webauthn-rs options are { publicKey: ... } with binary
+    // fields as base64url strings; navigator.credentials wants ArrayBuffers,
+    // and the server wants the reply's ArrayBuffers as base64url again.
+    const fromB64url = (s) => {
+      const b64 = s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "=");
+      return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
+    };
+    const toB64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const isReal = (options) => options && typeof options.publicKey === "object";
+
+    async function realCreate(options) {
+      const pk = structuredClone(options.publicKey);
+      pk.challenge = fromB64url(pk.challenge);
+      pk.user.id = fromB64url(pk.user.id);
+      (pk.excludeCredentials || []).forEach((c) => (c.id = fromB64url(c.id)));
+      const cred = await navigator.credentials.create({ publicKey: pk });
+      return {
+        id: cred.id,
+        rawId: toB64url(cred.rawId),
+        type: cred.type,
+        extensions: cred.getClientExtensionResults(),
+        response: {
+          attestationObject: toB64url(cred.response.attestationObject),
+          clientDataJSON: toB64url(cred.response.clientDataJSON),
+          transports: cred.response.getTransports ? cred.response.getTransports() : [],
+        },
+      };
+    }
+
+    async function realGet(options) {
+      const pk = structuredClone(options.publicKey);
+      pk.challenge = fromB64url(pk.challenge);
+      (pk.allowCredentials || []).forEach((c) => (c.id = fromB64url(c.id)));
+      const cred = await navigator.credentials.get({ publicKey: pk });
+      const r = cred.response;
+      return {
+        id: cred.id,
+        rawId: toB64url(cred.rawId),
+        type: cred.type,
+        extensions: cred.getClientExtensionResults(),
+        response: {
+          authenticatorData: toB64url(r.authenticatorData),
+          clientDataJSON: toB64url(r.clientDataJSON),
+          signature: toB64url(r.signature),
+          userHandle: r.userHandle ? toB64url(r.userHandle) : null,
+        },
+      };
+    }
+
+    // --- Simulated mode: a real ceremony's credential id comes from the
+    // authenticator; here we mint one per email at enrolment and remember it.
     const credKey = (email) => `passkey_cred:${email}`;
     const fail = (status, msg) => status.replaceChildren(el("span", { className: "err" }, msg));
 
@@ -62,29 +113,42 @@
       // client hands to navigator.credentials.create().
       const { ceremony_id: rid, options: ropts } = await rs.json();
 
-      const credId = crypto.randomUUID();
-      const rf = await post("/passkey/register/finish", { ceremony_id: rid, response: { id: credId, challenge: ropts.challenge } });
+      let response;
+      if (isReal(ropts)) {
+        try { response = await realCreate(ropts); }
+        catch (e) { await post("/logout", {}); return fail(status, `the browser refused: ${e.message}`); }
+      } else {
+        const credId = crypto.randomUUID();
+        response = { id: credId, challenge: ropts.challenge };
+        localStorage.setItem(credKey(email), credId);
+      }
+      const rf = await post("/passkey/register/finish", { ceremony_id: rid, response });
       if (!rf.ok) return fail(status, "register/finish failed");
-      localStorage.setItem(credKey(email), credId);
 
       await post("/logout", {});
       status.replaceChildren(el("span", {}, "Passkey enrolled. Now sign in with it."));
     }
 
     async function login(email, status) {
-      const credId = localStorage.getItem(credKey(email));
-      if (!credId) return fail(status, "no passkey enrolled for this email");
-
-      // --- Authentication: start -> simulate assertion -> finish ------------
+      // --- Authentication: start -> authenticator -> finish -----------------
       const ls = await post("/passkey/login/start", { email });
       if (!ls.ok) return fail(status, "login/start failed");
       const { ceremony_id: lid, options: lopts } = await ls.json();
 
-      // Bump the sign counter each login (the flow rejects regressions).
-      const next = (Number(localStorage.getItem("passkey_count") || "0") + 1);
-      localStorage.setItem("passkey_count", String(next));
+      let response;
+      if (isReal(lopts)) {
+        try { response = await realGet(lopts); }
+        catch (e) { return fail(status, `the browser refused: ${e.message}`); }
+      } else {
+        const credId = localStorage.getItem(credKey(email));
+        if (!credId) return fail(status, "no passkey enrolled for this email");
+        // Bump the sign counter each login (the flow rejects regressions).
+        const next = (Number(localStorage.getItem("passkey_count") || "0") + 1);
+        localStorage.setItem("passkey_count", String(next));
+        response = { id: credId, challenge: lopts.challenge, sign_count: next };
+      }
 
-      const lf = await post("/passkey/login/finish", { ceremony_id: lid, response: { id: credId, challenge: lopts.challenge, sign_count: next } });
+      const lf = await post("/passkey/login/finish", { ceremony_id: lid, response });
       if (!lf.ok) {
         const { error } = await lf.json().catch(() => ({ error: "login failed" }));
         return fail(status, error || "login/finish failed");

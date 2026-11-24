@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[features]
+# Use the real webauthn-rs verifier and the browser's navigator.credentials
+# instead of the simulated authenticator (links OpenSSL).
+webauthn = ["tempered/passkeys-webauthn"]
+
 [dependencies]
 tempered = { path = "../.." }
 axum.workspace = true

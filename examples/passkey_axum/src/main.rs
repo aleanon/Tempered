@@ -2,16 +2,24 @@
 //! `JwtScheme` as a capability, with a browser frontend (see `assets/index.html`).
 //!
 //! ```bash
-//! cargo run -p tempered-example-passkey
+//! cargo run -p tempered-example-passkey                     # simulated authenticator
+//! cargo run -p tempered-example-passkey --features webauthn # real passkeys
 //! # open http://localhost:3000
 //! ```
 //!
-//! Like the OAuth example, this is **fully self-contained and offline**: it ships
-//! a deliberately trivial [`DemoVerifier`] that stands in for a real
-//! `webauthn-rs`-backed [`WebAuthnVerifier`], and the frontend *simulates* the
-//! authenticator instead of calling `navigator.credentials`. That keeps the demo
-//! deterministic while exercising the real server-side capability:
-//! `JwtScheme::new(...).supports_passkeys(flow)`. The passkey ceremony routes
+//! Two modes, one server wiring (`JwtScheme::new(...).supports_passkeys(flow)`):
+//!
+//! - **Simulated** (default, offline): a deliberately trivial `DemoVerifier` (`src/demo.rs`)
+//!   stands in for a real `WebAuthnVerifier`, and the frontend *simulates*
+//!   the authenticator. Deterministic, no hardware needed.
+//! - **Real** (`--features webauthn`): the production `WebAuthnRsVerifier`,
+//!   and the page calls `navigator.credentials.create/get`, so your
+//!   browser's passkey manager, a phone or a security key answers. Open it
+//!   at `http://localhost:3000` exactly: the relying party is `localhost`,
+//!   and browsers allow WebAuthn over plain HTTP only there.
+//!
+//! The page tells the modes apart by the options the server returns: real
+//! ones are `{ publicKey: … }`. The passkey ceremony routes
 //! **auto-wire** from that `supports_passkeys` call — there is no route opt-in to
 //! add (pass a path to `auth_service(...).passkeys(..)` only to override the
 //! prefix).
@@ -34,11 +42,8 @@
 //! `jwt_standalone` example).
 //!
 //! ⚠️  `DemoVerifier` performs no cryptography and trusts the client-supplied
-//! credential id. A production deployment plugs a real `WebAuthnVerifier` (e.g.
-//! `webauthn-rs`) into the exact same `PasskeyFlow` and uses real
-//! `navigator.credentials` in the browser — no server wiring changes.
-
-use std::sync::atomic::{AtomicU64, Ordering};
+//! credential id. The real mode shows the production setup: the same
+//! `PasskeyFlow` with `WebAuthnRsVerifier`.
 
 use axum::{
     Json, Router,
@@ -48,10 +53,7 @@ use axum::{
     routing::get,
 };
 use serde_json::json;
-use tempered::core::{
-    AuthValidator, AuthenticationScheme, CeremonyStart, CeremonyState, CredentialId,
-    PasskeyCredential, VerifiedAssertion, VerifiedRegistration, WebAuthnError, WebAuthnVerifier,
-};
+use tempered::core::{AuthValidator, AuthenticationScheme};
 use tempered::{
     ExposeSecret, HashMapChallengeStore, HashMapPasskeyCredentialStore, HashMapTokenEpochStore,
     HashMapUserStore, HashSetBannedTokenStore, JwtAuthConfig, JwtScheme, PasskeyFlow, Passkeys,
@@ -68,8 +70,35 @@ type Scheme = JwtScheme<
     (),
     (),
     (),
-    Passkeys<HashMapPasskeyCredentialStore, HashMapChallengeStore, DemoVerifier>,
+    Passkeys<HashMapPasskeyCredentialStore, HashMapChallengeStore, Verifier>,
 >;
+
+#[cfg(not(feature = "webauthn"))]
+mod demo;
+
+#[cfg(not(feature = "webauthn"))]
+type Verifier = demo::DemoVerifier;
+#[cfg(feature = "webauthn")]
+type Verifier = tempered::WebAuthnRsVerifier;
+
+#[cfg(not(feature = "webauthn"))]
+fn verifier() -> Verifier {
+    println!("simulated authenticator (run with --features webauthn for real passkeys)");
+    demo::DemoVerifier
+}
+
+/// The production verifier for `http://localhost:3000`. The user-handle key
+/// turns each email into the opaque id stored on the authenticator; load it
+/// from the environment in a real app and never change it.
+#[cfg(feature = "webauthn")]
+fn verifier() -> Verifier {
+    println!("real passkeys: open exactly {BASE}");
+    let key = std::env::var("PASSKEY_USER_HANDLE_KEY")
+        .map(String::into_bytes)
+        .unwrap_or_else(|_| b"demo-only-user-handle-key-0123456789".to_vec());
+    tempered::WebAuthnRsVerifier::new("localhost", BASE, Secret::new(key))
+        .expect("localhost is a valid relying party for http://localhost:3000")
+}
 
 const BASE: &str = "http://localhost:3000";
 const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
@@ -79,7 +108,7 @@ async fn main() {
     let flow = PasskeyFlow::new(
         HashMapPasskeyCredentialStore::new(),
         HashMapChallengeStore::new(),
-        DemoVerifier,
+        verifier(),
     );
 
     let jwt_config = JwtAuthConfig {
@@ -131,108 +160,4 @@ async fn me(State(scheme): State<Scheme>, headers: HeaderMap) -> Response {
         )
             .into_response(),
     }
-}
-
-// ---- Demo verifier (stand-in for a real `webauthn-rs` adapter) -------------
-//
-// It performs NO cryptography: registration trusts the client-supplied
-// credential id, and authentication trusts the asserted sign count. This is only
-// safe because the example simulates the authenticator; never ship this.
-//
-// What it does show is the shape of the port: the verifier issues the challenge
-// itself, hands back opaque state for the library to keep server-side between
-// the two legs, and gets that state back to finish the ceremony.
-
-#[derive(Clone)]
-struct DemoVerifier;
-
-static NEXT_CHALLENGE: AtomicU64 = AtomicU64::new(1);
-
-impl DemoVerifier {
-    /// A real verifier returns full `PublicKeyCredentialCreationOptions` /
-    /// `…RequestOptions` and serialized ceremony state; the simulated frontend
-    /// only needs a challenge to echo back.
-    fn start(&self) -> CeremonyStart {
-        let challenge = format!(
-            "demo-challenge-{}",
-            NEXT_CHALLENGE.fetch_add(1, Ordering::Relaxed)
-        );
-        CeremonyStart {
-            options: json!({ "challenge": challenge, "rp": { "id": "localhost" } }),
-            state: CeremonyState(challenge.into_bytes()),
-        }
-    }
-
-    /// The one check the demo does make: the response answers *this* ceremony.
-    fn check_challenge(
-        state: &CeremonyState,
-        response: &serde_json::Value,
-    ) -> Result<(), WebAuthnError> {
-        let echoed = response.get("challenge").and_then(|v| v.as_str());
-        if echoed.map(str::as_bytes) == Some(state.0.as_slice()) {
-            Ok(())
-        } else {
-            Err(WebAuthnError::Verification("challenge mismatch".into()))
-        }
-    }
-}
-
-impl WebAuthnVerifier for DemoVerifier {
-    fn start_registration(
-        &self,
-        _email: &tempered::Email,
-        _existing: &[PasskeyCredential],
-    ) -> Result<CeremonyStart, WebAuthnError> {
-        Ok(self.start())
-    }
-
-    fn finish_registration(
-        &self,
-        state: &CeremonyState,
-        response: &serde_json::Value,
-    ) -> Result<VerifiedRegistration, WebAuthnError> {
-        Self::check_challenge(state, response)?;
-        let id = credential_id(response)?;
-        Ok(VerifiedRegistration {
-            credential_id: CredentialId(id),
-            // A real verifier stores the public key (or its whole credential).
-            credential_data: vec![0xde, 0xad, 0xbe, 0xef],
-            sign_count: 0,
-        })
-    }
-
-    fn start_authentication(
-        &self,
-        _allowed: &[PasskeyCredential],
-    ) -> Result<CeremonyStart, WebAuthnError> {
-        Ok(self.start())
-    }
-
-    fn finish_authentication(
-        &self,
-        state: &CeremonyState,
-        response: &serde_json::Value,
-        stored: &PasskeyCredential,
-    ) -> Result<VerifiedAssertion, WebAuthnError> {
-        Self::check_challenge(state, response)?;
-        // Trust the asserted counter; the flow still enforces monotonicity.
-        let new_sign_count = response
-            .get("sign_count")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as u32)
-            .unwrap_or(stored.sign_count + 1);
-        Ok(VerifiedAssertion {
-            credential_id: stored.credential_id.clone(),
-            new_sign_count,
-            updated_credential_data: None,
-        })
-    }
-}
-
-fn credential_id(response: &serde_json::Value) -> Result<String, WebAuthnError> {
-    response
-        .get("id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| WebAuthnError::Malformed("missing credential id".into()))
 }

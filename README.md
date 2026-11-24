@@ -264,6 +264,7 @@ Runnable, self-contained (offline) examples live in [`examples/`](examples/):
 cargo run -p tempered-example-jwt       # full JWT service + bundled frontend
 cargo run -p tempered-example-oauth     # OAuth2/OIDC with an embedded mock provider
 cargo run -p tempered-example-passkey   # WebAuthn/passkeys with a simulated authenticator
+cargo run -p tempered-example-passkey --features webauthn   # real passkeys in your browser
 cargo run -p tempered-example-api-key   # API-key scheme
 ```
 
