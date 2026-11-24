@@ -32,7 +32,7 @@ How the result differs from the proposal below:
 | API key | `ApiKeyScheme`, validator (header/Bearer), `ApiKeyStore` port, in-memory store, `api_key_axum` example | Postgres store (Phase 3) |
 | OAuth2 | `OAuthFlow` (authorize URL, browser-bound CSRF state, code exchange, userinfo, identity link), `ReqwestOAuthHttpClient`, **PKCE (S256)**, auto-wired routes, `oauth_axum` example | Redis state store and Postgres identity store (Phase 3) |
 | Passkeys | `PasskeyFlow` (both ceremonies, sign-count anti-clone), ports, in-memory stores, auto-wired routes, simulated `passkey_axum` example | real `webauthn-rs` verifier + browser JS (Phase 4); Redis/Postgres stores (Phase 3) |
-| Composition | decision recorded; `examples/composed_scheme.rs` skeleton | working example (5.1) |
+| Composition | decision recorded | working example, `examples/composed_scheme.rs` (done) |
 
 Key design note: OAuth's provider HTTP and Passkeys' WebAuthn crypto are both
 behind **ports** (`OAuthHttpClient`, `WebAuthnVerifier`), so the orchestration is
@@ -148,8 +148,8 @@ Built on `webauthn-rs`. Two ceremonies, each a challenge→response round-trip.
 
 No library composite. `auth_service<S>` stays single-scheme. A user wanting
 several methods implements the traits on an enum and owns dispatch + the
-multi-validator try-order. See `examples/composed_scheme.rs` for the worked
-skeleton.
+multi-validator try-order. See `examples/composed_scheme.rs` for the worked,
+tested example.
 
 **Two ergonomics rules to hold while building Phases 1–4:**
 1. Every scheme exposes its `Token`, `Validator`, `Claims`, and error types as

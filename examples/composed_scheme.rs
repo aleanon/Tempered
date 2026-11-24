@@ -1,202 +1,334 @@
-//! Composing multiple authentication schemes into one, the library's way.
+//! Composing two authentication schemes, the library's way.
 //!
-//! `auth_service<S>` takes exactly ONE scheme. To offer several methods in a
-//! single app (e.g. a JWT session cookie *or* an API key header on the same
-//! endpoints), you implement the scheme/validator traits on your own enum and
-//! control dispatch yourself. The library intentionally ships no composite.
+//! `auth_service` serves exactly one scheme, and the library ships no
+//! composite: you compose on your own type and decide the rules yourself.
+//! This example lets people log in with a password (a JWT cookie) and lets
+//! services call the same endpoints with an API key:
 //!
-//! This file is a DESIGN SKELETON. The real `SessionScheme` / `ApiKeyScheme`
-//! referenced below do not exist yet (see `docs/AUTH_SCHEMES_PLAN.md`), so the
-//! illustrative implementation lives in a `#[cfg(any())]` module that is never
-//! compiled — it documents the intended shape without breaking `cargo build
-//! --examples`. Promote it to real code as the schemes land.
+//! - `AppScheme` holds both schemes. Logging in and out is the JWT
+//!   scheme's job, so those delegate to it.
+//! - `CallerValidator` is the "try in order" logic: a request that carries
+//!   an API key is judged by the key alone, anything else by the JWT
+//!   cookie. Its claims are a `Caller` enum, which handlers read with
+//!   `Extension<Caller>`.
+//! - The JWT scheme's own routes (`/signup`, `/login`, ...) come from
+//!   `auth_service` as usual. The shared routes go behind the library's
+//!   `validate_token` middleware, instantiated for `AppScheme`.
 //!
-//! It exists to pin down two ergonomics decisions early:
-//!   1. How `Credentials` disambiguates across schemes (serde tag convention).
-//!   2. Where the multi-validator "try in order" logic lives (the user's
-//!      `AuthValidator` impl on the validator enum).
+//! ```bash
+//! cargo run --example composed_scheme
+//! curl -i -X POST localhost:3000/signup -H 'content-type: application/json' \
+//!   -d '{"email":"a@example.com","password":"correct-horse","requires2FA":false}'
+//! curl -i -X POST localhost:3000/login -c jar -H 'content-type: application/json' \
+//!   -d '{"email":"a@example.com","password":"correct-horse"}'
+//! curl -b jar localhost:3000/whoami                      # a person, by cookie
+//! curl -H "x-api-key: <printed key>" localhost:3000/whoami  # a service, by key
+//! ```
+//!
+//! The cookie is `Secure`, so curl only sends it back over HTTPS or to
+//! `localhost`.
 
-fn main() {
-    println!(
-        "Design skeleton only — see the `#[cfg(any())] mod composed` block in \
-         this file and docs/AUTH_SCHEMES_PLAN.md (Phase 5)."
-    );
+use axum::{Extension, Router, routing::get};
+use tempered::core::{AuthValidator, AuthenticationScheme, LoginOutcome};
+use tempered::{
+    ApiKeyClaims, ApiKeyScheme, Claims, ClassifyError, Email, ErrorCategory, ExposeSecret,
+    HashMapApiKeyStore, HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore,
+    Issuance, JwtAuthConfig, JwtScheme, Secret, SupportsApiKeyIssuance, async_trait, auth_service,
+    validate_token,
+};
+
+/// People: password login, JWT cookie.
+type People = JwtScheme<HashMapUserStore, HashSetBannedTokenStore>;
+/// Services: API keys in `x-api-key` (or `Authorization: Bearer`).
+type Services = ApiKeyScheme<HashMapApiKeyStore, Issuance>;
+
+type PeopleValidator = <People as AuthenticationScheme>::Validator;
+type ServicesValidator = <Services as AuthenticationScheme>::Validator;
+
+/// Who called: the claims of whichever method accepted the request.
+#[derive(Clone, Debug)]
+pub enum Caller {
+    Person(Claims),
+    Service(ApiKeyClaims),
 }
 
-// ---------------------------------------------------------------------------
-// Never compiled (always-false cfg). Faithful sketch of the intended impls.
-// ---------------------------------------------------------------------------
-#[cfg(any())]
-mod composed {
-    use async_trait::async_trait;
-    use serde::Deserialize;
-    use tempered_core::{
-        AuthRequest, AuthValidator, AuthenticationScheme, HttpAuthenticationScheme, LoginOutcome,
-        ResponseBuilder, ResponseBuilderError,
-    };
+/// Why neither method accepted the request: the chosen method's own error.
+#[derive(Debug, thiserror::Error)]
+pub enum CallerError {
+    #[error(transparent)]
+    Person(<PeopleValidator as AuthValidator>::Error),
+    #[error(transparent)]
+    Service(<ServicesValidator as AuthValidator>::Error),
+}
 
-    // Stand-ins for the schemes from Phases 1–4. Each must expose its Token,
-    // Validator, Claims and error types as public, nameable types so they can
-    // be wrapped here.
-    use tempered_adapters::authentication::api_key_scheme::{ApiKeyId, ApiKeyScheme};
-    use tempered_adapters::authentication::jwt_scheme::{JwtAuthError, JwtScheme, JwtToken};
-    use tempered_adapters::authentication::session_scheme::{SessionId, SessionScheme};
-
-    // Concrete store generics elided as `..` for readability.
-    type Jwt = JwtScheme;
-    type Session = SessionScheme;
-    type ApiKey = ApiKeyScheme;
-
-    // === The composed scheme ===============================================
-    #[derive(Clone)]
-    pub enum MyScheme {
-        Jwt(Jwt),
-        Session(Session),
-        ApiKey(ApiKey),
+impl ClassifyError for CallerError {
+    fn classify(self) -> (ErrorCategory, String) {
+        match self {
+            CallerError::Person(e) => e.classify(),
+            CallerError::Service(e) => e.classify(),
+        }
     }
+}
 
-    // Unified associated types: one enum variant per inner scheme.
-    #[derive(Clone)]
-    pub enum MyToken {
-        Jwt(JwtToken),
-        Session(SessionId),
-        ApiKey(ApiKeyId),
+/// The "try in order" rule, in one place you own.
+#[derive(Clone)]
+pub struct CallerValidator {
+    people: PeopleValidator,
+    services: ServicesValidator,
+}
+
+/// A request presents an API key if it has either header the key validator
+/// reads.
+fn presents_api_key(parts: &http::request::Parts) -> bool {
+    parts.headers.contains_key("x-api-key")
+        || parts
+            .headers
+            .get(http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("Bearer "))
+}
+
+#[async_trait]
+impl AuthValidator for CallerValidator {
+    type Claims = Caller;
+    type RequestParts = http::request::Parts;
+    type Error = CallerError;
+
+    async fn validate(&self, parts: &Self::RequestParts) -> Result<Caller, CallerError> {
+        // A request that presents a key is judged by the key alone: a bad
+        // key is refused even if a valid cookie rides along, so a service
+        // never runs as whoever's browser it happens to be in.
+        if presents_api_key(parts) {
+            return self
+                .services
+                .validate(parts)
+                .await
+                .map(Caller::Service)
+                .map_err(CallerError::Service);
+        }
+        self.people
+            .validate(parts)
+            .await
+            .map(Caller::Person)
+            .map_err(CallerError::Person)
     }
+}
 
-    // DECISION 1: internally-tagged on a `method` field. Clearer parse errors
-    // than `#[serde(untagged)]`, and no ambiguous matching. The client sends
-    // e.g. `{"method":"password","email":"..","password":".."}`.
-    #[derive(Deserialize)]
-    #[serde(tag = "method", rename_all = "snake_case")]
-    pub enum MyCredentials {
-        Password(<Jwt as AuthenticationScheme>::Credentials),
-        // API keys are presented in a header, not posted to /login, so they
-        // need no login-credentials variant — only a validator (below).
-    }
+/// The app's scheme: both methods, one validator.
+#[derive(Clone)]
+pub struct AppScheme {
+    people: People,
+    services: Services,
+    validator: CallerValidator,
+}
 
-    #[derive(Clone)]
-    pub enum MyClaims {
-        Jwt(<<Jwt as AuthenticationScheme>::Validator as AuthValidator>::Claims),
-        Session(<<Session as AuthenticationScheme>::Validator as AuthValidator>::Claims),
-        ApiKey(<<ApiKey as AuthenticationScheme>::Validator as AuthValidator>::Claims),
-    }
-
-    #[derive(Debug, thiserror::Error)]
-    pub enum MyAuthError {
-        #[error(transparent)]
-        Jwt(#[from] JwtAuthError),
-        // .. Session / ApiKey error variants
-    }
-
-    // === The composed validator (DECISION 2 lives here) ====================
-    #[derive(Clone)]
-    pub struct MyValidator {
-        jwt: <Jwt as AuthenticationScheme>::Validator,
-        session: <Session as AuthenticationScheme>::Validator,
-        api_key: <ApiKey as AuthenticationScheme>::Validator,
-    }
-
-    #[derive(Debug, thiserror::Error)]
-    #[error("no authentication method matched")]
-    pub struct NoMethodMatched;
-
-    #[async_trait]
-    impl AuthValidator for MyValidator {
-        type Claims = MyClaims;
-        // Rule 2 from the plan: every inner validator uses the same RequestParts,
-        // which is what makes trying them in sequence possible.
-        type RequestParts = http::request::Parts;
-        type Error = NoMethodMatched;
-
-        async fn validate(&self, parts: &Self::RequestParts) -> Result<MyClaims, Self::Error> {
-            // YOU control precedence and which error surfaces. Order matters:
-            // cheapest / most-specific first. Here: header-based API key, then
-            // the two cookie-based schemes.
-            if let Ok(c) = self.api_key.validate(parts).await {
-                return Ok(MyClaims::ApiKey(c));
-            }
-            if let Ok(c) = self.jwt.validate(parts).await {
-                return Ok(MyClaims::Jwt(c));
-            }
-            if let Ok(c) = self.session.validate(parts).await {
-                return Ok(MyClaims::Session(c));
-            }
-            Err(NoMethodMatched)
+impl AppScheme {
+    pub fn new(people: People, services: Services) -> Self {
+        let validator = CallerValidator {
+            people: people.validator().clone(),
+            services: services.validator().clone(),
+        };
+        Self {
+            people,
+            services,
+            validator,
         }
     }
 
-    // === Scheme + HTTP delivery dispatch ===================================
-    #[async_trait]
-    impl AuthenticationScheme for MyScheme {
-        type Token = MyToken;
-        type LogoutOutput = String;
-        type Validator = MyValidator;
-        type Credentials = MyCredentials;
-        type AuthError = MyAuthError;
+    /// The key scheme, for issuing keys (an admin route would call this).
+    pub fn services(&self) -> &Services {
+        &self.services
+    }
+}
 
-        async fn login(
-            &self,
-            creds: Self::Credentials,
-        ) -> Result<LoginOutcome<Self::Token>, Self::AuthError> {
-            // Credentials shape selects the scheme.
-            match (self, creds) {
-                (MyScheme::Jwt(s), MyCredentials::Password(c)) => match s.login(c).await? {
-                    LoginOutcome::Success(t) => Ok(LoginOutcome::Success(MyToken::Jwt(t))),
-                    LoginOutcome::Requires2Fa { email, attempt_id } => {
-                        Ok(LoginOutcome::Requires2Fa { email, attempt_id })
-                    }
-                },
-                // .. Session login, etc.
-                _ => todo!("unsupported (scheme, credentials) combination"),
-            }
-        }
+#[async_trait]
+impl AuthenticationScheme for AppScheme {
+    // Only people log in; services present a key on every request.
+    type Token = <People as AuthenticationScheme>::Token;
+    type LogoutOutput = <People as AuthenticationScheme>::LogoutOutput;
+    type Validator = CallerValidator;
+    type Credentials = <People as AuthenticationScheme>::Credentials;
+    type AuthError = <People as AuthenticationScheme>::AuthError;
 
-        async fn logout(&self, token: &Self::Token) -> Result<Self::LogoutOutput, Self::AuthError> {
-            match (self, token) {
-                (MyScheme::Jwt(s), MyToken::Jwt(t)) => Ok(s.logout(t).await?),
-                _ => todo!(),
-            }
-        }
-
-        fn validator(&self) -> &Self::Validator {
-            // MyScheme stores a prebuilt MyValidator (constructed once, like the
-            // build() step does for JwtScheme). Field elided in this sketch.
-            todo!("return &self.validator")
-        }
+    async fn login(
+        &self,
+        credentials: Self::Credentials,
+    ) -> Result<LoginOutcome<Self::Token>, Self::AuthError> {
+        self.people.login(credentials).await
     }
 
-    impl HttpAuthenticationScheme for MyScheme {
-        fn create_login_response<B: ResponseBuilder>(
-            &self,
-            builder: B,
-            outcome: LoginOutcome<Self::Token>,
-        ) -> Result<B::Response, ResponseBuilderError> {
-            // Delegate to the inner scheme that owns the token variant, so each
-            // keeps its own delivery (JWT cookie, session cookie, key in body).
-            match (self, outcome) {
-                (MyScheme::Jwt(s), LoginOutcome::Success(MyToken::Jwt(t))) => {
-                    s.create_login_response(builder, LoginOutcome::Success(t))
-                }
-                _ => todo!(),
-            }
-        }
+    async fn logout(&self, token: &Self::Token) -> Result<Self::LogoutOutput, Self::AuthError> {
+        self.people.logout(token).await
+    }
 
-        fn create_logout_response<B: ResponseBuilder>(
-            &self,
-            builder: B,
-            cookie_name: Option<String>,
-        ) -> Result<B::Response, ResponseBuilderError> {
-            match self {
-                MyScheme::Jwt(s) => s.create_logout_response(builder, cookie_name),
-                _ => todo!(),
-            }
-        }
+    fn validator(&self) -> &CallerValidator {
+        &self.validator
+    }
+}
 
-        fn extract_token_from_request<R: AuthRequest>(&self, req: &R) -> Option<Self::Token> {
-            match self {
-                MyScheme::Jwt(s) => s.extract_token_from_request(req).map(MyToken::Jwt),
-                _ => todo!(),
-            }
-        }
+/// The whole app: the JWT scheme's routes plus `/whoami` for either caller.
+fn app(scheme: AppScheme) -> Router {
+    let shared =
+        Router::new()
+            .route("/whoami", get(whoami))
+            .layer(axum::middleware::from_fn_with_state(
+                scheme.clone(),
+                validate_token::<AppScheme>,
+            ));
+    let people: Router = auth_service(scheme.people, String::new()).into();
+    shared.merge(people)
+}
+
+async fn whoami(Extension(caller): Extension<Caller>) -> String {
+    match caller {
+        Caller::Person(claims) => format!("person {}", claims.sub.expose_secret()),
+        Caller::Service(key) => format!(
+            "service {} (key {})",
+            key.owner.as_ref().expose_secret(),
+            key.id
+        ),
+    }
+}
+
+fn people() -> People {
+    JwtScheme::new(
+        HashMapUserStore::new(),
+        JwtAuthConfig {
+            jwt_cookie_name: "__Host-jwt".to_string(),
+            // Load this from the environment in real code.
+            jwt_secret: Secret::new("an example secret that is at least 32 bytes".to_string()),
+            token_ttl_in_seconds: 3600,
+            audience: None,
+            issuer: None,
+        },
+        HashSetBannedTokenStore::new(),
+        HashMapTokenEpochStore::new(),
+    )
+    .supports_registration()
+}
+
+fn services() -> Services {
+    ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance()
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let scheme = AppScheme::new(people(), services());
+    let owner = Email::try_from(Secret::new("billing@service.example".to_string()))?;
+    let (_, key) = scheme.services().issue_api_key(owner, vec![]).await?;
+    println!("service key: {key}");
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    println!("listening on http://localhost:3000");
+    axum::serve(listener, app(scheme)).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn call(app: &Router, request: Request<Body>) -> (StatusCode, String) {
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1 << 16).await.unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    fn json(method: &str, uri: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn whoami(header: (&str, &str)) -> Request<Body> {
+        Request::builder()
+            .uri("/whoami")
+            .header(header.0, header.1)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_person_and_a_service_reach_the_same_route() {
+        let services = services();
+        let owner = Email::try_from(Secret::new("billing@service.example".to_string())).unwrap();
+        let (_, key) = services.issue_api_key(owner, vec![]).await.unwrap();
+        let app = app(AppScheme::new(people(), services));
+
+        let creds = r#"{"email":"a@example.com","password":"correct-horse","requires2FA":false}"#;
+        assert!(
+            call(&app, json("POST", "/signup", creds))
+                .await
+                .0
+                .is_success()
+        );
+        let response = app
+            .clone()
+            .oneshot(json("POST", "/login", creds))
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let cookie = response.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+
+        // A person, by cookie.
+        let (status, body) = call(&app, whoami(("cookie", &cookie))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "person a@example.com");
+
+        // A service, by key.
+        let (status, body) = call(&app, whoami(("x-api-key", &key))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.starts_with("service billing@service.example"),
+            "{body}"
+        );
+
+        // Neither.
+        let (status, _) = call(&app, Request::get("/whoami").body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_bad_key_is_refused_even_with_a_good_cookie() {
+        let app = app(AppScheme::new(people(), services()));
+        let creds = r#"{"email":"a@example.com","password":"correct-horse","requires2FA":false}"#;
+        call(&app, json("POST", "/signup", creds)).await;
+        let response = app
+            .clone()
+            .oneshot(json("POST", "/login", creds))
+            .await
+            .unwrap();
+        let cookie = response.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+
+        let request = Request::builder()
+            .uri("/whoami")
+            .header("cookie", cookie)
+            .header("x-api-key", "not-a-key")
+            .body(Body::empty())
+            .unwrap();
+        // Refused (a malformed key is a 400, an unknown one a 401), not
+        // let through as the cookie's person.
+        let (status, body) = call(&app, request).await;
+        assert!(status.is_client_error(), "{status}");
+        assert!(!body.contains("person"), "{body}");
     }
 }

@@ -246,10 +246,16 @@ the example's `DemoVerifier`.
 
 ## Phase 5 — Examples
 
-- **5.1 Finish `examples/composed_scheme.rs`.** Replace the six `todo!()`s with
+- **5.1 Finish `examples/composed_scheme.rs`.** ✅ DONE 2026-11-25. Replace the six `todo!()`s with
   a working JWT + API-key enum scheme and a multi-try validator, per the
   "composition is a user concern" decision. Add an oneshot test so it stays
   honest.
+  As built: a struct `AppScheme` holding both schemes (login/logout go to
+  the JWT one) rather than an enum of schemes, since both serve the same
+  requests; the enum is the claims, `Caller::{Person, Service}`. The
+  validator judges a request that presents a key by the key alone. The
+  library's `validate_token::<AppScheme>` guards the shared routes; two
+  oneshot tests run under `cargo test` (`[[example]] test = true`).
 - **5.2 `examples/session_axum`.** A `SessionScheme` twin of `jwt_standalone`;
   uses the Redis `SessionStore` from Phase 3 when `REDIS_HOST_NAME` is set and
   the in-memory one otherwise. Add it to the README example list.

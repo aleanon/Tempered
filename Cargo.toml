@@ -31,12 +31,20 @@ http.workspace = true
 
 [dev-dependencies]
 redis.workspace = true
+thiserror.workspace = true
+tower.workspace = true
 reqwest.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 tracing-error.workspace = true
 tracing-subscriber.workspace = true
 
+
+# Run the example's own tests with `cargo test` (it is the only check that
+# the composition still fits the traits).
+[[example]]
+name = "composed_scheme"
+test = true
 
 [workspace]
 resolver = "2"
