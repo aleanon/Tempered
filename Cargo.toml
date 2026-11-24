@@ -12,6 +12,8 @@ postgres = ["tempered_adapters/postgres"]
 redis = ["tempered_adapters/redis"]
 oauth-client = ["tempered_adapters/oauth-client"]
 postmark-email = ["tempered_adapters/postmark-email"]
+# The production passkey verifier (links OpenSSL; not in `default`).
+passkeys-webauthn = ["tempered_adapters/passkeys-webauthn"]
 
 [dependencies]
 # Internal crates - re-export all public APIs
@@ -97,6 +99,7 @@ jsonwebtoken = { version = "10.2", default-features = false, features = [
 ] }
 argon2 = { version = "0.5.3", features = ["std"] }
 sha2 = "0.10"
+hmac = "0.12"
 base64 = "0.22"
 
 # Configuration

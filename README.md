@@ -216,6 +216,15 @@ Every moving part is a trait, so you choose the backend:
   hash is upgraded at its owner's next login. A store of your own can use
   `Argon2Hasher` too.
 - **Banned-token store:** `HashSetBannedTokenStore` (dev) or `RedisBannedTokenStore`.
+- **Passkey verifier:** `WebAuthnRsVerifier` (feature `passkeys-webauthn`,
+  off by default because `webauthn-rs` links OpenSSL):
+  `WebAuthnRsVerifier::new("example.com", "https://example.com", key)?`,
+  where `key` is at least 32 secret random bytes that turn each email into
+  an opaque WebAuthn user handle. Keep the key stable: a new one changes
+  every handle, and passkeys enrolled under the old one stop working. For
+  more origins or a timeout, build a `webauthn_rs::Webauthn` (re-exported)
+  and use `WebAuthnRsVerifier::from_webauthn`. Passkeys always require user
+  verification (PIN or biometrics).
 - **Token-epoch store** (revoke-all on password change / account deletion):
   `HashMapTokenEpochStore` (dev) or `RedisTokenEpochStore`.
 - **Capability stores:** every store has an in-memory `HashMap*` (dev) and a

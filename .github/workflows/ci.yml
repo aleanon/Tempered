@@ -39,6 +39,8 @@ jobs:
       # The API tests start Postgres and Redis through testcontainers, which
       # uses the Docker daemon preinstalled on the runner.
       - run: cargo test --workspace
+      # The webauthn-rs verifier is off by default (it links OpenSSL).
+      - run: cargo test -p tempered_adapters --features passkeys-webauthn --lib passkey::
 
   lean:
     name: lean build (no default features)
@@ -48,11 +50,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Guards the promise that an in-memory consumer does not compile
-      # sqlx / redis / reqwest.
+      # sqlx / redis / reqwest / webauthn-rs (OpenSSL).
       - run: cargo check -p tempered --no-default-features
       - name: Heavy backends stay out of the lean dependency tree
         run: |
-          if cargo tree -p tempered --no-default-features -e normal | grep -E '[ ─](sqlx|redis|reqwest) v'; then
+          if cargo tree -p tempered --no-default-features -e normal | grep -E '[ ─](sqlx|redis|reqwest|webauthn-rs|openssl) v'; then
             echo "a heavy backend leaked into the lean build" >&2
             exit 1
           fi

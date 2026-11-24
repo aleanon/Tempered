@@ -222,10 +222,17 @@ the example's `DemoVerifier`.
   `danger-allow-state-serialisation` feature; `start_passkey_registration`
   wants a `Uuid` user handle (derive one from the email, e.g. UUIDv5);
   usernameless login needs its `conditional-ui` feature.
-- **4.2 `WebAuthnRsVerifier`** in `tempered_adapters/src/passkey/`, behind a new
+- **4.2 `WebAuthnRsVerifier`** ✅ DONE 2026-11-25. in `tempered_adapters/src/passkey/`, behind a new
   `passkeys-webauthn` cargo feature (default-off: it pulls OpenSSL-class
   dependencies). Tested with the `webauthn-authenticator-rs` software
   authenticator, including the sign-count-regression case.
+  As built: user handles are HMAC-SHA256(key, email) cut to a UUIDv8 (the
+  key is a constructor argument, ≥ 32 bytes), so the handle stored on the
+  authenticator does not reveal the address. The adapter adds the raw-id
+  and user-handle checks; webauthn-rs does the rest, with UV required. The
+  initial counter is read from the serialised `Passkey` (webauthn-rs has
+  no getter). CI runs the verifier tests in a separate step, and the lean
+  job also keeps webauthn-rs/OpenSSL out.
 - **4.3 Real browser example.** `passkey_axum` gets a second mode using the real
   verifier and `navigator.credentials` JS in `assets/index.html`; the simulated
   mode stays for offline runs.

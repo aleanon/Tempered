@@ -16,6 +16,9 @@ redis = ["dep:redis"]
 oauth-client = ["dep:reqwest"]
 # PostmarkEmailClient (MockEmailClient is always available).
 postmark-email = ["dep:reqwest"]
+# WebAuthnRsVerifier, the production passkey verifier. Off by default even
+# here: webauthn-rs links OpenSSL.
+passkeys-webauthn = ["dep:webauthn-rs", "dep:hmac"]
 
 [dependencies]
 # Core dependencies
@@ -49,6 +52,7 @@ bytes.workspace = true
 jsonwebtoken.workspace = true
 argon2.workspace = true
 sha2.workspace = true
+hmac = { workspace = true, optional = true }
 base64.workspace = true
 
 # Configuration
@@ -60,8 +64,14 @@ tracing.workspace = true
 # HTTP client (feature-gated)
 reqwest = { workspace = true, optional = true }
 
+# WebAuthn (feature-gated). State serialisation lets the ceremony state
+# live in a ChallengeStore between start and finish; conditional-ui allows
+# usernameless (discoverable credential) logins.
+webauthn-rs = { version = "0.6.2", optional = true, features = ["danger-allow-state-serialisation", "conditional-ui"] }
+
 [dev-dependencies]
 wiremock.workspace = true
 fake.workspace = true
 testcontainers-modules.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+webauthn-authenticator-rs = { version = "0.6.2", features = ["softpasskey"] }

@@ -128,6 +128,8 @@ pub use tempered_adapters::{
 pub use tempered_adapters::email::PostmarkEmailClient;
 #[cfg(feature = "oauth-client")]
 pub use tempered_adapters::oauth::ReqwestOAuthHttpClient;
+#[cfg(feature = "passkeys-webauthn")]
+pub use tempered_adapters::passkey::{WebAuthnRsVerifier, webauthn_rs};
 #[cfg(feature = "postgres")]
 pub use tempered_adapters::persistence::{
     PostgresApiKeyStore, PostgresOAuthIdentityStore, PostgresPasskeyCredentialStore,
