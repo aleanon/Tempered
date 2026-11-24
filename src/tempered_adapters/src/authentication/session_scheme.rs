@@ -120,7 +120,15 @@ where
     /// # Panics
     ///
     /// If `config.max_lifetime_in_seconds` is 0: no session could be used.
+    ///
+    /// Also if `config.cookie_name` is empty or contains `:` (it becomes the
+    /// sessions' [`scope`](SessionRecord::scope)).
     pub fn new(store: S, config: SessionConfig) -> Self {
+        assert!(
+            !config.cookie_name.is_empty() && !config.cookie_name.contains(':'),
+            "session cookie name {:?} must be non-empty and free of ':'",
+            config.cookie_name
+        );
         assert!(
             config.max_lifetime_in_seconds > 0,
             "SessionConfig::max_lifetime_in_seconds must be greater than 0"
@@ -163,6 +171,7 @@ where
         let record = SessionRecord {
             email: email.clone(),
             created_at: unix_now(),
+            scope: self.config.cookie_name.clone(),
         };
         self.store.create_session(id.clone(), record).await?;
 
@@ -329,6 +338,13 @@ where
 
         // One store call: read the session and slide its idle timeout.
         let record = self.session_store.touch_session(&id).await?;
+
+        // Only a session this strategy issued: a login session id placed in
+        // the elevated cookie must not pass as elevated, even if both kinds
+        // live in one store. Left in place, since it is the other kind's.
+        if record.scope != self.config.cookie_name {
+            return Err(SessionError::InvalidSession);
+        }
 
         // Past its absolute lifetime: gone, however recently it was used.
         // Deleting is tidying up (the age check alone already refuses it).
@@ -510,6 +526,7 @@ mod tests {
             let record = SessionRecord {
                 email: email.clone(),
                 created_at: unix_now() - age,
+                scope: "session".to_string(),
             };
             let store = store.clone();
             async move {
@@ -693,5 +710,45 @@ mod tests {
             let result = scheme.elevated_validator().validate(&parts).await;
             assert!(result.is_err(), "{revoke} left the elevated session valid");
         }
+    }
+
+    /// A login session must not pass as elevated, even when both kinds of
+    /// session live in one store: otherwise a login id copied into the
+    /// elevated cookie skips re-authentication.
+    #[tokio::test]
+    async fn a_login_session_is_not_an_elevated_one_even_in_a_shared_store() {
+        let shared = HashMapSessionStore::new();
+        let user_store = HashMapUserStore::new();
+        let user = User::new(
+            Email::try_from(Secret::new("user@example.com".to_string())).unwrap(),
+            Password::try_from(Secret::new("passwordpassword".to_string())).unwrap(),
+            false,
+        );
+        user_store.add_user(user).await.unwrap();
+        let scheme = SessionScheme::new(user_store, shared.clone(), config()).supports_elevation(
+            shared,
+            SessionConfig::new("elevated_session", 300),
+            |e| e,
+        );
+
+        let credentials = crate::authentication::credential_scheme::PasswordCredentials {
+            email: Secret::new("user@example.com".to_string()),
+            password: Secret::new("passwordpassword".to_string()),
+        };
+        let LoginOutcome::Success(login) = scheme.login(credentials).await.unwrap() else {
+            panic!("no 2FA on this account");
+        };
+
+        // The login session works as a login...
+        let as_login = parts_with_cookie("session", &login.0.to_string());
+        assert!(scheme.validator().validate(&as_login).await.is_ok());
+        // ...and not as an elevated session.
+        let as_elevated = parts_with_cookie("elevated_session", &login.0.to_string());
+        assert!(matches!(
+            scheme.elevated_validator().validate(&as_elevated).await,
+            Err(SessionError::InvalidSession)
+        ));
+        // Refusing it did not end the login.
+        assert!(scheme.validator().validate(&as_login).await.is_ok());
     }
 }

@@ -235,6 +235,12 @@ Every moving part is a trait, so you choose the backend:
   - Postgres: `PostgresOAuthIdentityStore`, `PostgresPasskeyCredentialStore`,
     `PostgresApiKeyStore`.
 
+  A session scheme with elevation keeps two kinds of session; on one Redis,
+  give the elevated store its own namespace
+  (`RedisSessionStore::with_namespace(conn, ttl, "elevated")`). Each session
+  also records which kind it is, so a login session is never accepted as
+  an elevated one, even from a shared store.
+
   The Redis stores take a `redis::aio::ConnectionManager`. Build one with
   `ConnectionManager::new(redis::Client::open(url)?).await?` and clone it into
   each store: it is one multiplexed, auto-reconnecting connection, so no lock

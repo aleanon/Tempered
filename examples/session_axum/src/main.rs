@@ -49,9 +49,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // One multiplexed, reconnecting connection, cloned into each store.
             let connection = redis::aio::ConnectionManager::new(client).await?;
             println!("sessions in Redis at {host}");
+            // Same server, separate namespaces: the two kinds of session
+            // share no keys, so logging out of one leaves the other alone.
             serve(
                 RedisSessionStore::new(connection.clone(), SESSION_TTL_SECONDS),
-                RedisSessionStore::new(connection, ELEVATED_TTL_SECONDS),
+                RedisSessionStore::with_namespace(connection, ELEVATED_TTL_SECONDS, "elevated"),
             )
             .await
         }

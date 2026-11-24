@@ -31,9 +31,9 @@ pub use ports::{
         BannedTokenStoreError, ChallengeStore, ChallengeStoreError, EmailVerificationStoreError,
         EmailVerificationTokenStore, OAuthIdentityStore, OAuthIdentityStoreError, OAuthStateStore,
         OAuthStateStoreError, PasskeyCredentialStore, PasskeyStoreError, PasswordResetTokenStore,
-        PasswordResetTokenStoreError, SessionRecord, SessionStore, SessionStoreError,
-        TokenEpochStore, TokenEpochStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
-        UserStoreError,
+        PasswordResetTokenStoreError, RateLimitStore, RateLimitStoreError, SessionRecord,
+        SessionStore, SessionStoreError, TokenEpochStore, TokenEpochStoreError, TwoFaCodeStore,
+        TwoFaCodeStoreError, UserStore, UserStoreError, WindowCount,
     },
     services::{
         EmailClient, OAuthHttpClient, OAuthHttpError, VerifiedAssertion, VerifiedRegistration,

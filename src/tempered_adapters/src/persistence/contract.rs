@@ -22,6 +22,7 @@ pub(crate) async fn session_store(store: impl SessionStore) {
     let record = |email: &Email, created_at| SessionRecord {
         email: email.clone(),
         created_at,
+        scope: "__Host-session".to_string(),
     };
     store
         .create_session(a1.clone(), record(&alice, 100))

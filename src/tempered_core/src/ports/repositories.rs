@@ -485,13 +485,22 @@ pub enum SessionStoreError {
     UnexpectedError(String),
 }
 
-/// What a [`SessionStore`] keeps for a session: whose it is, and when it was
-/// created (Unix seconds). The creation time is what caps a session's age:
-/// sliding expiry alone would let a session that is used often live forever.
+/// What a [`SessionStore`] keeps for a session: whose it is, when it was
+/// created (Unix seconds), and which kind of session it is.
+///
+/// The creation time is what caps a session's age: sliding expiry alone
+/// would let a session that is used often live forever.
+///
+/// `scope` names the strategy that issued the session (the scheme uses its
+/// cookie name, so a login session and an elevated one differ). A validator
+/// accepts only its own scope, so a login session id placed in the elevated
+/// cookie is refused even when both kinds share one store. It never
+/// contains `:`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
     pub email: Email,
     pub created_at: u64,
+    pub scope: String,
 }
 
 #[async_trait]
@@ -598,4 +607,38 @@ pub trait TwoFaCodeStore: Send + Sync {
     ) -> Result<(TwoFaAttemptId, TwoFaCode), TwoFaCodeStoreError>;
 
     async fn delete(&self, user_id: &Email) -> Result<(), TwoFaCodeStoreError>;
+}
+
+// ============================================================================
+// Rate limiting
+// ============================================================================
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum RateLimitStoreError {
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+/// The state of one counter after a hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowCount {
+    /// Hits in the current window, this one included.
+    pub count: u64,
+    /// Seconds until the window ends and the count starts again.
+    pub resets_in_seconds: u64,
+}
+
+/// Fixed-window hit counters, for rate limits.
+///
+/// Keys are opaque strings the caller builds (route group, then an account
+/// or a client address). A store only counts.
+#[async_trait]
+pub trait RateLimitStore: Send + Sync {
+    /// Count one hit against `key` and return the count so far in its
+    /// window. The first hit on a key (or the first after its window ended)
+    /// opens a window of `window_seconds`; later hits in it do not extend
+    /// it. The increment must be atomic across instances: a read followed by
+    /// a separate write lets parallel requests through uncounted.
+    async fn hit(&self, key: &str, window_seconds: u64)
+    -> Result<WindowCount, RateLimitStoreError>;
 }
