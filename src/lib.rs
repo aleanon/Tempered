@@ -115,10 +115,11 @@ pub use tempered_adapters::{
     oauth::{OAuthFlow, OAuthFlowError, VerifiedIdentity, pkce_challenge_s256},
     passkey::{PasskeyFlow, PasskeyFlowError},
     persistence::{
-        HashMapApiKeyStore, HashMapChallengeStore, HashMapEmailVerificationTokenStore,
-        HashMapOAuthIdentityStore, HashMapOAuthStateStore, HashMapPasskeyCredentialStore,
-        HashMapPasswordResetTokenStore, HashMapSessionStore, HashMapTokenEpochStore,
-        HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
+        Argon2Hasher, Argon2Params, HashMapApiKeyStore, HashMapChallengeStore,
+        HashMapEmailVerificationTokenStore, HashMapOAuthIdentityStore, HashMapOAuthStateStore,
+        HashMapPasskeyCredentialStore, HashMapPasswordResetTokenStore, HashMapSessionStore,
+        HashMapTokenEpochStore, HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
+        PasswordVerdict,
     },
 };
 

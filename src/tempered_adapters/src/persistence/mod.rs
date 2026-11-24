@@ -1,4 +1,5 @@
 // Production persistence adapters (feature-gated)
+pub mod password_hasher;
 #[cfg(feature = "postgres")]
 pub mod postgres_api_key_store;
 #[cfg(feature = "postgres")]
@@ -47,6 +48,7 @@ pub(crate) mod contract;
 pub(crate) mod test_support;
 
 // Re-exports
+pub use password_hasher::{Argon2Hasher, Argon2Params, PasswordVerdict};
 #[cfg(feature = "postgres")]
 pub use postgres_api_key_store::PostgresApiKeyStore;
 #[cfg(feature = "postgres")]

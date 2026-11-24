@@ -1,18 +1,13 @@
-use argon2::{
-    Algorithm, Argon2, Params, PasswordHash, PasswordVerifier, Version,
-    password_hash::{PasswordHasher, SaltString, rand_core},
-};
 use secrecy::{ExposeSecret, Secret};
 use sqlx::{PgPool, Pool, Postgres, postgres::PgPoolOptions};
 use tempered_core::{Email, Password, User, UserStore, UserStoreError, ValidatedUser};
 
-// Argon2id parameters. Kept at/above the OWASP minimum (m=19456 KiB, t=2, p=1)
-// and shared by hashing and verification so the two never drift apart.
-const ARGON2_M_COST: u32 = 19456;
-const ARGON2_T_COST: u32 = 2;
-const ARGON2_P_COST: u32 = 1;
+use super::password_hasher::{Argon2Hasher, PasswordVerdict};
 
-/// PostgreSQL-backed [`UserStore`]. Passwords are hashed with Argon2id.
+/// PostgreSQL-backed [`UserStore`]. Passwords are hashed with Argon2id by
+/// an [`Argon2Hasher`]: the OWASP-minimum costs and at most one hash per
+/// core at once unless [`with_hasher`](Self::with_hasher) says otherwise.
+/// A login whose stored hash was made with other costs saves a new hash.
 ///
 /// ## Migrations
 ///
@@ -28,11 +23,44 @@ const ARGON2_P_COST: u32 = 1;
 #[derive(Clone)]
 pub struct PostgresUserStore {
     pool: sqlx::PgPool,
+    hasher: Argon2Hasher,
 }
 
 impl PostgresUserStore {
     pub fn new(pool: Pool<Postgres>) -> Self {
-        PostgresUserStore { pool }
+        PostgresUserStore {
+            pool,
+            hasher: Argon2Hasher::default(),
+        }
+    }
+
+    /// Hash with `hasher` (its costs and concurrency bound). Existing hashes
+    /// keep working, and each is upgraded at its owner's next login.
+    pub fn with_hasher(mut self, hasher: Argon2Hasher) -> Self {
+        self.hasher = hasher;
+        self
+    }
+
+    /// Save a new hash for a password that just verified against `old`.
+    /// Best effort: the login has already succeeded. The `old` condition
+    /// keeps a password changed meanwhile from being overwritten.
+    async fn upgrade_hash(&self, email: &Email, old: &str, password: &Password) {
+        let result = async {
+            let new = self.hasher.hash(password).await?;
+            sqlx::query(
+                "UPDATE users SET password_hash = $1 WHERE email = $2 AND password_hash = $3",
+            )
+            .bind(new.expose_secret())
+            .bind(email.as_ref().expose_secret())
+            .bind(old)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())
+        }
+        .await;
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "could not upgrade a password hash");
+        }
     }
 }
 
@@ -40,8 +68,9 @@ impl PostgresUserStore {
 impl UserStore for PostgresUserStore {
     #[tracing::instrument(name = "Adding user to PostgreSQL", skip_all)]
     async fn add_user(&self, user: User) -> Result<(), UserStoreError> {
-        let password = user.password().clone();
-        let password_hash = compute_password_hash(password)
+        let password_hash = self
+            .hasher
+            .hash(user.password())
             .await
             .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
 
@@ -100,7 +129,9 @@ impl UserStore for PostgresUserStore {
         email: &Email,
         new_password: Password,
     ) -> Result<(), UserStoreError> {
-        let password_hash = compute_password_hash(new_password)
+        let password_hash = self
+            .hasher
+            .hash(&new_password)
             .await
             .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
 
@@ -151,21 +182,28 @@ impl UserStore for PostgresUserStore {
             // Run a verification against a throwaway hash so the "no such user"
             // path takes the same time as the wrong-password path below. Without
             // this, response latency leaks whether an email is registered.
-            let _ = verify_password_hash(dummy_password_hash().await, password.clone()).await;
+            self.hasher.verify_nothing(password).await;
             return Err(UserStoreError::UserNotFound);
         };
 
         // Only a mismatch is a wrong password. A stored hash that does not
         // parse, or a hashing task that died, is the server's fault.
-        if !verify_password_hash(Secret::from(row.password_hash), password.clone())
+        let stored = Secret::from(row.password_hash);
+        let verified = self
+            .hasher
+            .verify(&stored, password)
             .await
-            .map_err(UserStoreError::UnexpectedError)?
-        {
+            .map_err(UserStoreError::UnexpectedError)?;
+        let PasswordVerdict::Match { needs_rehash } = verified else {
             return Err(UserStoreError::IncorrectPassword);
-        }
+        };
 
         let email = Email::try_from(Secret::from(row.email))
             .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+        if needs_rehash {
+            self.upgrade_hash(&email, stored.expose_secret(), password)
+                .await;
+        }
         Ok(ValidatedUser::new(email, row.requires_2fa))
     }
 
@@ -220,84 +258,6 @@ impl UserStore for PostgresUserStore {
 
         Ok(())
     }
-}
-
-#[tracing::instrument(name = "Verify password hash", skip_all)]
-/// Whether `password_candidate` matches the hash. `Err` only for a hash that
-/// does not parse or a hashing task that failed, never for a mismatch.
-async fn verify_password_hash(
-    expected_password_hash: Secret<String>,
-    password_candidate: Password,
-) -> Result<bool, String> {
-    let current_span: tracing::Span = tracing::Span::current();
-
-    tokio::task::spawn_blocking(move || {
-        current_span.in_scope(|| {
-            let expected_password_hash: PasswordHash<'_> =
-                PasswordHash::new(expected_password_hash.expose_secret())
-                    .map_err(|e| e.to_string())?;
-
-            let argon2 = Argon2::new(
-                Algorithm::Argon2id,
-                Version::V0x13,
-                Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, None)
-                    .map_err(|e| e.to_string())?,
-            );
-            match argon2.verify_password(
-                password_candidate.as_ref().expose_secret().as_bytes(),
-                &expected_password_hash,
-            ) {
-                Ok(()) => Ok(true),
-                Err(argon2::password_hash::Error::Password) => Ok(false),
-                Err(e) => Err(e.to_string()),
-            }
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// A throwaway Argon2id hash (of a fixed dummy password), computed once and
-/// memoized. Verifying an attacker-supplied password against this makes the
-/// "user not found" branch of `authenticate_user` cost the same as a real
-/// verification, closing the timing side-channel for account enumeration.
-async fn dummy_password_hash() -> Secret<String> {
-    static DUMMY: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
-    let hash = DUMMY
-        .get_or_init(|| async {
-            let dummy = Password::try_from(Secret::from("not-a-real-password".to_string()))
-                .expect("static dummy password is valid");
-            compute_password_hash(dummy)
-                .await
-                .map(|h| h.expose_secret().to_string())
-                .expect("hashing the static dummy password should not fail")
-        })
-        .await
-        .clone();
-    Secret::from(hash)
-}
-
-#[tracing::instrument(name = "Computing password hash", skip_all)]
-async fn compute_password_hash(password: Password) -> Result<Secret<String>, String> {
-    let current_span: tracing::Span = tracing::Span::current();
-
-    tokio::task::spawn_blocking(move || {
-        current_span.in_scope(move || {
-            let salt: SaltString = SaltString::generate(rand_core::OsRng);
-            let hasher = Argon2::new(
-                Algorithm::Argon2id,
-                Version::V0x13,
-                Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, None)
-                    .map_err(|e| e.to_string())?,
-            );
-            hasher
-                .hash_password(password.as_ref().expose_secret().as_bytes(), &salt)
-                .map(|h| Secret::from(h.to_string()))
-                .map_err(|e| e.to_string())
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 /// Create a PostgreSQL connection pool
@@ -585,62 +545,42 @@ mod tests {
         assert_eq!(result, Err(UserStoreError::UserNotFound));
     }
 
+    /// Hashes made with other costs keep working and are upgraded at the
+    /// next login.
     #[tokio::test]
-    async fn test_compute_password_hash() {
-        let password = Password::try_from(Secret::from("testpassword123".to_owned())).unwrap();
-        let hash_result = compute_password_hash(password.clone()).await;
+    async fn a_login_upgrades_a_hash_made_with_other_costs() {
+        use super::super::password_hasher::Argon2Params;
+        let (_container, pool) = setup_and_connect_db_container().await;
+        let cheap = Argon2Params {
+            memory_kib: 8,
+            iterations: 1,
+            parallelism: 1,
+        };
+        let old = PostgresUserStore::new(pool.clone()).with_hasher(Argon2Hasher::new(cheap));
+        let user = create_test_user();
+        let (email, password) = (user.email().clone(), user.password().clone());
+        old.add_user(user).await.unwrap();
+        let hash_of = |pool: PgPool, email: Email| async move {
+            sqlx::query_scalar::<_, String>("SELECT password_hash FROM users WHERE email = $1")
+                .bind(email.as_ref().expose_secret().clone())
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        };
+        let before = hash_of(pool.clone(), email.clone()).await;
+        assert!(before.contains("m=8,t=1,p=1"));
 
-        assert!(hash_result.is_ok());
-        let hash = hash_result.unwrap();
-        assert!(!hash.expose_secret().is_empty());
-        assert_ne!(hash.expose_secret(), password.as_ref().expose_secret());
-    }
-
-    #[tokio::test]
-    async fn test_verify_password_hash_success() {
-        let password = Password::try_from(Secret::from("testpassword123".to_owned())).unwrap();
-        let hash = compute_password_hash(password.clone()).await.unwrap();
-
-        assert_eq!(verify_password_hash(hash, password).await, Ok(true));
-    }
-
-    #[tokio::test]
-    async fn test_verify_password_hash_failure() {
-        let password = Password::try_from(Secret::from("testpassword123".to_owned())).unwrap();
-        let wrong_password = Password::try_from(Secret::from("wrongpassword".to_owned())).unwrap();
-        let hash = compute_password_hash(password).await.unwrap();
-
-        // A mismatch is an answer, not an error.
-        assert_eq!(verify_password_hash(hash, wrong_password).await, Ok(false));
-    }
-
-    #[tokio::test]
-    async fn test_verify_password_hash_invalid_hash() {
-        let invalid_hash = Secret::from("invalid_hash_format".to_owned());
-        let password = Password::try_from(Secret::from("testpassword123".to_owned())).unwrap();
-
-        let result = verify_password_hash(invalid_hash, password).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_compute_password_hash_deterministic_salt() {
-        let password = Password::try_from(Secret::from("testpassword123".to_owned())).unwrap();
-        let hash1 = compute_password_hash(password.clone()).await.unwrap();
-        let hash2 = compute_password_hash(password.clone()).await.unwrap();
-
-        // Hashes should be different due to random salt
-        assert_ne!(hash1.expose_secret(), hash2.expose_secret());
-
-        // But both should verify successfully
-        assert_eq!(
-            verify_password_hash(hash1, password.clone()).await,
-            Ok(true)
-        );
-        assert_eq!(
-            verify_password_hash(hash2, password.clone()).await,
-            Ok(true)
-        );
+        let new =
+            PostgresUserStore::new(pool.clone()).with_hasher(Argon2Hasher::new(Argon2Params {
+                iterations: 2,
+                ..cheap
+            }));
+        new.authenticate_user(&email, &password).await.unwrap();
+        let after = hash_of(pool.clone(), email.clone()).await;
+        assert!(after.contains("m=8,t=2,p=1"), "{after}");
+        // The new hash still logs in, and is not rewritten again.
+        new.authenticate_user(&email, &password).await.unwrap();
+        assert_eq!(hash_of(pool, email).await, after);
     }
 
     /// A database outage is not "no such user": the login must fail as a

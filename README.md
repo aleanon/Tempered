@@ -210,6 +210,11 @@ logged, never returned.
 Every moving part is a trait, so you choose the backend:
 
 - **User store:** `HashMapUserStore` (dev) or `PostgresUserStore` (Argon2id).
+  `.with_hasher(Argon2Hasher::new(params).max_concurrent(n))` sets the costs
+  and how many hashes run at once (default: one per core, so a login flood
+  queues instead of exhausting memory). After a cost change, each stored
+  hash is upgraded at its owner's next login. A store of your own can use
+  `Argon2Hasher` too.
 - **Banned-token store:** `HashSetBannedTokenStore` (dev) or `RedisBannedTokenStore`.
 - **Token-epoch store** (revoke-all on password change / account deletion):
   `HashMapTokenEpochStore` (dev) or `RedisTokenEpochStore`.
