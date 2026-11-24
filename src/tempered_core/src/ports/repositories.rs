@@ -505,11 +505,16 @@ pub trait SessionStore: Send + Sync {
         record: SessionRecord,
     ) -> Result<(), SessionStoreError>;
 
-    /// Look up a session.
+    /// Look up a session without changing its expiry.
     async fn get_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError>;
 
-    /// Refresh a session's expiry (sliding-window). In-memory stores may no-op.
-    async fn touch_session(&self, id: &SessionId) -> Result<(), SessionStoreError>;
+    /// Look up a session and restart its idle timeout (sliding expiry), in
+    /// one step: the scheme calls this, not [`get_session`](Self::get_session),
+    /// on every authenticated request, so a store should make it a single
+    /// round trip. A missing session is
+    /// [`SessionNotFound`](SessionStoreError::SessionNotFound). In-memory
+    /// stores without expiry just read.
+    async fn touch_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError>;
 
     /// Delete a single session (logout).
     async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError>;

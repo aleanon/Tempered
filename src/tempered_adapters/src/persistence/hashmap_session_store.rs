@@ -46,9 +46,9 @@ impl SessionStore for HashMapSessionStore {
             .ok_or(SessionStoreError::SessionNotFound)
     }
 
-    async fn touch_session(&self, _id: &SessionId) -> Result<(), SessionStoreError> {
-        // No expiry in-memory.
-        Ok(())
+    async fn touch_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError> {
+        // No expiry in-memory: touching is reading.
+        self.get_session(id).await
     }
 
     async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError> {

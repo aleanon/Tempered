@@ -256,19 +256,22 @@ pub async fn validate_auth_token(
     // issued (logout bans the cookie value), and re-encoding decoded claims
     // would only match if serialization stays byte-for-byte deterministic —
     // any new claim field would silently disarm every existing ban.
-    let is_banned = banned_token_store
-        .contains_token(token)
-        .await
-        .map_err(|e| TokenAuthError::UnexpectedError(e.to_string()))?;
+    //
+    // The ban list and the user's revocation cutoff (a password change or
+    // account deletion bumps it, killing every token issued before it) are
+    // independent lookups, so they run together: one store round trip of
+    // latency per request instead of two.
+    let email = Email::try_from(claims.sub.clone()).map_err(|_| TokenAuthError::InvalidToken)?;
+    let (is_banned, cutoff) = tokio::join!(
+        banned_token_store.contains_token(token),
+        token_epoch_store.min_valid_iat(&email),
+    );
 
-    if is_banned {
+    if is_banned.map_err(|e| TokenAuthError::UnexpectedError(e.to_string()))? {
         return Err(TokenAuthError::TokenIsBanned);
     }
 
-    // Global-revocation cutoff: a password change / account deletion bumps the
-    // user's epoch, killing every token issued before it.
-    let email = Email::try_from(claims.sub.clone()).map_err(|_| TokenAuthError::InvalidToken)?;
-    match token_epoch_store.min_valid_iat(&email).await {
+    match cutoff {
         Ok(None) => {}
         Ok(Some(cutoff)) => {
             // Strict `<`: a token stamped exactly at the cutoff is valid.

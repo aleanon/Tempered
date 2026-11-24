@@ -327,7 +327,8 @@ where
 
         let id = SessionId::parse(&raw).ok_or(SessionError::InvalidSession)?;
 
-        let record = self.session_store.get_session(&id).await?;
+        // One store call: read the session and slide its idle timeout.
+        let record = self.session_store.touch_session(&id).await?;
 
         // Past its absolute lifetime: gone, however recently it was used.
         // Deleting is tidying up (the age check alone already refuses it).
@@ -335,10 +336,6 @@ where
             let _ = self.session_store.delete_session(&id).await;
             return Err(SessionError::InvalidSession);
         }
-
-        // Best-effort sliding expiry; failure to touch shouldn't reject a request
-        // that just validated successfully.
-        let _ = self.session_store.touch_session(&id).await;
 
         Ok(SessionClaims {
             email: record.email,

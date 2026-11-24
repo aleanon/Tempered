@@ -42,8 +42,12 @@ pub(crate) async fn session_store(store: impl SessionStore) {
         Err(SessionStoreError::SessionNotFound)
     ));
     // Touching extends the expiry, not the age.
-    store.touch_session(&a1).await.unwrap();
+    assert_eq!(store.touch_session(&a1).await.unwrap(), record(&alice, 100));
     assert_eq!(store.get_session(&a1).await.unwrap(), record(&alice, 100));
+    assert!(matches!(
+        store.touch_session(&SessionId::new()).await,
+        Err(SessionStoreError::SessionNotFound)
+    ));
 
     // One session.
     store.delete_session(&a2).await.unwrap();

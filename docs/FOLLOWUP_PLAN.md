@@ -431,11 +431,13 @@ before it is built:
   (`JwtTokens`/`LocalJwtValidator`, `SessionTokens`/`SessionValidator`, the
   OAuth provider map and redirect strings), so a clone copies pointers and
   every framework adapter benefits; `State<S>` stays the scheme itself.
-- **7.3 Fewer round trips.**
-  - Run the JWT ban and epoch checks concurrently.
-  - Read and slide a Redis session in one `GETEX` instead of three
-    commands.
-  - Consider refreshing the session TTL only past half-life.
+- **7.3 Fewer round trips.** ✅ DONE 2026-11-25.
+  - The JWT ban and epoch checks run concurrently (`tokio::join!`).
+  - `SessionStore::touch_session` returns the record and the validator
+    calls only it; Redis does it in one Lua script (`GETEX` + `EXPIRE` of
+    the user's set) instead of three commands.
+  - Refreshing only past half-life: not done. With one round trip per
+    request either way it would save nothing but a write.
 - **7.4 Bound Argon2.** Put a semaphore around `spawn_blocking` hashing so a
   login flood cannot fill the blocking pool (about 19 MiB each). Make the
   Argon2 parameters configurable and rehash on login when they change.

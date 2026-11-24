@@ -9,6 +9,23 @@ const SESSION_PREFIX: &str = "session:";
 const USER_SESSIONS_PREFIX: &str = "user_sessions:";
 const REVOCATIONS_PREFIX: &str = "session_revocations:";
 
+/// `GETEX` the session (`KEYS[1]`) with a new TTL (`ARGV[1]`), then `EXPIRE`
+/// the owner's set (`ARGV[2]` + the address after the first `:` of the
+/// value). Returns the value, or nil.
+static TOUCH_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local value = redis.call('GETEX', KEYS[1], 'EX', ARGV[1])
+        if not value then return false end
+        local colon = string.find(value, ':', 1, true)
+        if colon then
+            redis.call('EXPIRE', ARGV[2] .. string.sub(value, colon + 1), ARGV[1])
+        end
+        return value
+        ",
+    )
+});
+
 /// Redis-backed [`SessionStore`].
 ///
 /// Keys:
@@ -104,22 +121,18 @@ impl SessionStore for RedisSessionStore {
         decode(value)
     }
 
-    async fn touch_session(&self, id: &SessionId) -> Result<(), SessionStoreError> {
-        let mut client = self.client.clone();
-        let value: Option<String> = client
-            .get_ex(session_key(id), redis::Expiry::EX(self.ttl_seconds))
+    async fn touch_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError> {
+        // One round trip: the script reads and slides the session, then
+        // extends the user's set, which must live as long as their longest
+        // session.
+        let value: Option<String> = TOUCH_SCRIPT
+            .key(session_key(id))
+            .arg(self.ttl_seconds)
+            .arg(USER_SESSIONS_PREFIX)
+            .invoke_async(&mut self.client.clone())
             .await
             .map_err(unexpected)?;
-        let email = decode(value)?.email;
-        // The user's set must live as long as their longest session.
-        let _: bool = client
-            .expire(
-                user_key(USER_SESSIONS_PREFIX, &email),
-                self.ttl_seconds as i64,
-            )
-            .await
-            .map_err(unexpected)?;
-        Ok(())
+        decode(value)
     }
 
     async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError> {
@@ -224,9 +237,15 @@ mod tests {
         let key = session_key(&id);
         let ttl: i64 = connection.ttl(&key).await.unwrap();
         assert!((1..=60).contains(&ttl));
+        let set = user_key(USER_SESSIONS_PREFIX, &contract::email("a@example.com"));
         let _: bool = connection.expire(&key, 5).await.unwrap();
-        store.touch_session(&id).await.unwrap();
+        let _: bool = connection.expire(&set, 5).await.unwrap();
+        let record = store.touch_session(&id).await.unwrap();
+        assert_eq!(record.created_at, 1);
+        // Both the session and the user's set were slid.
         let ttl: i64 = connection.ttl(&key).await.unwrap();
+        assert!(ttl > 5);
+        let ttl: i64 = connection.ttl(&set).await.unwrap();
         assert!(ttl > 5);
     }
 
