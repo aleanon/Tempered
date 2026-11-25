@@ -234,9 +234,9 @@ pub fn generate_auth_token_with(
         ))?;
 
     // Cast exp to a usize, which is what Claims expects
-    let exp: usize = exp.try_into().map_err(|_| {
-        TokenAuthError::UnexpectedError("Failed to cast i64 to usize".to_string().into())
-    })?;
+    let exp: usize = exp
+        .try_into()
+        .map_err(|_| TokenAuthError::UnexpectedError("Failed to cast i64 to usize".to_string()))?;
 
     let sub = Clone::clone(email.as_ref());
 
@@ -306,7 +306,7 @@ pub async fn validate_auth_token(
         token_epoch_store.min_valid_iat(&email),
     );
 
-    if is_banned.map_err(|e| TokenAuthError::UnexpectedError(e.to_string().into()))? {
+    if is_banned.map_err(|e| TokenAuthError::UnexpectedError(e.to_string()))? {
         return Err(TokenAuthError::TokenIsBanned);
     }
 
@@ -328,7 +328,7 @@ pub async fn validate_auth_token(
             // Fail closed: an epoch-store outage must not silently disable
             // revocation.
             tracing::error!(error = %e, "token epoch store read failed");
-            return Err(TokenAuthError::UnexpectedError(e.to_string().into()));
+            return Err(TokenAuthError::UnexpectedError(e.to_string()));
         }
     }
 
