@@ -711,8 +711,9 @@ As built (2026-11-25), all but the license:
   `cookies_agree` found the route table and the validators reading
   cookies differently (fixed in 4f604f8).
 
-**Open: LICENSE.** The choice is the owner's. Then set `license` in
-`[workspace.package]` and inherit it.
+License: MIT OR Apache-2.0 (the owner's choice, 2026-11-25), in
+`LICENSE-MIT` / `LICENSE-APACHE` and `[workspace.package]`. Phase 10 is
+DONE.
 
 ## Backlog
 

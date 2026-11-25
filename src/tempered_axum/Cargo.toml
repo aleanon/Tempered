@@ -4,6 +4,7 @@ description = "The axum adapter for the tempered authentication library"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true

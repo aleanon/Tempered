@@ -6,6 +6,7 @@ readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -76,6 +77,7 @@ version = "0.1.0"
 edition = "2024"
 # The oldest toolchain that builds every feature (CI's `msrv` job checks it).
 rust-version = "1.91"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/aleanon/Tempered"
 keywords = ["authentication", "jwt", "session", "passkey", "oauth"]
 categories = ["authentication", "web-programming"]
