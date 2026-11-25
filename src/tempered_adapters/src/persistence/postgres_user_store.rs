@@ -258,6 +258,23 @@ impl UserStore for PostgresUserStore {
 
         Ok(())
     }
+
+    #[tracing::instrument(name = "Change a user's email", skip_all)]
+    async fn change_email(&self, old: &Email, new: &Email) -> Result<(), UserStoreError> {
+        let updated = sqlx::query("UPDATE users SET email = $2 WHERE email = $1")
+            .bind(old.as_ref().expose_secret())
+            .bind(new.as_ref().expose_secret())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| match e.as_database_error() {
+                Some(db) if db.is_unique_violation() => UserStoreError::UserAlreadyExists,
+                _ => UserStoreError::UnexpectedError(tempered_core::Failure::new(e)),
+            })?;
+        if updated.rows_affected() == 0 {
+            return Err(UserStoreError::UserNotFound);
+        }
+        Ok(())
+    }
 }
 
 /// Create a PostgreSQL connection pool

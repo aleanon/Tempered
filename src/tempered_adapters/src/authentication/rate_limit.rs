@@ -49,7 +49,9 @@ impl RateLimitGroup {
             Verify2Fa | VerifyElevation2Fa | TotpConfirm | EmailLoginVerify => Self::SecondFactor,
             Elevate => Self::Elevate,
             PasswordResetInitiate | PasswordResetComplete => Self::PasswordReset,
-            Signup | ResendVerification | EmailLoginStart => Self::VerificationMail,
+            Signup | ResendVerification | EmailLoginStart | EmailChangeRequest => {
+                Self::VerificationMail
+            }
             _ => return None,
         })
     }

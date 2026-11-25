@@ -15,6 +15,8 @@ pub mod redis_banned_token_store;
 #[cfg(feature = "redis")]
 pub mod redis_challenge_store;
 #[cfg(feature = "redis")]
+pub mod redis_email_change_store;
+#[cfg(feature = "redis")]
 pub mod redis_email_verification_token_store;
 #[cfg(feature = "redis")]
 pub mod redis_oauth_state_store;
@@ -36,6 +38,7 @@ pub mod redis_two_fa_code_store;
 // Test-only persistence adapters
 pub mod hashmap_api_key_store;
 pub mod hashmap_challenge_store;
+pub mod hashmap_email_change_store;
 pub mod hashmap_email_verification_token_store;
 pub mod hashmap_oauth_identity_store;
 pub mod hashmap_oauth_state_store;
@@ -73,6 +76,8 @@ pub use redis_banned_token_store::RedisBannedTokenStore;
 #[cfg(feature = "redis")]
 pub use redis_challenge_store::RedisChallengeStore;
 #[cfg(feature = "redis")]
+pub use redis_email_change_store::RedisEmailChangeStore;
+#[cfg(feature = "redis")]
 pub use redis_email_verification_token_store::RedisEmailVerificationTokenStore;
 #[cfg(feature = "redis")]
 pub use redis_oauth_state_store::RedisOAuthStateStore;
@@ -91,6 +96,7 @@ pub use redis_two_fa_code_store::RedisTwoFaCodeStore;
 
 pub use hashmap_api_key_store::HashMapApiKeyStore;
 pub use hashmap_challenge_store::HashMapChallengeStore;
+pub use hashmap_email_change_store::HashMapEmailChangeStore;
 pub use hashmap_email_verification_token_store::HashMapEmailVerificationTokenStore;
 pub use hashmap_oauth_identity_store::HashMapOAuthIdentityStore;
 pub use hashmap_oauth_state_store::HashMapOAuthStateStore;

@@ -369,13 +369,14 @@ fn tier_rules_hold_for_every_scheme_built_here() {
                 | OAuthUnlink
                 | ApiKeyIssue
                 | ApiKeyRevoke
+                | EmailChangeRequest
                 | Elevate
                 | VerifyElevation2Fa => {
                     assert!(spec.tier >= Tier::Verified, "{spec:?}")
                 }
                 // Needs the account's login as well as the inbox.
                 VerifyEmail | ResendVerification | Logout | VerifyToken | ListSessions
-                | EndSession | OAuthLinks | PasskeyList | ApiKeyList => {
+                | EndSession | OAuthLinks | PasskeyList | ApiKeyList | EmailChangeConfirm => {
                     assert_eq!(spec.tier, Tier::Login, "{spec:?}")
                 }
                 DeleteAccount => assert!(spec.tier >= Tier::Login, "{spec:?}"),

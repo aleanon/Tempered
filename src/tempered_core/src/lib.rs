@@ -30,9 +30,10 @@ pub use domain::{
 pub use ports::{
     repositories::{
         ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, BannedTokenStore,
-        BannedTokenStoreError, ChallengeStore, ChallengeStoreError, EmailVerificationStoreError,
-        EmailVerificationTokenStore, OAuthIdentityStore, OAuthIdentityStoreError, OAuthStateStore,
-        OAuthStateStoreError, PasskeyCredentialStore, PasskeyStoreError, PasswordResetTokenStore,
+        BannedTokenStoreError, ChallengeStore, ChallengeStoreError, EmailChangeStore,
+        EmailChangeStoreError, EmailVerificationStoreError, EmailVerificationTokenStore,
+        OAuthIdentityStore, OAuthIdentityStoreError, OAuthStateStore, OAuthStateStoreError,
+        PasskeyCredentialStore, PasskeyStoreError, PasswordResetTokenStore,
         PasswordResetTokenStoreError, RateLimitStore, RateLimitStoreError, RecoveryCodeHash,
         RefreshRecord, RefreshTokenHash, RefreshTokenStore, RefreshTokenStoreError, SessionRecord,
         SessionSeen, SessionStore, SessionStoreError, TokenEpochStore, TokenEpochStoreError,
@@ -50,8 +51,8 @@ pub use strategies::{
     authenticator::{
         AuthenticationScheme, AuthorizationRequest, LoginOutcome, PasskeySummary,
         RequiresEmailVerification, SupportsAccountDeletion, SupportsApiKeyIssuance,
-        SupportsElevation, SupportsEmailLogin, SupportsOAuth2, SupportsPasskeys,
-        SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
+        SupportsElevation, SupportsEmailChange, SupportsEmailLogin, SupportsOAuth2,
+        SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
         SupportsTokenRevocation, SupportsTotp, SupportsTwoFactor, TotpEnrollment,
     },
 };

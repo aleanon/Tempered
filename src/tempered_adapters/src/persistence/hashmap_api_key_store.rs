@@ -92,6 +92,15 @@ impl ApiKeyStore for HashMapApiKeyStore {
             .retain(|_, r| &r.owner != owner);
         Ok(())
     }
+
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), ApiKeyStoreError> {
+        for record in self.by_prefix.write().await.values_mut() {
+            if &record.owner == old {
+                record.owner = new.clone();
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

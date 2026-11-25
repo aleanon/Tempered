@@ -225,6 +225,24 @@ budget. An account that requires 2FA needs a second factor other than the
 inbox: with an authenticator app it is asked for the app's code (`206`);
 without one it is refused (`403`) and signs in with its password.
 
+### Changing the email address
+
+`.supports_email_change(store)`, after `.supports_email_verification(..)`,
+lets a user move their account to another address. `POST
+/elevated/email/change { newEmail }` (elevated when the scheme has
+elevation; `/email/change` for a verified address otherwise) answers
+`202` at once, whether or not the address is taken. Afterwards a token
+goes to the new address (`Mail::ConfirmEmailChange`) and a notice to the
+old one (`Mail::EmailChangeRequested`). A taken address gets
+`Mail::AlreadyRegistered` instead. `POST /email/change/confirm { token }`,
+logged in as the same account, moves it. Its passkeys, provider links,
+authenticator app and API keys go with it, the new address counts as
+verified, and every session ends. `store` is `RedisEmailChangeStore` (or
+`HashMapEmailChangeStore` in tests); a token lives an hour, and a newer
+request replaces an older one. Your own tables keyed by the address need
+moving too: listen for the change in your app, or key them on something
+else.
+
 ### Account self-service
 
 With OAuth on, a logged-in user can manage their provider logins:

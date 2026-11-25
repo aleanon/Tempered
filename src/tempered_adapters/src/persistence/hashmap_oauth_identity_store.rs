@@ -84,6 +84,15 @@ impl OAuthIdentityStore for HashMapOAuthIdentityStore {
         identities.retain(|(p, _), e| !(p == provider && e == email));
         Ok(identities.len() != before)
     }
+
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), OAuthIdentityStoreError> {
+        for email in self.identities.write().await.values_mut() {
+            if email == old {
+                *email = new.clone();
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

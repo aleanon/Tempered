@@ -1137,12 +1137,38 @@ struct VerifyEmailRequest {
 #[async_trait]
 impl<S, V, E> SlotEndpoints<S> for EmailVerify<V, E>
 where
-    S: RequiresEmailVerification + Sync,
+    S: RequiresEmailVerification
+        + tempered_core::SupportsEmailChange
+        + HttpAuthenticationScheme
+        + Sync,
     S::EmailVerificationError: ClassifyError,
+    S::EmailChangeError: ClassifyError,
     V: Send + Sync,
     E: Send + Sync,
 {
-    fn routes(&self, _flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+    fn routes(&self, flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+        if self.email_change_enabled() {
+            // Asking to move the account is a credential change: elevated
+            // when the scheme can elevate. Confirming needs the token (the
+            // new inbox) and the account's own login.
+            let (path, tier) = if flags.has_elevation {
+                ("/elevated/email/change", Tier::Elevated)
+            } else {
+                ("/email/change", Tier::Verified)
+            };
+            out.push(route(
+                RouteId::EmailChangeRequest,
+                Method::POST,
+                o.path_or(RouteId::EmailChangeRequest, path),
+                tier,
+            ));
+            out.push(route(
+                RouteId::EmailChangeConfirm,
+                Method::POST,
+                o.path_or(RouteId::EmailChangeConfirm, "/email/change/confirm"),
+                Tier::Login,
+            ));
+        }
         // Verifying needs the token (the inbox) and a login (the account):
         // either alone could prove an account someone else created with the
         // address. Login tier, not verified, like asking for another link.
@@ -1168,6 +1194,45 @@ where
         who: Option<&Email>,
     ) -> Option<EndpointResponse> {
         match id {
+            RouteId::EmailChangeRequest => respond!({
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Request {
+                    new_email: Secret<String>,
+                }
+                let email = who.ok_or_else(not_logged_in)?.clone();
+                let request: Request = parse(req)?;
+                let new = Email::try_from(request.new_email).map_err(bad_request)?;
+                scheme
+                    .request_email_change(email, new)
+                    .await
+                    .map_err(classified)?;
+                // The same answer whether or not the address is taken.
+                Ok(json_response(
+                    StatusCode::ACCEPTED,
+                    json!({ "message": "Check the new address to confirm the change" }),
+                ))
+            }),
+            RouteId::EmailChangeConfirm => respond!({
+                #[derive(Deserialize)]
+                struct Request {
+                    token: String,
+                }
+                let email = who.ok_or_else(not_logged_in)?.clone();
+                let request: Request = parse(req)?;
+                scheme
+                    .confirm_email_change(email, request.token)
+                    .await
+                    .map_err(classified)?;
+                // Every session ended with the change: clear this one's
+                // cookies too, and the user logs in with the new address.
+                scheme
+                    .create_logout_response(HttpResponseBuilder::new(), None)
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "response builder failed (scheme bug)");
+                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
+                    })
+            }),
             RouteId::VerifyEmail => respond!({
                 let email = who.ok_or_else(not_logged_in)?;
                 let request: VerifyEmailRequest = parse(req)?;

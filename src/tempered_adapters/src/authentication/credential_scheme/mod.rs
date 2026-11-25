@@ -113,6 +113,9 @@ pub struct RouteFlags {
     /// when the scheme has passkeys (`supports_passkeys`); this decides which
     /// bucket they go in. Defaults to [`Authz::Login`].
     pub passkey_enrollment: Authz,
+    /// Whether the scheme has elevation (so a slot can put its credential
+    /// changes behind it).
+    pub has_elevation: bool,
     /// What linking an OAuth provider while logged in requires. Defaults
     /// to [`Authz::Login`] (a verified address).
     pub oauth_linking: Authz,
@@ -245,7 +248,19 @@ pub struct EmailVerify<V, E> {
     store: V,
     email: E,
     deferred: Deferred,
+    /// Email change, when turned on (see
+    /// [`supports_email_change`](CredentialScheme::supports_email_change)).
+    change: Option<EmailChange>,
 }
+
+/// Pending email changes and how long a confirmation token lives.
+#[derive(Clone)]
+pub(crate) struct EmailChange {
+    store: Arc<dyn tempered_core::EmailChangeStore>,
+}
+
+/// How long the token mailed to the new address works.
+const EMAIL_CHANGE_TTL_SECONDS: u64 = 60 * 60;
 
 /// Enabled OAuth2/OIDC slot: the authorization-code flow plus the cookie/redirect
 /// settings the HTTP layer needs.
@@ -277,11 +292,16 @@ pub struct Passkeys<CS, ChS, V> {
 #[async_trait]
 trait PasskeyCleanup {
     async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError>;
+    /// Move the user's passkeys to their new address (an email change).
+    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), PasskeyFlowError>;
 }
 
 #[async_trait]
 impl PasskeyCleanup for () {
     async fn forget_user(&self, _email: &Email) -> Result<(), PasskeyFlowError> {
+        Ok(())
+    }
+    async fn move_user(&self, _: &Email, _: &Email) -> Result<(), PasskeyFlowError> {
         Ok(())
     }
 }
@@ -296,6 +316,9 @@ where
     async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError> {
         self.flow.forget_user(email).await
     }
+    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), PasskeyFlowError> {
+        self.flow.move_user(old, new).await
+    }
 }
 
 /// Removes a deleted user's provider links during `delete_account`. `()`
@@ -303,11 +326,16 @@ where
 #[async_trait]
 trait OAuthCleanup {
     async fn forget_user(&self, email: &Email) -> Result<(), OAuthFlowError>;
+    /// Move the user's provider links to their new address.
+    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), OAuthFlowError>;
 }
 
 #[async_trait]
 impl OAuthCleanup for () {
     async fn forget_user(&self, _email: &Email) -> Result<(), OAuthFlowError> {
+        Ok(())
+    }
+    async fn move_user(&self, _: &Email, _: &Email) -> Result<(), OAuthFlowError> {
         Ok(())
     }
 }
@@ -321,6 +349,9 @@ where
 {
     async fn forget_user(&self, email: &Email) -> Result<(), OAuthFlowError> {
         self.flow.forget_user(email).await
+    }
+    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), OAuthFlowError> {
+        self.flow.move_user(old, new).await
     }
 }
 
@@ -507,6 +538,12 @@ trait TwoFaChallenge {
     async fn forget_user(&self, _email: &Email) -> Result<(), TwoFaChallengeError> {
         Ok(())
     }
+
+    /// Move the user's second-factor data to their new address. Pending
+    /// challenges are not moved (an email change cancels them).
+    async fn move_user(&self, _old: &Email, _new: &Email) -> Result<(), TwoFaChallengeError> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -615,6 +652,10 @@ where
 
     async fn forget_user(&self, email: &Email) -> Result<(), TwoFaChallengeError> {
         Ok(self.totp.forget(email).await?)
+    }
+
+    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), TwoFaChallengeError> {
+        Ok(self.totp.move_user(old, new).await?)
     }
 }
 
@@ -826,6 +867,7 @@ impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
         Cfg: FnOnce(ElevatedCapabilities) -> ElevatedCapabilities,
     {
         let caps = configure(ElevatedCapabilities::default());
+        self.routes.has_elevation = true;
         if caps.password_change {
             self.routes.password_change = Some(Authz::Elevated);
         }
@@ -907,6 +949,7 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
                 store,
                 email,
                 deferred: self.deferred.for_slot(),
+                change: None,
             },
             oauth: self.oauth,
             passkeys: self.passkeys,
@@ -1727,6 +1770,32 @@ where
     }
 }
 
+impl<U, T, F, L, R, V, E, O, K> CredentialScheme<U, T, F, L, R, EmailVerify<V, E>, O, K> {
+    /// Let users change their email address: `POST /email/change
+    /// { newEmail }` (elevated when the scheme has elevation, a verified
+    /// address otherwise) mails a token to the new address and a notice to
+    /// the old; `POST /email/change/confirm { token }` from the logged-in
+    /// account moves it, with its passkeys, provider links, authenticator
+    /// app and API keys, and ends every session. Pending changes live in
+    /// `store`.
+    pub fn supports_email_change(
+        mut self,
+        store: impl tempered_core::EmailChangeStore + 'static,
+    ) -> Self {
+        self.email_verify.change = Some(EmailChange {
+            store: Arc::new(store),
+        });
+        self
+    }
+}
+
+impl<V, E> EmailVerify<V, E> {
+    /// Whether email change is on, for the route table.
+    pub(crate) fn email_change_enabled(&self) -> bool {
+        self.change.is_some()
+    }
+}
+
 // The capabilities, one module each.
 mod elevation;
 mod email_verification;
@@ -1816,6 +1885,13 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
 
     #[error("API key store error: {0}")]
     ApiKeys(String),
+
+    #[error("Email change store error: {0}")]
+    EmailChangeStoreError(#[from] tempered_core::EmailChangeStoreError),
+
+    /// Email change was called on a scheme that did not turn it on.
+    #[error("Email change is not configured for this scheme")]
+    EmailChangeNotConfigured,
 
     /// A user asked for a key with a scope they may not give it.
     #[error("Scope not allowed: {0}")]
@@ -1925,6 +2001,14 @@ where
             ),
             CredentialError::ApiKeys(e) => {
                 tracing::error!(error = %e, "API key store error");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
+            CredentialError::EmailChangeStoreError(e) => {
+                tracing::error!(error = %e, "email change store error");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
+            CredentialError::EmailChangeNotConfigured => {
+                tracing::error!("email change called without supports_email_change (scheme bug)");
                 (ErrorCategory::Internal, "Internal error".to_string())
             }
             CredentialError::AddressNotProven => (

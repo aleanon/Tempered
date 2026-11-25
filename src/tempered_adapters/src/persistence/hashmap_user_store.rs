@@ -89,6 +89,17 @@ impl UserStore for HashMapUserStore {
         users.remove(user).ok_or(UserStoreError::UserNotFound)?;
         Ok(())
     }
+
+    async fn change_email(&self, old: &Email, new: &Email) -> Result<(), UserStoreError> {
+        let mut users = self.users.write().await;
+        if users.contains_key(new) {
+            return Err(UserStoreError::UserAlreadyExists);
+        }
+        let mut user = users.remove(old).ok_or(UserStoreError::UserNotFound)?;
+        user.email = new.clone();
+        users.insert(new.clone(), user);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

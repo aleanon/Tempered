@@ -64,6 +64,12 @@ pub trait UserStore: Send + Sync {
         requires_2fa: bool,
     ) -> Result<(), UserStoreError>;
     async fn delete_user(&self, user: &Email) -> Result<(), UserStoreError>;
+
+    /// Move the account at `old` to `new`, keeping everything else.
+    /// [`UserAlreadyExists`](UserStoreError::UserAlreadyExists) if `new` is
+    /// taken (checked in the same atomic step), `UserNotFound` if `old` is
+    /// gone.
+    async fn change_email(&self, old: &Email, new: &Email) -> Result<(), UserStoreError>;
 }
 
 // BannedTokenStore port trait and errors
@@ -316,6 +322,9 @@ pub trait PasskeyCredentialStore: Send + Sync {
         id: &CredentialId,
         name: Option<String>,
     ) -> Result<bool, PasskeyStoreError>;
+
+    /// Give every credential of `old` to `new` (an email change).
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), PasskeyStoreError>;
 }
 
 #[derive(Debug, Error)]
@@ -440,6 +449,9 @@ pub trait OAuthIdentityStore: Send + Sync {
     /// proof of its address, and neither may pass to a later account that
     /// reuses the address. Succeeds when there is nothing to remove.
     async fn unlink_all_for_email(&self, email: &Email) -> Result<(), OAuthIdentityStoreError>;
+
+    /// Move every identity linked to `old` to `new` (an email change).
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), OAuthIdentityStoreError>;
 }
 
 // ApiKeyStore port, records and errors
@@ -512,6 +524,9 @@ pub trait ApiKeyStore: Send + Sync {
     /// Record that key `id` was used at `at` (Unix seconds). Best effort:
     /// a failure must not refuse the request.
     async fn record_use(&self, id: &ApiKeyId, at: u64) -> Result<(), ApiKeyStoreError>;
+
+    /// Give every key of `old` to `new` (an email change).
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), ApiKeyStoreError>;
 }
 
 // SessionStore port trait and errors
@@ -791,6 +806,9 @@ pub trait TotpStore: Send + Sync {
     /// Forget the user's secrets and recovery codes. Succeeds when there are
     /// none.
     async fn delete_all_for_user(&self, email: &Email) -> Result<(), TotpStoreError>;
+
+    /// Move `old`'s secrets and recovery codes to `new` (an email change).
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), TotpStoreError>;
 }
 
 // ============================================================================
@@ -861,4 +879,35 @@ pub trait RefreshTokenStore: Send + Sync {
     /// deletion), each as [`revoke_family`](Self::revoke_family) does. Must
     /// reach every family whose tokens can still be redeemed.
     async fn revoke_all_for_user(&self, email: &Email) -> Result<(), RefreshTokenStoreError>;
+}
+
+// ============================================================================
+// Email change
+// ============================================================================
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum EmailChangeStoreError {
+    #[error("Unknown or expired email change")]
+    NotFound,
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(#[source] crate::error::Failure),
+}
+
+/// Pending email changes: a single-use token, mailed to the new address,
+/// that moves the account at `old` to `new`.
+#[async_trait]
+pub trait EmailChangeStore: Send + Sync {
+    /// Keep the change under `token` (a SHA-256 of the mailed value), for
+    /// `ttl_seconds`. A newer request for the same account replaces an
+    /// older one.
+    async fn create(
+        &self,
+        token: [u8; 32],
+        old: Email,
+        new: Email,
+        ttl_seconds: u64,
+    ) -> Result<(), EmailChangeStoreError>;
+
+    /// Use the change under `token`, once, atomically: `(old, new)`.
+    async fn consume(&self, token: &[u8; 32]) -> Result<(Email, Email), EmailChangeStoreError>;
 }

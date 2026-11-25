@@ -566,8 +566,18 @@ Should-have:
   `/verify-2fa` and cannot overwrite a pending 2FA challenge; a 2FA
   account may log in by email only with an authenticator app as its
   second factor (else 403).
-- **8.9 Email change** (verify the new address, notify the old one,
-  elevated). This needs 9.5 first.
+- **8.9 Email change** ✅ DONE 2026-11-25 (verify the new address,
+  notify the old one, elevated). Built without 9.5: every port keyed by
+  the address gained a move (`UserStore::change_email`, atomic with the
+  "taken" check; `reassign` on the passkey, OAuth identity, API key and
+  TOTP stores), and the confirm step runs them under the credential lock,
+  account first (a taken address stops it before anything else moves),
+  then revokes every token on the old address. Sessions, refresh
+  families, pending codes and reset links are ended rather than moved.
+  `EmailChangeStore` (HashMap, Redis) holds the single-use token, one
+  per account. Not atomic across stores: if a later move fails after the
+  account moved, those records stay on the old address and the call
+  answers 500 (9.5 would make the whole change one row update).
 - **8.10 Password policy** ✅ DONE 2026-11-25: port and an optional breached-password check
   (HIBP k-anonymity, behind a feature).
   As built: `PasswordPolicy` port in core; `.password_policy(p)` (data on
@@ -650,6 +660,9 @@ OAuth slot instead.
 - **9.5 Stable user id.** Every store keys on `Email`. A UUID with the
   (case-folded) email as a lookup index makes email change possible and
   simplifies cleanup. This touches every port (L).
+  No longer blocks 8.9 (built by moving the address-keyed records). What
+  it would still buy: an email change that is one row update rather than
+  several, and app tables that need not follow the address.
 - **9.6 Public contract tests.** ✅ DONE 2026-11-25. Expose `persistence/contract.rs` behind a
   `testing` feature so third-party store backends can run them.
   As built: `persistence::contract` is public under `testing` (and in

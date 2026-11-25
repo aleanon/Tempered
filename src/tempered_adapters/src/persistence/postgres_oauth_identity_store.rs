@@ -132,6 +132,16 @@ impl OAuthIdentityStore for PostgresOAuthIdentityStore {
                 .map_err(unexpected)?;
         Ok(deleted.rows_affected() > 0)
     }
+
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), OAuthIdentityStoreError> {
+        sqlx::query("UPDATE oauth_identities SET email = $2 WHERE email = $1")
+            .bind(old.as_ref().expose_secret())
+            .bind(new.as_ref().expose_secret())
+            .execute(&self.pool)
+            .await
+            .map_err(unexpected)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

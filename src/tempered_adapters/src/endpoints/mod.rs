@@ -81,6 +81,8 @@ pub enum RouteId {
     ApiKeyList,
     ApiKeyIssue,
     ApiKeyRevoke,
+    EmailChangeRequest,
+    EmailChangeConfirm,
 }
 
 /// What a request must prove before a route runs. The tiers nest: a

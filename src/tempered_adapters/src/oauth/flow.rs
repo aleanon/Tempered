@@ -398,6 +398,14 @@ where
         })
     }
 
+    /// Move the user's provider links to their new address.
+    pub async fn move_user(&self, old: &Email, new: &Email) -> Result<(), OAuthFlowError> {
+        self.identity_store
+            .reassign(old, new)
+            .await
+            .map_err(|e| OAuthFlowError::Identity(e.to_string()))
+    }
+
     /// The providers linked to `email`.
     pub async fn links(&self, email: &Email) -> Result<Vec<String>, OAuthFlowError> {
         let mut providers: Vec<String> = self

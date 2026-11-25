@@ -140,6 +140,16 @@ impl ApiKeyStore for PostgresApiKeyStore {
         .map_err(unexpected)?;
         Ok(())
     }
+
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), ApiKeyStoreError> {
+        sqlx::query("UPDATE api_keys SET owner = $2 WHERE owner = $1")
+            .bind(old.as_ref().expose_secret())
+            .bind(new.as_ref().expose_secret())
+            .execute(&self.pool)
+            .await
+            .map_err(unexpected)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

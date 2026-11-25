@@ -484,6 +484,44 @@ pub async fn user_store(store: impl tempered_core::UserStore) {
             .await,
         Err(UserStoreError::UserNotFound)
     );
+
+    // An email change keeps the account (password and all), and refuses a
+    // taken address.
+    let moved = email("alice@moved.example.com");
+    let taken = email("taken@example.com");
+    store
+        .add_user(User::new(
+            taken.clone(),
+            password("someone-elses-pw"),
+            false,
+        ))
+        .await
+        .unwrap();
+    store
+        .add_user(User::new(
+            email("carol@example.com"),
+            password("carols-password"),
+            false,
+        ))
+        .await
+        .unwrap();
+    let carol = email("carol@example.com");
+    assert_eq!(
+        store.change_email(&carol, &taken).await,
+        Err(UserStoreError::UserAlreadyExists)
+    );
+    assert_eq!(
+        store.change_email(&nobody, &moved).await,
+        Err(UserStoreError::UserNotFound)
+    );
+    store.change_email(&carol, &moved).await.unwrap();
+    assert!(store.get_user(&carol).await.is_err());
+    assert!(
+        store
+            .authenticate_user(&moved, &password("carols-password"))
+            .await
+            .is_ok()
+    );
 }
 
 /// [`PasswordResetTokenStore`]: single-use tokens, and dropping every token
@@ -614,6 +652,14 @@ pub async fn oauth_identity_store(store: impl tempered_core::OAuthIdentityStore)
         store.find_email("google", "g-1").await.unwrap(),
         Some(bob.clone())
     );
+
+    // An email change moves the links.
+    let moved = email("bob@new.example.com");
+    store.reassign(&bob, &moved).await.unwrap();
+    assert_eq!(
+        store.find_email("google", "g-1").await.unwrap(),
+        Some(moved)
+    );
 }
 
 /// [`PasskeyCredentialStore`]: insert-only ids, the sign-count rule, and
@@ -736,6 +782,13 @@ pub async fn passkey_credential_store(store: impl tempered_core::PasskeyCredenti
     assert!(!store.delete_credential(&alice, &id("b1")).await.unwrap());
     assert!(store.delete_credential(&bob, &id("b1")).await.unwrap());
     assert!(store.get_credential(&id("b1")).await.is_err());
+
+    // An email change moves the credentials.
+    store.add_credential(cred("c1", &alice, 0)).await.unwrap();
+    let moved = email("alice@new.example.com");
+    store.reassign(&alice, &moved).await.unwrap();
+    assert!(store.list_for_user(&alice).await.unwrap().is_empty());
+    assert_eq!(store.get_credential(&id("c1")).await.unwrap().owner, moved);
 }
 
 /// [`ApiKeyStore`]: lookup by prefix, per-owner listing, revocation.
@@ -825,6 +878,12 @@ pub async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
     );
     let listed = store.list_for_user(&bob).await.unwrap();
     assert_eq!(listed[0].last_used_at, Some(2000));
+
+    // An email change moves the keys.
+    let moved = email("bob@new.example.com");
+    store.reassign(&bob, &moved).await.unwrap();
+    assert!(store.list_for_user(&bob).await.unwrap().is_empty());
+    assert_eq!(store.find_by_prefix("pb1").await.unwrap().owner, moved);
 }
 
 /// Hits count up within a window, keys are separate, and a window ends.
@@ -932,6 +991,12 @@ pub async fn totp_store(store: impl tempered_core::TotpStore) {
         store.pending(&bob).await.unwrap().is_some(),
         "other users untouched"
     );
+
+    // An email change moves the secrets.
+    let moved = email("bob@new.example.com");
+    store.reassign(&bob, &moved).await.unwrap();
+    assert!(store.pending(&bob).await.unwrap().is_none());
+    assert!(store.pending(&moved).await.unwrap().is_some());
 }
 
 /// Single use, reuse revoking the family, logout and revoke-all, expiry.
@@ -1007,4 +1072,46 @@ pub async fn refresh_token_store(store: impl tempered_core::RefreshTokenStore) {
         store.redeem(&[10; 32]).await,
         Err(RefreshTokenStoreError::NotFound)
     ));
+}
+
+/// Single use, one pending change per account, expiry.
+pub async fn email_change_store(store: impl tempered_core::EmailChangeStore) {
+    use tempered_core::EmailChangeStoreError;
+    let alice = email("alice@example.com");
+    let new = email("alice@new.example.com");
+    store
+        .create([1; 32], alice.clone(), new.clone(), 600)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.consume(&[1; 32]).await.unwrap(),
+        (alice.clone(), new.clone())
+    );
+    assert!(matches!(
+        store.consume(&[1; 32]).await,
+        Err(EmailChangeStoreError::NotFound)
+    ));
+
+    // A newer request for the account replaces the older one.
+    store
+        .create([2; 32], alice.clone(), email("first@example.com"), 600)
+        .await
+        .unwrap();
+    store
+        .create([3; 32], alice.clone(), email("second@example.com"), 600)
+        .await
+        .unwrap();
+    assert!(store.consume(&[2; 32]).await.is_err());
+    assert_eq!(
+        store.consume(&[3; 32]).await.unwrap().1,
+        email("second@example.com")
+    );
+
+    // Expired.
+    store
+        .create([4; 32], alice.clone(), new.clone(), 1)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    assert!(store.consume(&[4; 32]).await.is_err());
 }

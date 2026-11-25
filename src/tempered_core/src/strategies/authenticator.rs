@@ -133,6 +133,36 @@ pub trait SupportsTwoFactor: AuthenticationScheme {
     ) -> Result<Self::Token, Self::TwoFactorError>;
 }
 
+/// Changing an account's email address. The new address must confirm (a
+/// token mailed to it) before anything moves; the old one is told. On
+/// confirmation the account and its credentials move to the new address
+/// and every session ends.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no email change",
+    label = "this scheme is missing the capability",
+    note = "call `.supports_email_change(store)` after `.supports_email_verification(..)`"
+)]
+#[async_trait]
+pub trait SupportsEmailChange: AuthenticationScheme {
+    type EmailChangeError: std::error::Error + Send + Sync + 'static;
+
+    /// Ask to move the logged-in account `email` to `new`. Answers the
+    /// same whether or not `new` is taken; the mails go out afterwards.
+    async fn request_email_change(
+        &self,
+        email: Email,
+        new: Email,
+    ) -> Result<(), Self::EmailChangeError>;
+
+    /// Confirm with the token mailed to the new address, from the logged-in
+    /// account the change is for. Returns the new address.
+    async fn confirm_email_change(
+        &self,
+        email: Email,
+        token: String,
+    ) -> Result<Email, Self::EmailChangeError>;
+}
+
 /// Passwordless login by email: a code (and optionally a link carrying
 /// it) is mailed, and presenting it logs in.
 ///

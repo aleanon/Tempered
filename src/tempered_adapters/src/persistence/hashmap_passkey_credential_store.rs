@@ -124,6 +124,15 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
             _ => Ok(false),
         }
     }
+
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), PasskeyStoreError> {
+        for cred in self.credentials.write().await.values_mut() {
+            if &cred.owner == old {
+                cred.owner = new.clone();
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

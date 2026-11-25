@@ -25,6 +25,11 @@ pub enum Mail {
     VerifyEmail { token: String },
     /// Someone tried to sign up with an address that has an account.
     AlreadyRegistered,
+    /// The token that confirms moving the account to this (new) address,
+    /// for `/email/change/confirm`.
+    ConfirmEmailChange { token: String },
+    /// To the old address: someone asked to move the account to `new`.
+    EmailChangeRequested { new: String },
     /// A passwordless sign-in code, and the link to the app's page that
     /// posts it, when the app set one.
     EmailLogin {
@@ -42,6 +47,8 @@ impl std::fmt::Debug for Mail {
             Mail::PasswordReset { .. } => "PasswordReset",
             Mail::VerifyEmail { .. } => "VerifyEmail",
             Mail::AlreadyRegistered => "AlreadyRegistered",
+            Mail::ConfirmEmailChange { .. } => "ConfirmEmailChange",
+            Mail::EmailChangeRequested { .. } => "EmailChangeRequested",
             Mail::EmailLogin { .. } => "EmailLogin",
         };
         f.write_str(kind)
@@ -57,6 +64,8 @@ impl Mail {
             Mail::PasswordReset { .. } => "Password Reset",
             Mail::VerifyEmail { .. } => "Verify your email",
             Mail::AlreadyRegistered => "You already have an account",
+            Mail::ConfirmEmailChange { .. } => "Confirm your new email address",
+            Mail::EmailChangeRequested { .. } => "Your account's email address is changing",
             Mail::EmailLogin { .. } => "Your sign-in code",
         }
     }
@@ -65,7 +74,13 @@ impl Mail {
     pub fn text(&self) -> String {
         match self {
             Mail::SignInCode { code } | Mail::ElevationCode { code } => code.to_string(),
-            Mail::PasswordReset { token } | Mail::VerifyEmail { token } => token.clone(),
+            Mail::PasswordReset { token }
+            | Mail::VerifyEmail { token }
+            | Mail::ConfirmEmailChange { token } => token.clone(),
+            Mail::EmailChangeRequested { new } => format!(
+                "Someone asked to move your account to {new}. It moves once that address \
+                 confirms. If it was not you, change your password."
+            ),
             Mail::AlreadyRegistered => "Someone tried to create an account with this \
 email address, which already has one. If it was you, sign in, or reset your password if \
 you have forgotten it. If it was not, you can ignore this message: nothing has changed."

@@ -1559,6 +1559,9 @@ mod passkey_tests {
         ) -> Result<bool, PasskeyStoreError> {
             Err(PasskeyStoreError::UnexpectedError("down".into()))
         }
+        async fn reassign(&self, _: &Email, _: &Email) -> Result<(), PasskeyStoreError> {
+            Err(PasskeyStoreError::UnexpectedError("down".into()))
+        }
         async fn get_credential(
             &self,
             _: &CredentialId,
@@ -2515,5 +2518,228 @@ mod customisation_tests {
             .0;
         let claims = scheme.validator().validate(&parts).await.unwrap();
         assert_eq!(claims.ext.unwrap()["role"], "editor");
+    }
+}
+
+#[cfg(test)]
+mod email_change_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{JwtScheme, JwtToken};
+    use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
+    use crate::authentication::credential_scheme::{PasswordCredentials, RegistrationData};
+    use crate::persistence::{
+        HashMapEmailChangeStore, HashMapEmailVerificationTokenStore, HashMapTokenEpochStore,
+        HashMapUserStore, HashSetBannedTokenStore,
+    };
+    use secrecy::{ExposeSecret, Secret};
+    use tempered_core::{
+        AuthValidator, AuthenticationScheme, Email, EmailClient, LoginOutcome, Mail, Password,
+        RequiresEmailVerification, SupportsEmailChange, UserStore,
+        strategies::authenticator::SupportsRegistration,
+    };
+
+    /// Keeps every mail with its recipient.
+    #[derive(Clone, Default)]
+    struct Outbox(Arc<Mutex<Vec<(String, Mail)>>>);
+
+    impl Outbox {
+        /// The first mail to `to` that `pick` accepts, waiting for it (the
+        /// mails go out after the call returns).
+        async fn find<T>(&self, to: &str, pick: impl Fn(&Mail) -> Option<T>) -> T {
+            for _ in 0..1000 {
+                let found = self
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(r, _)| r == to)
+                    .find_map(|(_, m)| pick(m));
+                if let Some(found) = found {
+                    return found;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            panic!("no such mail to {to}");
+        }
+
+        fn count(&self) -> usize {
+            self.0.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EmailClient for Outbox {
+        async fn send_email(&self, _: &Email, _: &str, _: &str) -> Result<(), String> {
+            unreachable!("the scheme sends typed mail")
+        }
+        async fn send_mail(&self, to: &Email, mail: Mail) -> Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((to.as_ref().expose_secret().clone(), mail));
+            Ok(())
+        }
+    }
+
+    fn email(s: &str) -> Email {
+        Email::try_from(Secret::new(s.to_string())).unwrap()
+    }
+
+    async fn validates<S>(scheme: &S, token: &JwtToken) -> bool
+    where
+        S: AuthenticationScheme,
+        S::Validator: AuthValidator<RequestParts = http::request::Parts>,
+    {
+        let parts = http::Request::builder()
+            .header("cookie", format!("jwt={}", token.as_str()))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        scheme.validator().validate(&parts).await.is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_confirmed_change_moves_the_account_and_ends_its_sessions() {
+        let outbox = Outbox::default();
+        let users = HashMapUserStore::new();
+        let scheme = JwtScheme::new(
+            users.clone(),
+            JwtAuthConfig {
+                jwt_cookie_name: "jwt".to_string(),
+                jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+                token_ttl_in_seconds: 3600,
+                audience: None,
+                issuer: None,
+            },
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_registration()
+        .supports_email_verification(HashMapEmailVerificationTokenStore::new(), outbox.clone())
+        .supports_email_change(HashMapEmailChangeStore::new());
+
+        let password = Password::try_from(Secret::new("a-long-password".to_string())).unwrap();
+        for who in ["alice@example.com", "taken@example.com"] {
+            scheme
+                .register(
+                    email(who),
+                    password.clone(),
+                    RegistrationData {
+                        requires_2fa: false,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let login = |who: &str| {
+            scheme.login(PasswordCredentials {
+                email: Secret::new(who.to_string()),
+                password: Secret::new("a-long-password".to_string()),
+            })
+        };
+        let Ok(LoginOutcome::Success(token)) = login("alice@example.com").await else {
+            panic!("alice logs in");
+        };
+        let alice = email("alice@example.com");
+
+        // The signups' verification links first.
+        for who in ["alice@example.com", "taken@example.com"] {
+            outbox
+                .find(who, |m| matches!(m, Mail::VerifyEmail { .. }).then_some(()))
+                .await;
+        }
+
+        // A taken address: its owner is told, nothing is offered to move.
+        let before = outbox.count();
+        scheme
+            .request_email_change(alice.clone(), email("taken@example.com"))
+            .await
+            .unwrap();
+        outbox
+            .find("taken@example.com", |m| {
+                matches!(m, Mail::AlreadyRegistered).then_some(())
+            })
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            outbox.count(),
+            before + 1,
+            "no confirmation for a taken address"
+        );
+
+        // A free address: a token to it, a notice to the old one.
+        scheme
+            .request_email_change(alice.clone(), email("alice@new.example.com"))
+            .await
+            .unwrap();
+        let confirm = outbox
+            .find("alice@new.example.com", |m| match m {
+                Mail::ConfirmEmailChange { token } => Some(token.clone()),
+                _ => None,
+            })
+            .await;
+        outbox
+            .find("alice@example.com", |m| {
+                matches!(m, Mail::EmailChangeRequested { new } if new == "alice@new.example.com")
+                    .then_some(())
+            })
+            .await;
+
+        // From someone else's session, the token moves nothing (and is used).
+        assert!(
+            scheme
+                .confirm_email_change(email("taken@example.com"), confirm.clone())
+                .await
+                .is_err()
+        );
+        assert!(users.get_user(&alice).await.is_ok());
+
+        // Ask again and confirm from the account itself.
+        scheme
+            .request_email_change(alice.clone(), email("alice@new.example.com"))
+            .await
+            .unwrap();
+        let confirm = {
+            let mut tokens = Vec::new();
+            for _ in 0..1000 {
+                tokens = outbox
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|(_, m)| match m {
+                        Mail::ConfirmEmailChange { token } => Some(token.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if tokens.len() == 2 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            tokens.pop().expect("a second confirmation")
+        };
+        assert!(validates(&scheme, &token).await);
+        let moved = scheme
+            .confirm_email_change(alice.clone(), confirm.clone())
+            .await
+            .unwrap();
+        assert_eq!(moved, email("alice@new.example.com"));
+
+        // The old session is over, the old address is free, and the account
+        // logs in at the new one, already verified.
+        assert!(!validates(&scheme, &token).await);
+        assert!(login("alice@example.com").await.is_err());
+        assert!(matches!(
+            login("alice@new.example.com").await,
+            Ok(LoginOutcome::Success(_))
+        ));
+        assert!(scheme.is_email_verified(&moved).await.unwrap());
+        assert!(!scheme.is_email_verified(&alice).await.unwrap());
+
+        // Single use.
+        assert!(scheme.confirm_email_change(moved, confirm).await.is_err());
     }
 }

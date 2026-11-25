@@ -144,6 +144,19 @@ impl TotpStore for PostgresTotpStore {
         }
         tx.commit().await.map_err(unexpected)
     }
+
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), TotpStoreError> {
+        let mut tx = self.pool.begin().await.map_err(unexpected)?;
+        for table in ["totp_secrets", "totp_recovery_codes"] {
+            sqlx::query(&format!("UPDATE {table} SET email = $2 WHERE email = $1"))
+                .bind(key(old))
+                .bind(key(new))
+                .execute(&mut *tx)
+                .await
+                .map_err(unexpected)?;
+        }
+        tx.commit().await.map_err(unexpected)
+    }
 }
 
 async fn replace_codes(

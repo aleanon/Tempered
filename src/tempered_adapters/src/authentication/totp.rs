@@ -53,6 +53,9 @@ pub(crate) trait TotpFactor: Send + Sync {
 
     /// Forget the user's TOTP data (account deletion).
     async fn forget(&self, email: &Email) -> Result<(), TotpStoreError>;
+
+    /// Move the user's TOTP data to their new address.
+    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), TotpStoreError>;
 }
 
 #[async_trait]
@@ -64,6 +67,9 @@ impl TotpFactor for () {
         Ok(false)
     }
     async fn forget(&self, _: &Email) -> Result<(), TotpStoreError> {
+        Ok(())
+    }
+    async fn move_user(&self, _: &Email, _: &Email) -> Result<(), TotpStoreError> {
         Ok(())
     }
 }
@@ -92,6 +98,9 @@ impl<TS: TotpStore> TotpFactor for Totp<TS> {
 
     async fn forget(&self, email: &Email) -> Result<(), TotpStoreError> {
         self.store.delete_all_for_user(email).await
+    }
+    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), TotpStoreError> {
+        self.store.reassign(old, new).await
     }
 }
 

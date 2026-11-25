@@ -116,6 +116,15 @@ impl TotpStore for HashMapTotpStore {
         self.with(|u| u.remove(email));
         Ok(())
     }
+
+    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), TotpStoreError> {
+        self.with(|u| {
+            if let Some(entry) = u.remove(old) {
+                u.insert(new.clone(), entry);
+            }
+        });
+        Ok(())
+    }
 }
 
 #[cfg(test)]

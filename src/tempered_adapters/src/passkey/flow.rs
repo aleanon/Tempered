@@ -224,6 +224,11 @@ where
     ///
     /// Enrolments the user has started but not finished are dropped too, so
     /// one begun before this call cannot add a passkey after it.
+    /// Move the user's credentials to their new address.
+    pub async fn move_user(&self, old: &Email, new: &Email) -> Result<(), PasskeyFlowError> {
+        Ok(self.credential_store.reassign(old, new).await?)
+    }
+
     /// The user's credentials.
     pub async fn list(&self, email: &Email) -> Result<Vec<PasskeyCredential>, PasskeyFlowError> {
         Ok(self.credential_store.list_for_user(email).await?)
