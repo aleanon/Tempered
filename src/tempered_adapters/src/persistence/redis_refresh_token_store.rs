@@ -1,5 +1,5 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use redis::{AsyncCommands, aio::ConnectionManager};
+use redis::aio::ConnectionManager;
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +11,12 @@ use super::redis_support::user_key;
 
 const TOKEN_PREFIX: &str = "refresh:";
 const FAMILY_PREFIX: &str = "refresh_family:";
+const REVOKED_PREFIX: &str = "refresh_revoked:";
 const USER_PREFIX: &str = "refresh_user:";
+
+/// How long a revoked family refuses new tokens. Only a rotation already
+/// in flight at the revocation can try to add one, so seconds would do.
+const TOMBSTONE_SECONDS: u64 = 60 * 60;
 
 /// Redis-backed [`RefreshTokenStore`].
 ///
@@ -19,7 +24,14 @@ const USER_PREFIX: &str = "refresh_user:";
 /// - `refresh:{hash}` → the record and whether it was used, expiring with
 ///   the token (used tokens stay until then, so reuse is noticed);
 /// - `refresh_family:{family}` → the set of the family's token hashes;
+/// - `refresh_revoked:{family}` → present for an hour after a revocation,
+///   so a rotation in flight cannot bring the family back;
 /// - `refresh_user:{email}` → the set of the user's families.
+///
+/// The sets expire with the longest-lived token they index: a new token
+/// only ever extends a set's lifetime, never shortens it, so a revoke-all
+/// reaches every family that can still be redeemed. Every operation that
+/// touches more than one key is one Lua script.
 #[derive(Clone)]
 pub struct RedisRefreshTokenStore {
     client: ConnectionManager,
@@ -38,10 +50,28 @@ struct Stored {
     expires_at: u64,
 }
 
-/// Mark `KEYS[1]` used if it is unused (`ARGV[1]` = now): returns `{0, value}`
-/// for a fresh token, `{1, value}` for a reused one (whose family the caller
-/// revokes), or nil. One script, so two requests with one token cannot both
-/// see it unused.
+/// `KEYS`: token, family set, tombstone, user set. `ARGV`: record JSON,
+/// TTL, token id (base64), family. Returns 0 if the family is revoked
+/// (nothing written), 1 otherwise.
+static CREATE_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        if redis.call('EXISTS', KEYS[3]) == 1 then return 0 end
+        local ttl = tonumber(ARGV[2])
+        redis.call('HSET', KEYS[1], 'record', ARGV[1], 'used', '0')
+        redis.call('EXPIRE', KEYS[1], ttl)
+        redis.call('SADD', KEYS[2], ARGV[3])
+        redis.call('SADD', KEYS[4], ARGV[4])
+        for _, set in ipairs({KEYS[2], KEYS[4]}) do
+            if redis.call('TTL', set) < ttl then redis.call('EXPIRE', set, ttl) end
+        end
+        return 1
+        ",
+    )
+});
+
+/// Mark `KEYS[1]` used if it is unused: `{0, value}` for a fresh token,
+/// `{1, value}` for a reused one (whose family the caller revokes), or nil.
 static REDEEM_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::new(|| {
     redis::Script::new(
         r"
@@ -52,6 +82,32 @@ static REDEEM_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::
         return {0, value}
         ",
     )
+});
+
+/// Revoke the families in `ARGV[4..]` (or, with `ARGV[2]` = a user set key,
+/// every family in that set, then the set): delete each one's tokens
+/// (`ARGV[1]` + id) and set, and leave a tombstone (`ARGV[3]` + family, for
+/// `TOMBSTONE_SECONDS`).
+static REVOKE_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::new(|| {
+    redis::Script::new(&format!(
+        r"
+        local families = {{}}
+        for i = 5, #ARGV do table.insert(families, ARGV[i]) end
+        if ARGV[2] ~= '' then
+            for _, f in ipairs(redis.call('SMEMBERS', ARGV[2])) do table.insert(families, f) end
+            redis.call('DEL', ARGV[2])
+        end
+        for _, family in ipairs(families) do
+            local set = ARGV[4] .. family
+            for _, id in ipairs(redis.call('SMEMBERS', set)) do
+                redis.call('DEL', ARGV[1] .. id)
+            end
+            redis.call('DEL', set)
+            redis.call('SET', ARGV[3] .. family, '1', 'EX', {TOMBSTONE_SECONDS})
+        end
+        return #families
+        "
+    ))
 });
 
 fn unexpected(e: impl std::fmt::Display) -> RefreshTokenStoreError {
@@ -69,19 +125,26 @@ fn now() -> u64 {
 }
 
 impl RedisRefreshTokenStore {
-    async fn revoke_family(&self, family: &str) -> Result<(), RefreshTokenStoreError> {
-        let mut client = self.client.clone();
-        let set = format!("{FAMILY_PREFIX}{family}");
-        let members: Vec<String> = client.smembers(&set).await.map_err(unexpected)?;
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        for member in &members {
-            pipe.del(format!("{TOKEN_PREFIX}{member}")).ignore();
+    /// Revoke `families`, and with `user_set`, every family it lists.
+    async fn revoke(
+        &self,
+        user_set: Option<&str>,
+        families: &[&str],
+    ) -> Result<(), RefreshTokenStoreError> {
+        let mut invocation = REVOKE_SCRIPT.prepare_invoke();
+        invocation
+            .arg(TOKEN_PREFIX)
+            .arg(user_set.unwrap_or(""))
+            .arg(REVOKED_PREFIX)
+            .arg(FAMILY_PREFIX);
+        for family in families {
+            invocation.arg(*family);
         }
-        pipe.del(&set).ignore();
-        pipe.query_async::<()>(&mut client)
+        let _: i64 = invocation
+            .invoke_async(&mut self.client.clone())
             .await
-            .map_err(unexpected)
+            .map_err(unexpected)?;
+        Ok(())
     }
 }
 
@@ -92,33 +155,29 @@ impl RefreshTokenStore for RedisRefreshTokenStore {
         token: RefreshTokenHash,
         record: RefreshRecord,
     ) -> Result<(), RefreshTokenStoreError> {
-        let ttl = record.expires_at.saturating_sub(now()).max(1) as i64;
+        let ttl = record.expires_at.saturating_sub(now()).max(1);
         let value = serde_json::to_string(&Stored {
             email: record.email.as_ref().expose_secret().clone(),
             family: record.family.clone(),
             expires_at: record.expires_at,
         })
         .map_err(unexpected)?;
-        let key = token_key(&token);
-        let family = format!("{FAMILY_PREFIX}{}", record.family);
-        let user = user_key(USER_PREFIX, &record.email);
-        redis::pipe()
-            .atomic()
-            .hset_multiple(&key, &[("record", value.as_str()), ("used", "0")])
-            .ignore()
-            .expire(&key, ttl)
-            .ignore()
-            .sadd(&family, URL_SAFE_NO_PAD.encode(token))
-            .ignore()
-            .expire(&family, ttl)
-            .ignore()
-            .sadd(&user, &record.family)
-            .ignore()
-            .expire(&user, ttl)
-            .ignore()
-            .query_async::<()>(&mut self.client.clone())
+        let created: i64 = CREATE_SCRIPT
+            .key(token_key(&token))
+            .key(format!("{FAMILY_PREFIX}{}", record.family))
+            .key(format!("{REVOKED_PREFIX}{}", record.family))
+            .key(user_key(USER_PREFIX, &record.email))
+            .arg(value)
+            .arg(ttl)
+            .arg(URL_SAFE_NO_PAD.encode(token))
+            .arg(&record.family)
+            .invoke_async(&mut self.client.clone())
             .await
-            .map_err(unexpected)
+            .map_err(unexpected)?;
+        if created == 0 {
+            return Err(RefreshTokenStoreError::NotFound);
+        }
+        Ok(())
     }
 
     async fn redeem(
@@ -133,12 +192,12 @@ impl RefreshTokenStore for RedisRefreshTokenStore {
         let (reused, value) = result.ok_or(RefreshTokenStoreError::NotFound)?;
         let stored: Stored = serde_json::from_str(&value).map_err(unexpected)?;
         let email = Email::try_from(Secret::new(stored.email)).map_err(unexpected)?;
+        if reused == 1 {
+            self.revoke(None, &[&stored.family]).await?;
+            return Err(RefreshTokenStoreError::Reused { email });
+        }
         if stored.expires_at <= now() {
             return Err(RefreshTokenStoreError::NotFound);
-        }
-        if reused == 1 {
-            self.revoke_family(&stored.family).await?;
-            return Err(RefreshTokenStoreError::Reused { email });
         }
         Ok(RefreshRecord {
             email,
@@ -147,38 +206,12 @@ impl RefreshTokenStore for RedisRefreshTokenStore {
         })
     }
 
-    async fn revoke_family_of(
-        &self,
-        token: &RefreshTokenHash,
-    ) -> Result<(), RefreshTokenStoreError> {
-        let value: Option<String> = self
-            .client
-            .clone()
-            .hget(token_key(token), "record")
-            .await
-            .map_err(unexpected)?;
-        match value {
-            Some(value) => {
-                let stored: Stored = serde_json::from_str(&value).map_err(unexpected)?;
-                self.revoke_family(&stored.family).await
-            }
-            None => Ok(()),
-        }
+    async fn revoke_family(&self, family: &str) -> Result<(), RefreshTokenStoreError> {
+        self.revoke(None, &[family]).await
     }
 
     async fn revoke_all_for_user(&self, email: &Email) -> Result<(), RefreshTokenStoreError> {
-        let user = user_key(USER_PREFIX, email);
-        let families: Vec<String> = self
-            .client
-            .clone()
-            .smembers(&user)
-            .await
-            .map_err(unexpected)?;
-        for family in families {
-            self.revoke_family(&family).await?;
-        }
-        let _: () = self.client.clone().del(&user).await.map_err(unexpected)?;
-        Ok(())
+        self.revoke(Some(&user_key(USER_PREFIX, email)), &[]).await
     }
 }
 
@@ -186,10 +219,32 @@ impl RefreshTokenStore for RedisRefreshTokenStore {
 mod tests {
     use super::*;
     use crate::persistence::{contract, test_support};
+    use redis::AsyncCommands;
 
     #[tokio::test]
     async fn meets_the_refresh_token_store_contract() {
         let (_redis, connection) = test_support::redis::connection().await;
         contract::refresh_token_store(RedisRefreshTokenStore::new(connection)).await;
+    }
+
+    /// A short-lived family must not cut short the index a revoke-all reads.
+    #[tokio::test]
+    async fn the_user_index_lives_as_long_as_the_longest_family() {
+        let (_redis, connection) = test_support::redis::connection().await;
+        let store = RedisRefreshTokenStore::new(connection.clone());
+        let email = contract::email("a@example.com");
+        let record = |family: &str, ttl: u64| RefreshRecord {
+            email: email.clone(),
+            family: family.to_string(),
+            expires_at: now() + ttl,
+        };
+        store.create([1; 32], record("long", 3600)).await.unwrap();
+        store.create([2; 32], record("short", 5)).await.unwrap();
+        let ttl: i64 = connection
+            .clone()
+            .ttl(user_key(USER_PREFIX, &email))
+            .await
+            .unwrap();
+        assert!(ttl > 3000, "{ttl}");
     }
 }

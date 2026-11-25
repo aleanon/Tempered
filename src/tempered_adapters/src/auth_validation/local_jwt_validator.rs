@@ -126,7 +126,7 @@ impl ClassifyError for TokenAuthError {
 }
 
 /// The token in `Authorization: Bearer <token>`, if any.
-fn bearer_token(parts: &http::request::Parts) -> Result<String, TokenAuthError> {
+pub(crate) fn bearer_token(parts: &http::request::Parts) -> Result<String, TokenAuthError> {
     parts
         .headers
         .get(http::header::AUTHORIZATION)
@@ -194,7 +194,7 @@ pub fn generate_auth_token(
     email: &Email,
     config: &JwtAuthConfig,
 ) -> Result<String, TokenAuthError> {
-    generate_auth_token_issued_at(email, config, Utc::now().timestamp())
+    generate_auth_token_issued_at(email, config, Utc::now().timestamp(), None)
 }
 
 /// Create a JWT auth token with an explicit issued-at (unix seconds).
@@ -206,10 +206,14 @@ pub fn generate_auth_token(
 /// The expiry is always measured from the real clock, never from `iat`: a
 /// stamp that runs ahead of the clock must not lengthen the token's life, or
 /// let it outlive the revocation record that covers it.
+///
+/// `family` names the refresh-token family the token is issued with (the
+/// `fam` claim), when refresh tokens are on.
 pub fn generate_auth_token_issued_at(
     email: &Email,
     config: &JwtAuthConfig,
     iat: i64,
+    family: Option<&str>,
 ) -> Result<String, TokenAuthError> {
     let exp = Utc::now()
         .timestamp()
@@ -232,19 +236,15 @@ pub fn generate_auth_token_issued_at(
         jti: Some(uuid::Uuid::new_v4().to_string()),
         aud: config.audience.clone(),
         iss: config.issuer.clone(),
+        fam: family.map(str::to_string),
     };
 
     create_token(&claims, config.jwt_secret.expose_secret().as_bytes())
 }
 
-// Check if JWT auth token is valid by decoding it using the JWT secret,
-// then checking the ban list and the user's revocation cutoff.
-pub async fn validate_auth_token(
-    token: &str,
-    banned_token_store: &dyn BannedTokenStore,
-    token_epoch_store: &dyn TokenEpochStore,
-    config: &JwtAuthConfig,
-) -> Result<Claims, TokenAuthError> {
+/// Decode `token`, checking its signature, expiry and (when configured)
+/// audience and issuer, but not the ban list or revocation cutoff.
+pub(crate) fn decode_signed(token: &str, config: &JwtAuthConfig) -> Result<Claims, TokenAuthError> {
     let secret = config.jwt_secret.expose_secret().as_bytes();
 
     // When an audience/issuer is configured, the claim is *required*, not just
@@ -264,9 +264,20 @@ pub async fn validate_auth_token(
         validation.required_spec_claims.insert("iss".to_owned());
     }
 
-    let claims = decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation)
+    decode::<Claims>(token, &DecodingKey::from_secret(secret), &validation)
         .map(|data| data.claims)
-        .map_err(TokenAuthError::TokenError)?;
+        .map_err(TokenAuthError::TokenError)
+}
+
+// Check if JWT auth token is valid by decoding it using the JWT secret,
+// then checking the ban list and the user's revocation cutoff.
+pub async fn validate_auth_token(
+    token: &str,
+    banned_token_store: &dyn BannedTokenStore,
+    token_epoch_store: &dyn TokenEpochStore,
+    config: &JwtAuthConfig,
+) -> Result<Claims, TokenAuthError> {
+    let claims = decode_signed(token, config)?;
 
     // Check the token string as presented. The store holds tokens exactly as
     // issued (logout bans the cookie value), and re-encoding decoded claims
@@ -339,6 +350,11 @@ pub struct Claims {
     pub aud: Option<String>,
     /// Issuer binding; present only when the issuing config sets one.
     pub iss: Option<String>,
+    /// The refresh-token family the token was issued with, when refresh
+    /// tokens are on: logging out with this token ends that family, whether
+    /// the token came in a cookie or as `Authorization: Bearer`.
+    #[serde(default)]
+    pub fam: Option<String>,
 }
 
 impl tempered_core::IdentityClaims for Claims {
@@ -358,7 +374,8 @@ impl Serialize for Claims {
             + usize::from(self.iat.is_some())
             + usize::from(self.jti.is_some())
             + usize::from(self.aud.is_some())
-            + usize::from(self.iss.is_some());
+            + usize::from(self.iss.is_some())
+            + usize::from(self.fam.is_some());
         let mut state = serializer.serialize_struct("Claims", len)?;
         state.serialize_field("sub", &self.sub.expose_secret())?;
         state.serialize_field("exp", &self.exp)?;
@@ -370,6 +387,9 @@ impl Serialize for Claims {
         }
         if let Some(aud) = &self.aud {
             state.serialize_field("aud", aud)?;
+        }
+        if let Some(fam) = &self.fam {
+            state.serialize_field("fam", fam)?;
         }
         if let Some(iss) = &self.iss {
             state.serialize_field("iss", iss)?;
@@ -468,6 +488,7 @@ mod tests {
             jti: Some(uuid::Uuid::new_v4().to_string()),
             aud: None,
             iss: None,
+            fam: None,
         };
         let token = create_token(&claims, config.jwt_secret.expose_secret().as_bytes()).unwrap();
         let result = validate_auth_token(

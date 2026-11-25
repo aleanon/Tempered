@@ -754,7 +754,11 @@ pub struct RefreshRecord {
 /// §4.14).
 #[async_trait]
 pub trait RefreshTokenStore: Send + Sync {
-    /// Store a new, unused token.
+    /// Store a new, unused token. Refuse it with
+    /// [`NotFound`](RefreshTokenStoreError::NotFound) if its family was
+    /// revoked (for at least as long as a rotation can take): otherwise a
+    /// rotation that redeemed a token just before the revocation would
+    /// bring the family back.
     async fn create(
         &self,
         token: RefreshTokenHash,
@@ -772,13 +776,12 @@ pub trait RefreshTokenStore: Send + Sync {
         token: &RefreshTokenHash,
     ) -> Result<RefreshRecord, RefreshTokenStoreError>;
 
-    /// Revoke the family `token` belongs to (logout). Succeeds for an
-    /// unknown token.
-    async fn revoke_family_of(
-        &self,
-        token: &RefreshTokenHash,
-    ) -> Result<(), RefreshTokenStoreError>;
+    /// Revoke a family (logout), in one atomic step with the refusal of new
+    /// tokens in it. Succeeds for an unknown family.
+    async fn revoke_family(&self, family: &str) -> Result<(), RefreshTokenStoreError>;
 
-    /// Revoke every token of the user (password change, account deletion).
+    /// Revoke every family of the user (password change, account
+    /// deletion), each as [`revoke_family`](Self::revoke_family) does. Must
+    /// reach every family whose tokens can still be redeemed.
     async fn revoke_all_for_user(&self, email: &Email) -> Result<(), RefreshTokenStoreError>;
 }

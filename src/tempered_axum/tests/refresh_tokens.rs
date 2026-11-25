@@ -216,3 +216,24 @@ async fn bearer_clients_get_the_tokens_in_the_body_and_send_them_in_headers() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+#[tokio::test]
+async fn a_bearer_client_logging_out_ends_its_refresh_token() {
+    let app = app();
+    let login = logged_in(&app).await;
+    let access = login.body["accessToken"].as_str().unwrap().to_string();
+    let refresh = login.body["refreshToken"].as_str().unwrap().to_string();
+
+    // No cookies: only the header, as a mobile app would send it.
+    let logout = Request::post("/logout")
+        .header(header::AUTHORIZATION, format!("Bearer {access}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&app, logout).await.status, StatusCode::OK);
+
+    let body = json!({ "refreshToken": refresh }).to_string();
+    assert_eq!(
+        send(&app, post("/refresh", None, &body)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}

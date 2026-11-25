@@ -18,7 +18,7 @@ use tempered_core::{
 use thiserror::Error;
 
 use crate::auth_validation::local_jwt_validator::{
-    JwtAuthConfig, LocalJwtValidator, TokenAuthError, create_auth_cookie,
+    JwtAuthConfig, LocalJwtValidator, TokenAuthError, create_auth_cookie, decode_signed,
     generate_auth_token_issued_at,
 };
 
@@ -340,9 +340,14 @@ where
         Ok(Secret::new(token))
     }
 
-    /// Sign an access JWT stamped with `ticket`.
-    fn sign(&self, email: &Email, ticket: &JwtTicket) -> Result<String, JwtTokenError> {
-        generate_auth_token_issued_at(email, &self.config, ticket.issued_at)
+    /// Sign an access JWT stamped with `ticket`, naming its refresh family.
+    fn sign(
+        &self,
+        email: &Email,
+        ticket: &JwtTicket,
+        family: Option<&str>,
+    ) -> Result<String, JwtTokenError> {
+        generate_auth_token_issued_at(email, &self.config, ticket.issued_at, family)
             .map_err(JwtTokenError::Generate)
     }
 
@@ -399,16 +404,14 @@ where
         // Stamped with the moment the login began, not the moment it finished.
         // A "revoke all" in between moved the cutoff past this stamp, so the
         // validator rejects the token: no check is needed here.
-        let token = self.sign(email, &ticket)?;
-        let refresh = match &self.refresh {
-            Some(refresh) => {
-                let family = uuid::Uuid::new_v4().to_string();
-                let expires_at = unix_now() + refresh.ttl_seconds;
-                Some(self.new_refresh(refresh, email, family, expires_at).await?)
-            }
-            None => None,
+        let Some(refresh) = &self.refresh else {
+            return Ok(JwtToken(self.sign(email, &ticket, None)?, None));
         };
-        Ok(JwtToken(token, refresh))
+        let family = uuid::Uuid::new_v4().to_string();
+        let token = self.sign(email, &ticket, Some(&family))?;
+        let expires_at = unix_now() + refresh.ttl_seconds;
+        let next = self.new_refresh(refresh, email, family, expires_at).await?;
+        Ok(JwtToken(token, Some(next)))
     }
 
     async fn revoke(&self, token: &JwtToken) -> Result<(), JwtTokenError> {
@@ -416,11 +419,16 @@ where
             .ban_token(token.0.clone())
             .await
             .map_err(JwtTokenError::Revoke)?;
-        // Logout ends the login's refresh tokens too.
-        if let (Some(refresh), Some(presented)) = (&self.refresh, &token.1) {
+        // Logout ends the login's refresh tokens too: the JWT names their
+        // family, so this works for a token from a cookie or a Bearer header.
+        if let Some(refresh) = &self.refresh
+            && let Some(family) = decode_signed(&token.0, &self.config)
+                .ok()
+                .and_then(|claims| claims.fam)
+        {
             refresh
                 .store
-                .revoke_family_of(&hash_refresh(presented.expose_secret()))
+                .revoke_family(&family)
                 .await
                 .map_err(JwtTokenError::Refresh)?;
         }
@@ -488,13 +496,16 @@ where
     }
 
     fn extract<R: AuthRequest>(&self, req: &R) -> Option<JwtToken> {
-        let refresh = self
-            .refresh
-            .as_ref()
-            .and_then(|r| req.cookie(&r.cookie_name))
-            .map(|s| Secret::new(s.to_string()));
+        // The cookie, or a bearer client's header (so its logout works too).
         req.cookie(&self.config.jwt_cookie_name)
-            .map(|s| JwtToken(s.to_string(), refresh))
+            .map(str::to_string)
+            .or_else(|| {
+                req.header("authorization")
+                    .and_then(|v| v.strip_prefix("Bearer "))
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+            })
+            .map(|s| JwtToken(s, None))
     }
 
     fn extra_login_cookies(&self, token: &JwtToken) -> Vec<String> {
@@ -564,13 +575,23 @@ where
                         }
                         other => JwtTokenError::Refresh(other),
                     })?;
-                // A new access token, stamped like a login's (so a "revoke
-                // all" since refuses it), and the family's next refresh token.
+                // The new tokens are handed out only if the family survives
+                // to the end. A "revoke all" after the redeem either lands
+                // before the successor is created (the store refuses it: the
+                // family is revoked, and nothing is returned) or after (it
+                // deletes the successor, and the access token, stamped by
+                // `begin` before the new cutoff, is refused).
                 let ticket = self.begin(&record.email).await?;
-                let access = self.sign(&record.email, &ticket)?;
+                let access = self.sign(&record.email, &ticket, Some(&record.family))?;
                 let next = self
                     .new_refresh(refresh, &record.email, record.family, record.expires_at)
-                    .await?;
+                    .await
+                    .map_err(|e| match e {
+                        JwtTokenError::Refresh(tempered_core::RefreshTokenStoreError::NotFound) => {
+                            JwtTokenError::RefreshRefused
+                        }
+                        other => other,
+                    })?;
                 Ok(JwtToken(access, Some(next)))
             }
             .await,

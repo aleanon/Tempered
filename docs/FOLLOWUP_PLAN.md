@@ -538,8 +538,11 @@ Should-have:
   `POST /refresh` (public, cookie or body), absolute family lifetime.
   The JWT validator accepts `Authorization: Bearer`; `.tokens_in_body()`
   puts tokens in login bodies. Not done: refresh for session schemes
-  (sessions already slide), and revoking a bearer client's refresh family
-  at logout (it has no cookie; it discards the token).
+  (sessions already slide). Hardened the same day after the security
+  review: access JWTs carry their family (`fam`), so logout by cookie or
+  Bearer ends it; a revoked family leaves a tombstone that refuses
+  in-flight rotations; Redis does every multi-key step in one script and
+  never shortens an index TTL.
 - **8.7 Session and device management.** `SessionStore::list_for_user`,
   per-session metadata (created, last seen, user agent), and list/revoke
   routes.

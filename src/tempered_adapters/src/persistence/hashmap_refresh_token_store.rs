@@ -9,6 +9,15 @@ use tempered_core::{
 struct State {
     /// token → (record, used).
     tokens: HashMap<RefreshTokenHash, (RefreshRecord, bool)>,
+    /// Revoked families: no new token joins one.
+    revoked: std::collections::HashSet<String>,
+}
+
+impl State {
+    fn revoke(&mut self, family: &str) {
+        self.tokens.retain(|_, (r, _)| r.family != family);
+        self.revoked.insert(family.to_string());
+    }
 }
 
 /// In-memory [`RefreshTokenStore`].
@@ -44,6 +53,9 @@ impl RefreshTokenStore for HashMapRefreshTokenStore {
         record: RefreshRecord,
     ) -> Result<(), RefreshTokenStoreError> {
         let mut state = self.state.lock().expect("refresh map poisoned");
+        if state.revoked.contains(&record.family) {
+            return Err(RefreshTokenStoreError::NotFound);
+        }
         let now = now();
         state.tokens.retain(|_, (r, _)| r.expires_at > now);
         state.tokens.insert(token, (record, false));
@@ -63,28 +75,32 @@ impl RefreshTokenStore for HashMapRefreshTokenStore {
         }
         if *used {
             let (family, email) = (record.family.clone(), record.email.clone());
-            state.tokens.retain(|_, (r, _)| r.family != family);
+            state.revoke(&family);
             return Err(RefreshTokenStoreError::Reused { email });
         }
         *used = true;
         Ok(record.clone())
     }
 
-    async fn revoke_family_of(
-        &self,
-        token: &RefreshTokenHash,
-    ) -> Result<(), RefreshTokenStoreError> {
-        let mut state = self.state.lock().expect("refresh map poisoned");
-        if let Some((record, _)) = state.tokens.get(token) {
-            let family = record.family.clone();
-            state.tokens.retain(|_, (r, _)| r.family != family);
-        }
+    async fn revoke_family(&self, family: &str) -> Result<(), RefreshTokenStoreError> {
+        self.state
+            .lock()
+            .expect("refresh map poisoned")
+            .revoke(family);
         Ok(())
     }
 
     async fn revoke_all_for_user(&self, email: &Email) -> Result<(), RefreshTokenStoreError> {
         let mut state = self.state.lock().expect("refresh map poisoned");
-        state.tokens.retain(|_, (r, _)| &r.email != email);
+        let families: Vec<String> = state
+            .tokens
+            .values()
+            .filter(|(r, _)| &r.email == email)
+            .map(|(r, _)| r.family.clone())
+            .collect();
+        for family in families {
+            state.revoke(&family);
+        }
         Ok(())
     }
 }

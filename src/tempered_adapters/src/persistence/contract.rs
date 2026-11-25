@@ -863,9 +863,15 @@ pub(crate) async fn refresh_token_store(store: impl tempered_core::RefreshTokenS
 
     // Logout revokes one family.
     store.create([4; 32], record(&alice, "f3")).await.unwrap();
-    store.revoke_family_of(&[4; 32]).await.unwrap();
-    store.revoke_family_of(&[8; 32]).await.unwrap();
+    store.revoke_family("f3").await.unwrap();
+    store.revoke_family("never-issued").await.unwrap();
     assert!(store.redeem(&[4; 32]).await.is_err());
+    // A rotation in flight at the revocation cannot bring the family back.
+    assert!(matches!(
+        store.create([11; 32], record(&alice, "f3")).await,
+        Err(RefreshTokenStoreError::NotFound)
+    ));
+    assert!(store.redeem(&[11; 32]).await.is_err());
 
     // Revoke-all takes every family of one user, and only theirs.
     store.create([5; 32], record(&alice, "f4")).await.unwrap();
@@ -875,6 +881,10 @@ pub(crate) async fn refresh_token_store(store: impl tempered_core::RefreshTokenS
     assert!(store.redeem(&[5; 32]).await.is_err());
     assert!(store.redeem(&[6; 32]).await.is_err());
     assert!(store.redeem(&[7; 32]).await.is_ok());
+    assert!(
+        store.create([12; 32], record(&alice, "f4")).await.is_err(),
+        "revoked by revoke-all"
+    );
 
     // An expired token is refused.
     let expired = RefreshRecord {
