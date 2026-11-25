@@ -46,11 +46,18 @@ where
         // revoked since the middleware checked it; if so, the same cleanup
         // dropped the ceremony, and the flow finds none under the lock.
         let lock = self.lock_credentials(&email).await?;
-        let result = self
-            .passkeys
-            .flow
-            .finish_registration(&email, ceremony_id, response)
-            .await;
+        // And the account must still be there (deleted, or moved to another
+        // address): a passkey under a free address would be inherited by
+        // whoever registers it next.
+        let result = match self.user_store.get_user(&email).await {
+            Ok(_) => self
+                .passkeys
+                .flow
+                .finish_registration(&email, ceremony_id, response)
+                .await
+                .map_err(CredentialError::from),
+            Err(e) => Err(e.into()),
+        };
         self.unlock_credentials(&email, lock).await;
         result?;
         Ok(())

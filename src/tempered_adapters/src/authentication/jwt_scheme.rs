@@ -1465,6 +1465,24 @@ mod passkey_tests {
         ));
     }
 
+    #[tokio::test]
+    async fn an_enrolment_for_an_address_with_no_account_cannot_finish() {
+        let (scheme, users) = scheme_with_passkeys().await;
+        let ceremony = scheme.start_passkey_registration(email()).await.unwrap();
+        // The account went away (moved, or deleted by a store of the app's
+        // own) without the passkey cleanup.
+        users.delete_user(&email()).await.unwrap();
+
+        let response = reply_with_count(&ceremony, "cred-abc", 0);
+        assert!(
+            scheme
+                .finish_passkey_registration(email(), ceremony.ceremony_id, response)
+                .await
+                .is_err()
+        );
+        assert!(scheme.passkeys(&email()).await.unwrap().is_empty());
+    }
+
     // Paused time: the scheme's short wait for the lock passes instantly.
     #[tokio::test(start_paused = true)]
     async fn nothing_logs_in_or_enrols_while_the_credentials_are_locked() {

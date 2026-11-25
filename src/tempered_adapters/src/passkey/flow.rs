@@ -218,14 +218,13 @@ where
         Ok(())
     }
 
-    /// Remove every passkey enrolled for `email`. Call when the account is
-    /// deleted, so its credentials cannot outlive it or be inherited by a later
-    /// account that reuses the address.
+    /// Move the user's credentials to their new address (an email change).
     ///
-    /// Enrolments the user has started but not finished are dropped too, so
-    /// one begun before this call cannot add a passkey after it.
-    /// Move the user's credentials to their new address.
+    /// Enrolments started under `old` are dropped first: one finishing after
+    /// the move would store a passkey under the freed address, for whoever
+    /// registers it next.
     pub async fn move_user(&self, old: &Email, new: &Email) -> Result<(), PasskeyFlowError> {
+        self.challenge_store.delete_all_for_user(old).await?;
         Ok(self.credential_store.reassign(old, new).await?)
     }
 
@@ -252,6 +251,12 @@ where
         Ok(self.credential_store.delete_credential(email, id).await?)
     }
 
+    /// Remove every passkey enrolled for `email`. Call when the account is
+    /// deleted, so its credentials cannot outlive it or be inherited by a later
+    /// account that reuses the address.
+    ///
+    /// Enrolments the user has started but not finished are dropped too, so
+    /// one begun before this call cannot add a passkey after it.
     pub async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError> {
         self.challenge_store.delete_all_for_user(email).await?;
         Ok(self.credential_store.delete_all_for_user(email).await?)
@@ -554,6 +559,27 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn moving_a_user_drops_their_unfinished_enrolments() {
+        let f = flow();
+        register(&f, "cred-a").await;
+        let pending = f.start_registration(email()).await.unwrap();
+
+        f.move_user(&email(), &other_email()).await.unwrap();
+
+        // The enrolment begun under the old address cannot finish there.
+        let response = reply(&pending, "cred-late");
+        assert!(matches!(
+            f.finish_registration(&email(), pending.ceremony_id, response)
+                .await,
+            Err(PasskeyFlowError::Challenge(
+                ChallengeStoreError::ChallengeNotFound
+            ))
+        ));
+        assert!(f.list(&email()).await.unwrap().is_empty());
+        assert_eq!(f.list(&other_email()).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
