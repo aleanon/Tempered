@@ -51,8 +51,8 @@ pub mod hashmap_user_store;
 pub mod hashset_banned_token_store;
 mod user_locks;
 
-#[cfg(test)]
-pub(crate) mod contract;
+#[cfg(any(test, feature = "testing"))]
+pub mod contract;
 #[cfg(test)]
 pub(crate) mod test_support;
 

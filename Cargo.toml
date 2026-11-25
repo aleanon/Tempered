@@ -12,6 +12,8 @@ postgres = ["tempered_adapters/postgres"]
 redis = ["tempered_adapters/redis"]
 oauth-client = ["tempered_adapters/oauth-client"]
 postmark-email = ["tempered_adapters/postmark-email"]
+# The store contract tests, as `tempered::testing`, for your own stores.
+testing = ["tempered_adapters/testing"]
 # Request and rate-limit counters through the `metrics` facade.
 metrics = ["tempered_adapters/metrics"]
 # BreachedPasswordCheck, a password policy using the HIBP range API.

@@ -449,6 +449,21 @@ Every moving part is a trait, so you choose the backend:
 > Several keep secrets unhashed and without expiry — use the Postgres/Redis
 > stores in production.
 
+## Writing your own store
+
+Every store is a trait in `tempered::core` (`UserStore`, `SessionStore`,
+`RefreshTokenStore`, ...), with its promises (atomic steps, single use,
+owner scoping) in its docs. With the `testing` feature,
+`tempered::testing` has one contract test per port, the same ones the
+built-in stores pass:
+
+```rust,ignore
+#[tokio::test]
+async fn my_store_keeps_the_promises() {
+    tempered::testing::session_store(MySessionStore::connect().await).await;
+}
+```
+
 ## Examples
 
 Runnable, self-contained (offline) examples live in [`examples/`](examples/):

@@ -175,6 +175,13 @@ pub mod oauth_providers {
 
 pub use tempered_adapters::endpoints::{AuthEvent, AuthEventSink, ClientAddr};
 
+/// Contract tests for the store ports (feature `testing`): run one against a
+/// store of your own to check it keeps the port's promises.
+#[cfg(feature = "testing")]
+pub mod testing {
+    pub use tempered_adapters::persistence::contract::*;
+}
+
 /// The framework-neutral route table (for writing an adapter for another web
 /// framework; see `docs/ROUTE_TABLE_DESIGN.md`).
 pub mod endpoints {

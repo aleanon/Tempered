@@ -1,18 +1,33 @@
-//! One test function per port, run against every implementation of it, so
-//! the in-memory and the production stores answer the same assertions.
+//! Contract tests for the store ports: one `async fn` per port, which
+//! exercises a store against the behaviour the port's docs promise
+//! (atomicity, single use, owner scoping, ...). The built-in stores run
+//! them in their own tests; a store of your own can too (feature
+//! `testing`):
+//!
+//! ```ignore
+//! #[tokio::test]
+//! async fn my_session_store_meets_the_contract() {
+//!     tempered::testing::session_store(MySessionStore::connect().await).await;
+//! }
+//! ```
+//!
+//! Each one panics with an assertion on the first broken promise. Give it
+//! an empty store: it creates users, sessions and so on under fixed test
+//! addresses.
 
 #![allow(dead_code)]
 
 use secrecy::Secret;
 use tempered_core::{Email, SessionId, SessionRecord, SessionStore, SessionStoreError};
 
-pub(crate) fn email(address: &str) -> Email {
+/// A test address.
+pub fn email(address: &str) -> Email {
     Email::try_from(Secret::new(address.to_string())).unwrap()
 }
 
 /// [`SessionStore`]: lookup, single and per-user deletion, the revocation
 /// count, and the credential lock.
-pub(crate) async fn session_store(store: impl SessionStore) {
+pub async fn session_store(store: impl SessionStore) {
     let alice = email("alice@example.com");
     let bob = email("bob@example.com");
 
@@ -110,7 +125,7 @@ pub(crate) async fn session_store(store: impl SessionStore) {
 }
 
 /// [`OAuthStateStore`]: a stored request comes back exactly once.
-pub(crate) async fn oauth_state_store(store: impl tempered_core::OAuthStateStore) {
+pub async fn oauth_state_store(store: impl tempered_core::OAuthStateStore) {
     use secrecy::ExposeSecret;
     use tempered_core::{OAuthStateStoreError, PendingAuthorization};
 
@@ -142,7 +157,7 @@ pub(crate) async fn oauth_state_store(store: impl tempered_core::OAuthStateStore
 }
 
 /// [`ChallengeStore`]: single-use ceremonies, and dropping one user's.
-pub(crate) async fn challenge_store(store: impl tempered_core::ChallengeStore) {
+pub async fn challenge_store(store: impl tempered_core::ChallengeStore) {
     use tempered_core::{
         CeremonyId, CeremonyKind, CeremonyState, ChallengeStoreError, PendingCeremony,
     };
@@ -204,7 +219,7 @@ pub(crate) async fn challenge_store(store: impl tempered_core::ChallengeStore) {
 
 /// [`EmailVerificationTokenStore`]: single-use tokens, the verified mark,
 /// and forgetting one address.
-pub(crate) async fn email_verification_token_store(
+pub async fn email_verification_token_store(
     store: impl tempered_core::EmailVerificationTokenStore,
 ) {
     use tempered_core::{EmailVerificationStoreError, EmailVerificationToken};
@@ -249,7 +264,7 @@ pub(crate) async fn email_verification_token_store(
 
 /// [`TokenEpochStore`](tempered_core::TokenEpochStore): the cutoff only
 /// ever rises, per user, and the credential lock.
-pub(crate) async fn token_epoch_store(store: impl tempered_core::TokenEpochStore) {
+pub async fn token_epoch_store(store: impl tempered_core::TokenEpochStore) {
     let alice = email("alice@example.com");
     let bob = email("bob@example.com");
 
@@ -278,7 +293,7 @@ pub(crate) async fn token_epoch_store(store: impl tempered_core::TokenEpochStore
 /// [`TwoFaCodeStore`](tempered_core::TwoFaCodeStore) with the default cap
 /// of 5: single use, the per-account guessing budget (which a new code does
 /// not reset), and success clearing it.
-pub(crate) async fn two_fa_code_store(store: impl tempered_core::TwoFaCodeStore) {
+pub async fn two_fa_code_store(store: impl tempered_core::TwoFaCodeStore) {
     use tempered_core::{TwoFaAttemptId, TwoFaCode, TwoFaCodeStoreError};
 
     let wrong = |right: &TwoFaCode| {
@@ -387,7 +402,7 @@ pub(crate) async fn two_fa_code_store(store: impl tempered_core::TwoFaCodeStore)
 /// [`UserStore`](tempered_core::UserStore): one account per address,
 /// password checks, and `UserNotFound` from every update of a missing
 /// account.
-pub(crate) async fn user_store(store: impl tempered_core::UserStore) {
+pub async fn user_store(store: impl tempered_core::UserStore) {
     use tempered_core::{Password, User, UserStoreError, ValidatedUser};
 
     let password = |p: &str| Password::try_from(Secret::new(p.to_string())).unwrap();
@@ -473,7 +488,7 @@ pub(crate) async fn user_store(store: impl tempered_core::UserStore) {
 
 /// [`PasswordResetTokenStore`]: single-use tokens, and dropping every token
 /// of one address.
-pub(crate) async fn password_reset_token_store(store: impl tempered_core::PasswordResetTokenStore) {
+pub async fn password_reset_token_store(store: impl tempered_core::PasswordResetTokenStore) {
     use tempered_core::{PasswordResetToken, PasswordResetTokenStoreError};
 
     let alice = email("alice@example.com");
@@ -533,7 +548,7 @@ pub(crate) async fn password_reset_token_store(store: impl tempered_core::Passwo
 
 /// [`OAuthIdentityStore`]: links never move between accounts, and one
 /// account's links can be removed.
-pub(crate) async fn oauth_identity_store(store: impl tempered_core::OAuthIdentityStore) {
+pub async fn oauth_identity_store(store: impl tempered_core::OAuthIdentityStore) {
     use tempered_core::OAuthIdentityStoreError;
 
     let alice = email("alice@example.com");
@@ -603,7 +618,7 @@ pub(crate) async fn oauth_identity_store(store: impl tempered_core::OAuthIdentit
 
 /// [`PasskeyCredentialStore`]: insert-only ids, the sign-count rule, and
 /// removing one owner's credentials.
-pub(crate) async fn passkey_credential_store(store: impl tempered_core::PasskeyCredentialStore) {
+pub async fn passkey_credential_store(store: impl tempered_core::PasskeyCredentialStore) {
     use tempered_core::{CredentialId, PasskeyCredential, PasskeyStoreError};
 
     let alice = email("alice@example.com");
@@ -724,7 +739,7 @@ pub(crate) async fn passkey_credential_store(store: impl tempered_core::PasskeyC
 }
 
 /// [`ApiKeyStore`]: lookup by prefix, per-owner listing, revocation.
-pub(crate) async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
+pub async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
     use tempered_core::{ApiKeyId, ApiKeyRecord, ApiKeyStoreError};
 
     let alice = email("alice@example.com");
@@ -813,7 +828,7 @@ pub(crate) async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
 }
 
 /// Hits count up within a window, keys are separate, and a window ends.
-pub(crate) async fn rate_limit_store(store: impl tempered_core::RateLimitStore) {
+pub async fn rate_limit_store(store: impl tempered_core::RateLimitStore) {
     let first = store.hit("login:a@example.com", 60).await.unwrap();
     assert_eq!(first.count, 1);
     assert!((1..=60).contains(&first.resets_in_seconds));
@@ -841,7 +856,7 @@ pub(crate) async fn rate_limit_store(store: impl tempered_core::RateLimitStore) 
 }
 
 /// Pending and active secrets, single-use steps and recovery codes.
-pub(crate) async fn totp_store(store: impl tempered_core::TotpStore) {
+pub async fn totp_store(store: impl tempered_core::TotpStore) {
     use secrecy::{ExposeSecret, Secret};
     let alice = email("alice@example.com");
     let bob = email("bob@example.com");
@@ -920,7 +935,7 @@ pub(crate) async fn totp_store(store: impl tempered_core::TotpStore) {
 }
 
 /// Single use, reuse revoking the family, logout and revoke-all, expiry.
-pub(crate) async fn refresh_token_store(store: impl tempered_core::RefreshTokenStore) {
+pub async fn refresh_token_store(store: impl tempered_core::RefreshTokenStore) {
     use tempered_core::{RefreshRecord, RefreshTokenStoreError};
     let alice = email("alice@example.com");
     let bob = email("bob@example.com");

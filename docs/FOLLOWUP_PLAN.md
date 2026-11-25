@@ -650,8 +650,11 @@ OAuth slot instead.
 - **9.5 Stable user id.** Every store keys on `Email`. A UUID with the
   (case-folded) email as a lookup index makes email change possible and
   simplifies cleanup. This touches every port (L).
-- **9.6 Public contract tests.** Expose `persistence/contract.rs` behind a
+- **9.6 Public contract tests.** ✅ DONE 2026-11-25. Expose `persistence/contract.rs` behind a
   `testing` feature so third-party store backends can run them.
+  As built: `persistence::contract` is public under `testing` (and in
+  tests), re-exported as `tempered::testing`; README "Writing your own
+  store".
 - **9.7 Capability bundle (only if more slots are planned).** A ninth slot
   touches about 36 impl headers that each spell out all eight generics. A
   `Capabilities` bundle with associated types would shrink them to

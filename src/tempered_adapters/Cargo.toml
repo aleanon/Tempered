@@ -19,6 +19,9 @@ postmark-email = ["dep:reqwest"]
 # Counters through the `metrics` facade (install an exporter in the app):
 # `tempered_requests_total{route, status}`, `tempered_rate_limited_total{group}`.
 metrics = ["dep:metrics"]
+# The store contract tests (`persistence::contract`), for checking a store
+# of your own against the ports' promises.
+testing = []
 # BreachedPasswordCheck (Have I Been Pwned range API).
 breached-passwords = ["dep:reqwest"]
 # WebAuthnRsVerifier, the production passkey verifier. Off by default even
