@@ -1,8 +1,14 @@
 
 [package]
 name = "tempered"
+description = "Composable authentication for Rust web services: JWT, sessions and API keys, with 2FA, passkeys, OAuth2/OIDC and more, auto-wired into axum"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 # Everything on by default; slim consumers (e.g. in-memory JWT only) use
@@ -24,7 +30,7 @@ passkeys-webauthn = ["tempered_adapters/passkeys-webauthn"]
 [dependencies]
 # Internal crates - re-export all public APIs
 tempered_core.workspace = true
-tempered_adapters = { path = "src/tempered_adapters", default-features = false }
+tempered_adapters = { path = "src/tempered_adapters", version = "0.1.0", default-features = false }
 tempered_axum.workspace = true
 
 # Re-export key dependencies that are part of the public API
@@ -68,11 +74,16 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# The oldest toolchain that builds every feature (CI's `msrv` job checks it).
+rust-version = "1.91"
+repository = "https://github.com/aleanon/Tempered"
+keywords = ["authentication", "jwt", "session", "passkey", "oauth"]
+categories = ["authentication", "web-programming"]
 
 [workspace.dependencies]
 # Internal crates
-tempered_core = { path = "src/tempered_core" }
-tempered_axum = { path = "src/tempered_axum" }
+tempered_core = { path = "src/tempered_core", version = "0.1.0" }
+tempered_axum = { path = "src/tempered_axum", version = "0.1.0" }
 
 # Web framework
 axum = "0.8"

@@ -699,6 +699,21 @@ crates.io-ready Cargo metadata (description, repository, license, versioned
 internal dependencies). Fuzz the token, cookie, API-key and WebAuthn JSON
 parsers.
 
+As built (2026-11-25), all but the license:
+- `SECURITY.md` (private reporting through GitHub advisories) and a
+  Keep-a-Changelog `CHANGELOG.md`.
+- `rust-version = "1.91"`: the oldest toolchain that builds every
+  feature (1.88 fails on webauthn-rs and aes). CI's `msrv` job checks it.
+- Descriptions, repository, keywords and categories, and versioned
+  internal path dependencies.
+- `fuzz/`, a cargo-fuzz crate with targets `domain`,
+  `request_credentials`, `cookies_agree` (differential) and `webauthn`.
+  `cookies_agree` found the route table and the validators reading
+  cookies differently (fixed in 4f604f8).
+
+**Open: LICENSE.** The choice is the owner's. Then set `license` in
+`[workspace.package]` and inherit it.
+
 ## Backlog
 
 - ~~**Configurable rate limit on `/verify-email/resend`**~~ ✅ DONE in 8.1 (requested

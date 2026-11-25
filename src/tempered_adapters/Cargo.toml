@@ -1,7 +1,12 @@
 [package]
 name = "tempered_adapters"
+description = "Schemes, the framework-neutral route table and store backends for the tempered authentication library"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 # Building this crate directly (tests, examples) gets everything; slim builds

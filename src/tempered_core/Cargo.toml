@@ -1,7 +1,12 @@
 [package]
 name = "tempered_core"
+description = "Domain types and port traits for the tempered authentication library (no web dependencies)"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 # Domain logic - minimal dependencies

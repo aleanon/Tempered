@@ -1,7 +1,12 @@
 [package]
 name = "tempered_axum"
+description = "The axum adapter for the tempered authentication library"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [[test]]
 name = "api"
@@ -12,8 +17,8 @@ harness = true
 # Core authentication library. No default adapter features: which heavy
 # backends compile is the top-level consumer's choice (via the facade's
 # feature flags); this crate's own code only needs the always-on surface.
-tempered_core = { path = "../tempered_core" }
-tempered_adapters = { path = "../tempered_adapters", default-features = false }
+tempered_core = { path = "../tempered_core", version = "0.1.0" }
+tempered_adapters = { path = "../tempered_adapters", version = "0.1.0", default-features = false }
 
 # Axum framework
 axum.workspace = true
