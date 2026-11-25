@@ -583,8 +583,15 @@ Should-have:
   provider vouches for this address. Store ports gained `list_for_user` /
   `unlink` and `delete_credential` / `rename_credential` (owner-scoped);
   `PasskeyCredential.name` (migration, `.sqlx` regenerated).
-- **8.12 API-key management.** Issue/list/revoke routes in the elevated
+- **8.12 API-key management.** ✅ DONE 2026-11-25. Issue/list/revoke routes in the elevated
   tier, scope enforcement (`require_scope`), expiry and last-used.
+  As built: `.supports_api_key_management(store)` (data on the scheme);
+  routes `GET /api-keys`, `POST|DELETE /elevated/api-keys[/{id}]`
+  (verified tier without elevation); account deletion deletes the keys.
+  `ApiKeyRecord`/`Metadata` gained `created_at`, `expires_at`,
+  `last_used_at` (migration, `.sqlx`), `ApiKeyStore::record_use`
+  (validator writes at most once a minute), `issue_api_key_until`;
+  `tempered_axum::middleware::require_scope`.
 - **8.13 Observability.** `#[instrument]` spans on the flows, plus metrics
   counters behind a feature.
 

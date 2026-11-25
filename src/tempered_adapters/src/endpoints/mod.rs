@@ -78,6 +78,9 @@ pub enum RouteId {
     PasskeyList,
     PasskeyRename,
     PasskeyDelete,
+    ApiKeyList,
+    ApiKeyIssue,
+    ApiKeyRevoke,
 }
 
 /// What a request must prove before a route runs. The tiers nest: a

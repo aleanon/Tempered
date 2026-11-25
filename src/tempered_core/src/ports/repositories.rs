@@ -455,14 +455,24 @@ pub struct ApiKeyRecord {
     pub secret_hash: String,
     pub owner: Email,
     pub scopes: Vec<String>,
+    /// Unix seconds.
+    pub created_at: u64,
+    /// Unix seconds after which the key is refused; `None` never expires.
+    pub expires_at: Option<u64>,
+    /// When the key was last used (recorded at most about once a minute).
+    pub last_used_at: Option<u64>,
 }
 
 /// Non-secret metadata returned when listing a user's keys.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiKeyMetadata {
     pub id: ApiKeyId,
     pub prefix: String,
     pub scopes: Vec<String>,
+    pub created_at: u64,
+    pub expires_at: Option<u64>,
+    pub last_used_at: Option<u64>,
 }
 
 #[derive(Debug, Error)]
@@ -498,6 +508,10 @@ pub trait ApiKeyStore: Send + Sync {
     /// it when the account is deleted: a key does not check that its owner
     /// still exists.
     async fn delete_all_for_owner(&self, owner: &Email) -> Result<(), ApiKeyStoreError>;
+
+    /// Record that key `id` was used at `at` (Unix seconds). Best effort:
+    /// a failure must not refuse the request.
+    async fn record_use(&self, id: &ApiKeyId, at: u64) -> Result<(), ApiKeyStoreError>;
 }
 
 // SessionStore port trait and errors

@@ -1,0 +1,3 @@
+ALTER TABLE api_keys DROP COLUMN IF EXISTS last_used_at;
+ALTER TABLE api_keys DROP COLUMN IF EXISTS expires_at;
+ALTER TABLE api_keys DROP COLUMN IF EXISTS created_at;

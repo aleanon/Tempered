@@ -735,6 +735,9 @@ pub(crate) async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
         secret_hash: format!("hash-of-{prefix}"),
         owner: owner.clone(),
         scopes: scopes.iter().map(|s| s.to_string()).collect(),
+        created_at: 1000,
+        expires_at: Some(5000),
+        last_used_at: None,
     };
 
     let a1 = record("pa1", &alice, &["read", "write"]);
@@ -793,6 +796,20 @@ pub(crate) async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
     assert!(store.list_for_user(&alice).await.unwrap().is_empty());
     assert!(store.find_by_prefix("pa2").await.is_err());
     assert_eq!(store.find_by_prefix("pb1").await.unwrap().owner, bob);
+
+    // Times survive the round trip, and a use is recorded.
+    let found = store.find_by_prefix("pb1").await.unwrap();
+    assert_eq!(
+        (found.created_at, found.expires_at, found.last_used_at),
+        (1000, Some(5000), None)
+    );
+    store.record_use(&found.id, 2000).await.unwrap();
+    assert_eq!(
+        store.find_by_prefix("pb1").await.unwrap().last_used_at,
+        Some(2000)
+    );
+    let listed = store.list_for_user(&bob).await.unwrap();
+    assert_eq!(listed[0].last_used_at, Some(2000));
 }
 
 /// Hits count up within a window, keys are separate, and a window ends.

@@ -163,7 +163,7 @@ pub mod axum_service {
 // are the middleware behind `.validated_router()` / `.validated_elevated_router()`.
 pub use tempered_axum::{
     AuthService, IntoStatusMessage, PathOverrides, RouteId, Tier, auth_service,
-    middleware::{validate_elevated_token, validate_token},
+    middleware::{require_scope, validate_elevated_token, validate_token},
 };
 
 /// Ready-made OAuth/OIDC provider settings (Google, Microsoft, GitHub) and

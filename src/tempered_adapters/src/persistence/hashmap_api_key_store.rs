@@ -65,8 +65,24 @@ impl ApiKeyStore for HashMapApiKeyStore {
                 id: r.id.clone(),
                 prefix: r.prefix.clone(),
                 scopes: r.scopes.clone(),
+                created_at: r.created_at,
+                expires_at: r.expires_at,
+                last_used_at: r.last_used_at,
             })
             .collect())
+    }
+
+    async fn record_use(&self, id: &ApiKeyId, at: u64) -> Result<(), ApiKeyStoreError> {
+        if let Some(record) = self
+            .by_prefix
+            .write()
+            .await
+            .values_mut()
+            .find(|r| &r.id == id)
+        {
+            record.last_used_at = Some(at);
+        }
+        Ok(())
     }
 
     async fn delete_all_for_owner(&self, owner: &Email) -> Result<(), ApiKeyStoreError> {

@@ -585,15 +585,27 @@ pub trait SupportsApiKeyIssuance: AuthenticationScheme {
     /// Errors that can occur during issuance/revocation/listing.
     type IssuanceError: std::error::Error + Send + Sync + 'static;
 
-    /// Issue a new key for `owner` with the given scopes.
+    /// Issue a new key for `owner` with the given scopes, valid until
+    /// `expires_at` (Unix seconds; `None` never expires).
     ///
     /// Returns the key id and the **plaintext** key, which must be shown to the
     /// caller exactly once and is never recoverable afterwards.
+    async fn issue_api_key_until(
+        &self,
+        owner: Email,
+        scopes: Vec<String>,
+        expires_at: Option<u64>,
+    ) -> Result<(ApiKeyId, String), Self::IssuanceError>;
+
+    /// [`issue_api_key_until`](Self::issue_api_key_until) a key that never
+    /// expires.
     async fn issue_api_key(
         &self,
         owner: Email,
         scopes: Vec<String>,
-    ) -> Result<(ApiKeyId, String), Self::IssuanceError>;
+    ) -> Result<(ApiKeyId, String), Self::IssuanceError> {
+        self.issue_api_key_until(owner, scopes, None).await
+    }
 
     /// Revoke `owner`'s key `id`. Pass the authenticated caller as `owner`:
     /// a key id taken from a request names someone else's key just as

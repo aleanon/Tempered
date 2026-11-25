@@ -244,6 +244,20 @@ With passkeys on: `GET /passkey/credentials` lists `{ id, name }`, and
 (under `/elevated` with `e.supports_passkey_enrollment()`). Another user's
 id is a `404`.
 
+### API keys for your users
+
+`.supports_api_key_management(store)` on the login scheme lets users manage
+their own keys, in the store an `ApiKeyScheme` validates against:
+`GET /api-keys` lists `{ id, prefix, scopes, createdAt, expiresAt,
+lastUsedAt }`; `POST /elevated/api-keys { scopes, expiresInDays }` issues
+one and answers the key once (`201 { id, apiKey, expiresAt }`); `DELETE
+/elevated/api-keys/{id}` revokes it. Without elevation the two changes
+need a verified address instead (no `/elevated`). An expired key is
+refused, use is recorded at most once a minute, and deleting the account
+deletes its keys. On the service side, guard a router with
+`from_fn(|req, next| require_scope("invoices:read", req, next))` inside
+the key check (`401` without a key, `403` without the scope).
+
 ### Devices (session schemes)
 
 A session scheme serves `GET /sessions` and `DELETE /sessions/{handle}` to

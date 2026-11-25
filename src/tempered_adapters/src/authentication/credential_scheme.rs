@@ -70,6 +70,9 @@ pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()
     rate_limit: Option<crate::authentication::rate_limit::RateLimiter>,
     /// Extra rules for new passwords (see [`Self::password_policy`]).
     password_policy: Option<Arc<dyn tempered_core::PasswordPolicy>>,
+    /// Where users' own API keys live, when they may manage them (see
+    /// [`Self::supports_api_key_management`]).
+    api_keys: Option<Arc<dyn tempered_core::ApiKeyStore>>,
 }
 
 /// Authorization level a route requires.
@@ -643,7 +646,7 @@ where
 }
 
 /// Exposes the elevated cookie name (if elevation is enabled) so `logout` can clear it.
-trait ElevatedCookieName {
+pub(crate) trait ElevatedCookieName {
     fn elevated_cookie_name(&self) -> Option<&str>;
 }
 
@@ -758,6 +761,7 @@ where
             routes: RouteFlags::default(),
             rate_limit: None,
             password_policy: None,
+            api_keys: None,
         }
     }
 }
@@ -786,6 +790,7 @@ impl<U, T, L, R, M, O, K> CredentialScheme<U, T, (), L, R, M, O, K> {
             routes: self.routes,
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
+            api_keys: self.api_keys,
         }
     }
 }
@@ -833,6 +838,7 @@ impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
             routes: self.routes,
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
+            api_keys: self.api_keys,
         }
     }
 }
@@ -860,6 +866,7 @@ impl<U, T, F, L, M, O, K> CredentialScheme<U, T, F, L, (), M, O, K> {
             routes: self.routes,
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
+            api_keys: self.api_keys,
         }
     }
 }
@@ -887,6 +894,7 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
             routes: self.routes,
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
+            api_keys: self.api_keys,
         }
     }
 }
@@ -918,6 +926,7 @@ impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
             routes: self.routes,
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
+            api_keys: self.api_keys,
         }
     }
 }
@@ -946,6 +955,7 @@ impl<U, T, F, L, R, M, O> CredentialScheme<U, T, F, L, R, M, O, ()> {
             routes: self.routes,
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
+            api_keys: self.api_keys,
         }
     }
 }
@@ -1028,6 +1038,33 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
     pub fn password_policy(mut self, policy: impl tempered_core::PasswordPolicy + 'static) -> Self {
         self.password_policy = Some(Arc::new(policy));
         self
+    }
+
+    /// Let users manage their own API keys: `GET /api-keys` lists them, and
+    /// issuing (`POST`) and revoking (`DELETE /api-keys/{id}`) need an
+    /// elevated token when the scheme has elevation (under `/elevated`), a
+    /// verified address otherwise. Keys go into `store`, the one your
+    /// [`ApiKeyScheme`](crate::authentication::api_key_scheme::ApiKeyScheme)
+    /// validates against. Deleting the account deletes its keys.
+    pub fn supports_api_key_management(
+        mut self,
+        store: impl tempered_core::ApiKeyStore + 'static,
+    ) -> Self {
+        self.api_keys = Some(Arc::new(store));
+        self
+    }
+
+    /// Whether the scheme has elevation (for the route table).
+    pub(crate) fn has_elevation(&self) -> bool
+    where
+        L: ElevatedCookieName,
+    {
+        self.elevation.elevated_cookie_name().is_some()
+    }
+
+    /// The API-key store, when users may manage their keys.
+    pub(crate) fn api_key_store(&self) -> Option<&Arc<dyn tempered_core::ApiKeyStore>> {
+        self.api_keys.as_ref()
     }
 
     /// Apply the password policy, if there is one.
@@ -1513,6 +1550,12 @@ where
             // An authenticator app enrolled for this account must not work
             // for a later account at the same address.
             self.two_fa.forget_user(&email).await?;
+            // Nor may its API keys.
+            if let Some(keys) = &self.api_keys {
+                keys.delete_all_for_owner(&email)
+                    .await
+                    .map_err(|e| CredentialError::ApiKeys(e.to_string()))?;
+            }
             // A deleted user's token would otherwise keep validating until it
             // expires (JWT validation is signature-based, not a user-store read).
             self.two_fa.cancel_pending(&email).await?;
@@ -1773,6 +1816,7 @@ impl<U, T, S, E, TE, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E>, Elevation<T
             routes: self.routes,
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
+            api_keys: self.api_keys,
         }
     }
 }
@@ -2844,6 +2888,9 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
     #[error("{0}")]
     TotpNotEnrolled(&'static str),
 
+    #[error("API key store error: {0}")]
+    ApiKeys(String),
+
     /// Linking a provider that does not vouch for the account's address,
     /// to an account whose address is not proven.
     #[error("Verify your address before linking this provider")]
@@ -2942,6 +2989,10 @@ where
             }
             CredentialError::TotpNotEnrolled(why) => (ErrorCategory::BadRequest, why.to_string()),
             CredentialError::PasswordRejected(why) => (ErrorCategory::BadRequest, why),
+            CredentialError::ApiKeys(e) => {
+                tracing::error!(error = %e, "API key store error");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
             CredentialError::AddressNotProven => (
                 ErrorCategory::Forbidden,
                 "Verify your address before linking this provider".to_string(),

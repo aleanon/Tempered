@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, prefix, scopes, created_at, expires_at, last_used_at\n               FROM api_keys WHERE owner = $1 ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "prefix",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "expires_at",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_used_at",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "a8124995e626da423295ddb7f34eede2a8c6cf8ca07feae931c1bbc7833c1d15"
+}

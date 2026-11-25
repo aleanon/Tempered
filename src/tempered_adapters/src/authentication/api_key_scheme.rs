@@ -138,6 +138,51 @@ fn generate_key() -> (String, String) {
 }
 
 /// Verify a presented `"prefix.secret"` key against the store and return claims.
+/// How stale a key's `last_used_at` may get before a use is recorded: one
+/// write per key per minute, not one per request.
+const RECORD_USE_EVERY_SECONDS: u64 = 60;
+
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Issue a key for `owner` into `store`: the id and the plaintext, shown
+/// once. Shared by [`ApiKeyScheme`] and the credential scheme's key
+/// management routes.
+pub(crate) async fn issue_key<S: ApiKeyStore + ?Sized>(
+    store: &S,
+    owner: Email,
+    scopes: Vec<String>,
+    expires_at: Option<u64>,
+) -> Result<(ApiKeyId, String), ApiKeyAuthError> {
+    // A 48-bit prefix clashes rarely, but the store refuses a clash
+    // rather than overwrite another key, so draw again.
+    for _ in 0..ISSUE_ATTEMPTS {
+        let (prefix, secret) = generate_key();
+        let id = ApiKeyId::new();
+        let record = ApiKeyRecord {
+            id: id.clone(),
+            prefix: prefix.clone(),
+            secret_hash: hash_secret(&secret),
+            owner: owner.clone(),
+            scopes: scopes.clone(),
+            created_at: unix_now(),
+            expires_at,
+            last_used_at: None,
+        };
+        match store.create_key(record).await {
+            Ok(()) => return Ok((id, format!("{}.{}", prefix, secret))),
+            Err(ApiKeyStoreError::PrefixTaken) => continue,
+            Err(e) => return Err(store_err(e)),
+        }
+    }
+    Err(ApiKeyAuthError::StoreError(
+        "no free key prefix after several attempts".to_string(),
+    ))
+}
+
 async fn validate_presented_key<S: ApiKeyStore>(
     store: &S,
     presented: &str,
@@ -148,6 +193,18 @@ async fn validate_presented_key<S: ApiKeyStore>(
 
     if !constant_time_eq(&hash_secret(secret), &record.secret_hash) {
         return Err(ApiKeyAuthError::InvalidKey);
+    }
+    let now = unix_now();
+    // An expired key is refused like an unknown one.
+    if record.expires_at.is_some_and(|at| at <= now) {
+        return Err(ApiKeyAuthError::InvalidKey);
+    }
+    if record
+        .last_used_at
+        .is_none_or(|at| at + RECORD_USE_EVERY_SECONDS <= now)
+        && let Err(e) = store.record_use(&record.id, now).await
+    {
+        tracing::warn!(error = %e, "could not record an API key's use");
     }
 
     Ok(ApiKeyClaims {
@@ -266,32 +323,13 @@ where
     type IssuanceError = ApiKeyAuthError;
 
     #[tracing::instrument(name = "ApiKeyScheme::issue_api_key", skip(self))]
-    async fn issue_api_key(
+    async fn issue_api_key_until(
         &self,
         owner: Email,
         scopes: Vec<String>,
+        expires_at: Option<u64>,
     ) -> Result<(ApiKeyId, String), Self::IssuanceError> {
-        // A 48-bit prefix clashes rarely, but the store refuses a clash
-        // rather than overwrite another key, so draw again.
-        for _ in 0..ISSUE_ATTEMPTS {
-            let (prefix, secret) = generate_key();
-            let id = ApiKeyId::new();
-            let record = ApiKeyRecord {
-                id: id.clone(),
-                prefix: prefix.clone(),
-                secret_hash: hash_secret(&secret),
-                owner: owner.clone(),
-                scopes: scopes.clone(),
-            };
-            match self.store.create_key(record).await {
-                Ok(()) => return Ok((id, format!("{}.{}", prefix, secret))),
-                Err(ApiKeyStoreError::PrefixTaken) => continue,
-                Err(e) => return Err(store_err(e)),
-            }
-        }
-        Err(ApiKeyAuthError::StoreError(
-            "no free key prefix after several attempts".to_string(),
-        ))
+        issue_key(&self.store, owner, scopes, expires_at).await
     }
 
     async fn revoke_api_key(
@@ -326,6 +364,13 @@ pub struct ApiKeyClaims {
     pub id: ApiKeyId,
     pub owner: Email,
     pub scopes: Vec<String>,
+}
+
+impl ApiKeyClaims {
+    /// Whether the key was issued with `scope`.
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|s| s == scope)
+    }
 }
 
 #[derive(Clone)]
@@ -375,7 +420,7 @@ pub enum ApiKeyAuthError {
 /// Fresh keys to draw before giving up on a free prefix.
 const ISSUE_ATTEMPTS: usize = 3;
 
-fn store_err(e: ApiKeyStoreError) -> ApiKeyAuthError {
+pub(crate) fn store_err(e: ApiKeyStoreError) -> ApiKeyAuthError {
     match e {
         ApiKeyStoreError::NotFound => ApiKeyAuthError::InvalidKey,
         e @ (ApiKeyStoreError::PrefixTaken | ApiKeyStoreError::UnexpectedError(_)) => {

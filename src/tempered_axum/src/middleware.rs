@@ -118,3 +118,32 @@ pub async fn refuse_cross_site(req: Request, next: Next) -> Result<Response, Res
     }
     Ok(next.run(Request::from_parts(parts, body)).await)
 }
+
+/// Admit a request authenticated with an API key that carries `scope`.
+/// Runs after the key check (`validate_token::<ApiKeyScheme<..>>`, which
+/// puts the claims in the extensions): no claims is a `401`, a key without
+/// the scope a `403`.
+///
+/// ```ignore
+/// Router::new()
+///     .route("/invoices", get(list_invoices))
+///     .layer(axum::middleware::from_fn(|req, next| require_scope("invoices:read", req, next)))
+///     .layer(axum::middleware::from_fn_with_state(keys.clone(), validate_token::<Keys>));
+/// ```
+pub async fn require_scope(scope: &'static str, req: Request, next: Next) -> Response {
+    use axum::response::IntoResponse;
+    use tempered_adapters::authentication::api_key_scheme::ApiKeyClaims;
+    match req.extensions().get::<ApiKeyClaims>() {
+        None => (
+            http::StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({ "error": "Missing API key" })),
+        )
+            .into_response(),
+        Some(claims) if !claims.has_scope(scope) => (
+            http::StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({ "error": format!("This key lacks the {scope} scope") })),
+        )
+            .into_response(),
+        Some(_) => next.run(req).await,
+    }
+}

@@ -30,14 +30,16 @@ impl ApiKeyStore for PostgresApiKeyStore {
     async fn create_key(&self, record: ApiKeyRecord) -> Result<(), ApiKeyStoreError> {
         sqlx::query!(
             r#"
-                INSERT INTO api_keys (id, prefix, secret_hash, owner, scopes)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO api_keys (id, prefix, secret_hash, owner, scopes, created_at, expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
             record.id.to_string(),
             record.prefix,
             record.secret_hash,
             record.owner.as_ref().expose_secret(),
-            &record.scopes
+            &record.scopes,
+            record.created_at as i64,
+            record.expires_at.map(|t| t as i64)
         )
         .execute(&self.pool)
         .await
@@ -53,7 +55,8 @@ impl ApiKeyStore for PostgresApiKeyStore {
     #[tracing::instrument(name = "Find API key", skip_all)]
     async fn find_by_prefix(&self, prefix: &str) -> Result<ApiKeyRecord, ApiKeyStoreError> {
         let row = sqlx::query!(
-            r#"SELECT id, prefix, secret_hash, owner, scopes FROM api_keys WHERE prefix = $1"#,
+            r#"SELECT id, prefix, secret_hash, owner, scopes, created_at, expires_at, last_used_at
+               FROM api_keys WHERE prefix = $1"#,
             prefix
         )
         .fetch_optional(&self.pool)
@@ -66,6 +69,9 @@ impl ApiKeyStore for PostgresApiKeyStore {
             secret_hash: row.secret_hash,
             owner: Email::try_from(Secret::new(row.owner)).map_err(unexpected)?,
             scopes: row.scopes,
+            created_at: row.created_at as u64,
+            expires_at: row.expires_at.map(|t| t as u64),
+            last_used_at: row.last_used_at.map(|t| t as u64),
         })
     }
 
@@ -89,7 +95,8 @@ impl ApiKeyStore for PostgresApiKeyStore {
     #[tracing::instrument(name = "List API keys", skip_all)]
     async fn list_for_user(&self, owner: &Email) -> Result<Vec<ApiKeyMetadata>, ApiKeyStoreError> {
         sqlx::query!(
-            r#"SELECT id, prefix, scopes FROM api_keys WHERE owner = $1"#,
+            r#"SELECT id, prefix, scopes, created_at, expires_at, last_used_at
+               FROM api_keys WHERE owner = $1 ORDER BY created_at"#,
             owner.as_ref().expose_secret()
         )
         .fetch_all(&self.pool)
@@ -101,9 +108,22 @@ impl ApiKeyStore for PostgresApiKeyStore {
                 id: parse_id(&row.id)?,
                 prefix: row.prefix,
                 scopes: row.scopes,
+                created_at: row.created_at as u64,
+                expires_at: row.expires_at.map(|t| t as u64),
+                last_used_at: row.last_used_at.map(|t| t as u64),
             })
         })
         .collect()
+    }
+
+    async fn record_use(&self, id: &ApiKeyId, at: u64) -> Result<(), ApiKeyStoreError> {
+        sqlx::query("UPDATE api_keys SET last_used_at = $2 WHERE id = $1")
+            .bind(id.to_string())
+            .bind(at as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(unexpected)?;
+        Ok(())
     }
 
     #[tracing::instrument(name = "Delete an owner's API keys", skip_all)]
