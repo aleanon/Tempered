@@ -19,8 +19,22 @@ pub fn expired_cookie(name: &str) -> String {
 /// absent. An empty value is returned as-is (callers decide how to treat it).
 pub fn cookie_value(parts: &http::request::Parts, name: &str) -> Option<String> {
     let header = parts.headers.get(http::header::COOKIE)?.to_str().ok()?;
-    Cookie::split_parse(header)
+    cookie_in(header, name).map(str::to_string)
+}
+
+/// The value of the first cookie named `name` in a `Cookie` header's value,
+/// without the double quotes RFC 6265 allows around it. The one cookie
+/// reader: the validators and the route table both use it, so a request
+/// cannot be authenticated by one cookie and log out another.
+pub fn cookie_in<'h>(header: &'h str, name: &str) -> Option<&'h str> {
+    let value = Cookie::split_parse(header)
         .filter_map(Result::ok)
         .find(|c| c.name() == name)
-        .map(|c| c.value().to_string())
+        .and_then(|c| c.value_raw())?;
+    Some(
+        value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .unwrap_or(value),
+    )
 }

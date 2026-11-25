@@ -98,17 +98,8 @@ impl AuthRequest for RequestHead<'_> {
     }
 
     fn cookie(&self, name: &str) -> Option<&str> {
-        // The validators parse with the `cookie` crate; this matches it for
-        // what browsers send: `a=b; c=d`, whitespace trimmed, optional quotes.
-        self.header("cookie")?.split(';').find_map(|pair| {
-            let (n, v) = pair.trim().split_once('=')?;
-            (n.trim() == name).then(|| {
-                let v = v.trim();
-                v.strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
-                    .unwrap_or(v)
-            })
-        })
+        // The validators' reader, so both agree on every header.
+        crate::cookie_util::cookie_in(self.header("cookie")?, name)
     }
 
     fn method(&self) -> &str {
@@ -171,6 +162,33 @@ mod tests {
             status(request(Some("application/json"), r#"{"other":1}"#).json()),
             StatusCode::UNPROCESSABLE_ENTITY
         );
+    }
+
+    /// Found by fuzzing: the route table and the validators read cookies
+    /// with one reader, so they agree on quoted and odd values.
+    #[test]
+    fn the_route_table_reads_cookies_as_the_validators_do() {
+        use tempered_core::AuthRequest;
+        for header in [
+            "2=\" *  * \"",
+            "=",
+            "jwt=\"a\"; jwt=b",
+            "jwt=\"",
+            "a; jwt=x",
+        ] {
+            let (parts, ()) = http::Request::builder()
+                .header("cookie", header)
+                .body(())
+                .unwrap()
+                .into_parts();
+            for name in ["2", "", "jwt"] {
+                assert_eq!(
+                    RequestHead(&parts).cookie(name).map(str::to_string),
+                    crate::cookie_util::cookie_value(&parts, name),
+                    "{header:?} / {name:?}"
+                );
+            }
+        }
     }
 
     #[test]
