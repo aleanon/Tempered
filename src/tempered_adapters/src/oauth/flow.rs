@@ -21,7 +21,7 @@ use secrecy::{ExposeSecret, Secret};
 use tempered_core::{
     ClassifyError, Email, ErrorCategory, OAuthHttpClient, OAuthIdentityStore,
     OAuthIdentityStoreError, OAuthProviderConfig, OAuthStateStore, OAuthUserInfo,
-    PendingAuthorization, UserError, constant_time_eq,
+    PendingAuthorization, UserError, UserId, constant_time_eq,
 };
 use thiserror::Error;
 
@@ -86,6 +86,37 @@ fn is_loopback(url: &url::Url) -> bool {
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
         None => false,
+    }
+}
+
+/// How the flow finds accounts: from an address to the account's id, and
+/// back. Links are stored by id; the flow decides by address. Every
+/// [`UserStore`](tempered_core::UserStore) is one, so the scheme passes its
+/// user store.
+#[async_trait::async_trait]
+pub trait AccountDirectory: Send + Sync {
+    /// The id of the account at `email`, if there is one.
+    async fn id_of(&self, email: &Email) -> Result<Option<UserId>, OAuthFlowError>;
+    /// The address the account `id` has now, if it still exists.
+    async fn email_of(&self, id: &UserId) -> Result<Option<Email>, OAuthFlowError>;
+}
+
+#[async_trait::async_trait]
+impl<U: tempered_core::UserStore + ?Sized> AccountDirectory for U {
+    async fn id_of(&self, email: &Email) -> Result<Option<UserId>, OAuthFlowError> {
+        match self.get_user(email).await {
+            Ok(user) => Ok(Some(user.id)),
+            Err(tempered_core::UserStoreError::UserNotFound) => Ok(None),
+            Err(e) => Err(OAuthFlowError::Identity(e.to_string())),
+        }
+    }
+
+    async fn email_of(&self, id: &UserId) -> Result<Option<Email>, OAuthFlowError> {
+        match self.get_user_by_id(id).await {
+            Ok(user) => Ok(Some(user.email)),
+            Err(tempered_core::UserStoreError::UserNotFound) => Ok(None),
+            Err(e) => Err(OAuthFlowError::Identity(e.to_string())),
+        }
     }
 }
 
@@ -280,6 +311,7 @@ where
         code: &str,
         query_state: &str,
         cookie_state: &str,
+        users: &dyn AccountDirectory,
     ) -> Result<VerifiedIdentity, OAuthFlowError> {
         let (link_to, info) = self
             .redeem_callback(provider, code, query_state, cookie_state)
@@ -294,7 +326,7 @@ where
         // identity logs in to the account it was linked to, even after the
         // address changed at the provider. The link is never moved to the new
         // address, and whatever account that address may have is not touched.
-        if let Some(linked) = self.linked_email(provider, &info.subject).await? {
+        if let Some(linked) = self.linked_email(provider, &info.subject, users).await? {
             let reported = Email::try_from(Secret::new(info.email)).ok();
             return Ok(VerifiedIdentity {
                 provider: provider.to_string(),
@@ -377,6 +409,7 @@ where
         code: &str,
         query_state: &str,
         cookie_state: &str,
+        users: &dyn AccountDirectory,
     ) -> Result<VerifiedIdentity, OAuthFlowError> {
         let (link_to, info) = self
             .redeem_callback(provider, code, query_state, cookie_state)
@@ -384,7 +417,7 @@ where
         let Some(account) = link_to else {
             return Err(OAuthFlowError::InvalidState);
         };
-        let linked = self.linked_email(provider, &info.subject).await?;
+        let linked = self.linked_email(provider, &info.subject, users).await?;
         if linked.as_ref().is_some_and(|e| e != &account) {
             return Err(OAuthFlowError::IdentityConflict);
         }
@@ -398,19 +431,11 @@ where
         })
     }
 
-    /// Move the user's provider links to their new address.
-    pub async fn move_user(&self, old: &Email, new: &Email) -> Result<(), OAuthFlowError> {
-        self.identity_store
-            .reassign(old, new)
-            .await
-            .map_err(|e| OAuthFlowError::Identity(e.to_string()))
-    }
-
-    /// The providers linked to `email`.
-    pub async fn links(&self, email: &Email) -> Result<Vec<String>, OAuthFlowError> {
+    /// The providers linked to the account.
+    pub async fn links(&self, user: &UserId) -> Result<Vec<String>, OAuthFlowError> {
         let mut providers: Vec<String> = self
             .identity_store
-            .list_for_user(email)
+            .list_for_user(user)
             .await
             .map_err(|e| OAuthFlowError::Identity(e.to_string()))?
             .into_iter()
@@ -420,23 +445,29 @@ where
         Ok(providers)
     }
 
-    /// Remove `email`'s link to `provider`.
-    pub async fn unlink(&self, email: &Email, provider: &str) -> Result<bool, OAuthFlowError> {
+    /// Remove the account's link to `provider`.
+    pub async fn unlink(&self, user: &UserId, provider: &str) -> Result<bool, OAuthFlowError> {
         self.identity_store
-            .unlink(email, provider)
+            .unlink(user, provider)
             .await
             .map_err(|e| OAuthFlowError::Identity(e.to_string()))
     }
 
-    /// Record a verified identity as a way to log in to its email's account.
-    /// Idempotent for an identity that is already linked to that account.
-    pub async fn link(&self, identity: &VerifiedIdentity) -> Result<(), OAuthFlowError> {
+    /// Record a verified identity as a way to log in to its email's account,
+    /// which must exist. Idempotent for an identity that is already linked
+    /// to that account.
+    pub async fn link(
+        &self,
+        identity: &VerifiedIdentity,
+        users: &dyn AccountDirectory,
+    ) -> Result<(), OAuthFlowError> {
+        let Some(user) = users.id_of(&identity.email).await? else {
+            return Err(OAuthFlowError::Identity(
+                "no account to link to".to_string(),
+            ));
+        };
         self.identity_store
-            .link_identity(
-                identity.provider.clone(),
-                identity.subject.clone(),
-                identity.email.clone(),
-            )
+            .link_identity(identity.provider.clone(), identity.subject.clone(), user)
             .await
             .map_err(|e| match e {
                 OAuthIdentityStoreError::AlreadyLinked => OAuthFlowError::IdentityConflict,
@@ -445,42 +476,67 @@ where
     }
 
     /// Whether `identity` is linked to its account right now.
-    pub async fn is_linked(&self, identity: &VerifiedIdentity) -> Result<bool, OAuthFlowError> {
+    pub async fn is_linked(
+        &self,
+        identity: &VerifiedIdentity,
+        users: &dyn AccountDirectory,
+    ) -> Result<bool, OAuthFlowError> {
         Ok(self
-            .linked_email(&identity.provider, &identity.subject)
+            .linked_email(&identity.provider, &identity.subject, users)
             .await?
             .as_ref()
             == Some(&identity.email))
     }
 
     /// Whether any provider identity is already linked to `email`'s account.
-    pub async fn has_linked_identity(&self, email: &Email) -> Result<bool, OAuthFlowError> {
+    pub async fn has_linked_identity(
+        &self,
+        email: &Email,
+        users: &dyn AccountDirectory,
+    ) -> Result<bool, OAuthFlowError> {
+        let Some(user) = users.id_of(email).await? else {
+            return Ok(false);
+        };
         self.identity_store
-            .has_identity_for_email(email)
+            .has_identity_for_user(&user)
             .await
             .map_err(|e| OAuthFlowError::Identity(e.to_string()))
     }
 
-    /// Remove every provider identity linked to `email`'s account. Call when
-    /// the account is deleted, so its links cannot log anyone in to, or stand
-    /// as proof for, a later account that reuses the address.
-    pub async fn forget_user(&self, email: &Email) -> Result<(), OAuthFlowError> {
+    /// Remove every provider identity linked to the account. Call when it is
+    /// deleted, so its links cannot log anyone in to, or stand as proof for,
+    /// a later account at the address.
+    pub async fn forget_user(&self, user: &UserId) -> Result<(), OAuthFlowError> {
         self.identity_store
-            .unlink_all_for_email(email)
+            .unlink_all_for_user(user)
             .await
             .map_err(|e| OAuthFlowError::Identity(e.to_string()))
     }
 
-    /// Look up the local email previously linked to a provider identity.
+    /// The address of the account a provider identity is linked to, as it is
+    /// now (the link is to the account, so it follows an email change).
     pub async fn linked_email(
         &self,
         provider: &str,
         subject: &str,
+        users: &dyn AccountDirectory,
     ) -> Result<Option<Email>, OAuthFlowError> {
-        self.identity_store
-            .find_email(provider, subject)
+        let Some(user) = self
+            .identity_store
+            .find_user(provider, subject)
             .await
-            .map_err(|e| OAuthFlowError::Identity(e.to_string()))
+            .map_err(|e| OAuthFlowError::Identity(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        match users.email_of(&user).await? {
+            Some(email) => Ok(Some(email)),
+            // Linked to an account that is gone: deleting it unlinks, so
+            // this is a store out of step. Refuse rather than guess.
+            None => Err(OAuthFlowError::Identity(
+                "the linked account no longer exists".to_string(),
+            )),
+        }
     }
 
     fn provider(&self, name: &str) -> Result<&OAuthProviderConfig, OAuthFlowError> {
@@ -590,6 +646,31 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
     use tempered_core::{OAuthHttpError, OAuthUserInfo};
+
+    /// Every address has an account, with an id made from the address (so
+    /// tests that link and then look up agree).
+    pub(super) struct EveryAddress(Mutex<std::collections::HashMap<UserId, Email>>);
+
+    #[async_trait]
+    impl AccountDirectory for EveryAddress {
+        async fn id_of(&self, email: &Email) -> Result<Option<UserId>, OAuthFlowError> {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            email.as_ref().expose_secret().hash(&mut h);
+            let id = UserId::from_uuid(uuid::Uuid::from_u128(u128::from(h.finish())));
+            self.0.lock().unwrap().insert(id, email.clone());
+            Ok(Some(id))
+        }
+        async fn email_of(&self, id: &UserId) -> Result<Option<Email>, OAuthFlowError> {
+            Ok(self.0.lock().unwrap().get(id).cloned())
+        }
+    }
+
+    pub(super) fn users() -> &'static EveryAddress {
+        static USERS: std::sync::LazyLock<EveryAddress> =
+            std::sync::LazyLock::new(|| EveryAddress(Mutex::default()));
+        &USERS
+    }
 
     #[derive(Clone)]
     struct MockClient {
@@ -737,7 +818,7 @@ mod tests {
         let req = f.begin("google").await.unwrap();
         let challenge = query_param(&req.authorize_url, "code_challenge");
 
-        f.complete("google", "auth-code", &req.state, &req.state)
+        f.complete("google", "auth-code", &req.state, &req.state, users())
             .await
             .unwrap();
 
@@ -760,7 +841,7 @@ mod tests {
         );
 
         // Completing the second request presents the second request's verifier.
-        f.complete("google", "code", &second.state, &second.state)
+        f.complete("google", "code", &second.state, &second.state, users())
             .await
             .unwrap();
         let seen = f.http_client.seen_verifiers.lock().unwrap().clone();
@@ -779,14 +860,21 @@ mod tests {
 
         // Begun with google; the callback arrives on github's route.
         let req = f.begin("google").await.unwrap();
-        let result = f.complete("github", "code", &req.state, &req.state).await;
+        let result = f
+            .complete("github", "code", &req.state, &req.state, users())
+            .await;
         assert!(matches!(result, Err(OAuthFlowError::InvalidState)));
 
         // No verifier or code went to github's token endpoint, no identity was
         // linked, and the state is spent: it cannot be retried on google either.
         assert!(f.http_client.seen_verifiers.lock().unwrap().is_empty());
-        assert_eq!(f.linked_email("github", "sub-123").await.unwrap(), None);
-        let retry = f.complete("google", "code", &req.state, &req.state).await;
+        assert_eq!(
+            f.linked_email("github", "sub-123", users()).await.unwrap(),
+            None
+        );
+        let retry = f
+            .complete("google", "code", &req.state, &req.state, users())
+            .await;
         assert!(matches!(retry, Err(OAuthFlowError::InvalidState)));
     }
 
@@ -795,7 +883,7 @@ mod tests {
         let f = flow("user@example.com");
         let req = f.begin("google").await.unwrap();
         let result = f
-            .complete("google", "code", &req.state, "attacker-cookie")
+            .complete("google", "code", &req.state, "attacker-cookie", users())
             .await;
         assert!(matches!(result, Err(OAuthFlowError::InvalidState)));
         assert!(f.http_client.seen_verifiers.lock().unwrap().is_empty());
@@ -819,7 +907,7 @@ mod tests {
 
         // cookie_state == query_state proves the same browser is completing.
         let identity = f
-            .complete("google", "auth-code", &req.state, &req.state)
+            .complete("google", "auth-code", &req.state, &req.state, users())
             .await
             .unwrap();
         let expected = Email::try_from(Secret::new("user@example.com".to_string())).unwrap();
@@ -827,18 +915,21 @@ mod tests {
 
         // Verifying is not linking: the caller secures the account first.
         assert!(!identity.already_linked());
-        assert_eq!(f.linked_email("google", "sub-123").await.unwrap(), None);
-        assert!(!f.has_linked_identity(&expected).await.unwrap());
+        assert_eq!(
+            f.linked_email("google", "sub-123", users()).await.unwrap(),
+            None
+        );
+        assert!(!f.has_linked_identity(&expected, users()).await.unwrap());
 
-        f.link(&identity).await.unwrap();
-        let linked = f.linked_email("google", "sub-123").await.unwrap();
+        f.link(&identity, users()).await.unwrap();
+        let linked = f.linked_email("google", "sub-123", users()).await.unwrap();
         assert_eq!(linked, Some(expected.clone()));
-        assert!(f.has_linked_identity(&expected).await.unwrap());
+        assert!(f.has_linked_identity(&expected, users()).await.unwrap());
 
         // The next login with the same identity reports it as linked.
         let req = f.begin("google").await.unwrap();
         let again = f
-            .complete("google", "auth-code", &req.state, &req.state)
+            .complete("google", "auth-code", &req.state, &req.state, users())
             .await
             .unwrap();
         assert!(again.already_linked());
@@ -849,10 +940,12 @@ mod tests {
         let f = flow("user@example.com");
         let req = f.begin("google").await.unwrap();
 
-        f.complete("google", "code", &req.state, &req.state)
+        f.complete("google", "code", &req.state, &req.state, users())
             .await
             .unwrap();
-        let replay = f.complete("google", "code", &req.state, &req.state).await;
+        let replay = f
+            .complete("google", "code", &req.state, &req.state, users())
+            .await;
         assert!(matches!(replay, Err(OAuthFlowError::InvalidState)));
     }
 
@@ -864,7 +957,7 @@ mod tests {
         // Attacker injects a valid pending `state` from a different browser, but
         // cannot forge the victim's `oauth_state` cookie.
         let result = f
-            .complete("google", "code", &req.state, "attacker-cookie")
+            .complete("google", "code", &req.state, "attacker-cookie", users())
             .await;
         assert!(matches!(result, Err(OAuthFlowError::InvalidState)));
     }
@@ -888,7 +981,9 @@ mod tests {
         .with_provider(provider());
 
         let req = f.begin("google").await.unwrap();
-        let result = f.complete("google", "code", &req.state, &req.state).await;
+        let result = f
+            .complete("google", "code", &req.state, &req.state, users())
+            .await;
         assert!(matches!(result, Err(OAuthFlowError::EmailNotVerified)));
     }
 
@@ -909,10 +1004,10 @@ mod tests {
         let f1 = link("a@example.com");
         let r1 = f1.begin("google").await.unwrap();
         let first = f1
-            .complete("google", "code", &r1.state, &r1.state)
+            .complete("google", "code", &r1.state, &r1.state, users())
             .await
             .unwrap();
-        f1.link(&first).await.unwrap();
+        f1.link(&first, users()).await.unwrap();
 
         // The same provider identity now reports another address. It logs in
         // to the account it is linked to: the link is not moved to b@ (whose
@@ -920,7 +1015,7 @@ mod tests {
         let f2 = link("b@example.com");
         let r2 = f2.begin("google").await.unwrap();
         let second = f2
-            .complete("google", "code", &r2.state, &r2.state)
+            .complete("google", "code", &r2.state, &r2.state, users())
             .await
             .unwrap();
         assert_eq!(second.email(), first.email());
@@ -944,17 +1039,17 @@ mod tests {
         let f1 = flow("a@example.com", true);
         let r1 = f1.begin("google").await.unwrap();
         let first = f1
-            .complete("google", "code", &r1.state, &r1.state)
+            .complete("google", "code", &r1.state, &r1.state, users())
             .await
             .unwrap();
-        f1.link(&first).await.unwrap();
+        f1.link(&first, users()).await.unwrap();
 
         // The address is not what identifies the user, so its state does not
         // matter once the identity is linked.
         let f2 = flow("new-unconfirmed@example.com", false);
         let r2 = f2.begin("google").await.unwrap();
         let second = f2
-            .complete("google", "code", &r2.state, &r2.state)
+            .complete("google", "code", &r2.state, &r2.state, users())
             .await
             .unwrap();
         assert_eq!(second.email(), first.email());
@@ -966,6 +1061,7 @@ mod tests {
 /// provider.
 #[cfg(test)]
 mod oidc_tests {
+    use super::tests::users;
     use super::*;
     use crate::persistence::hashmap_oauth_identity_store::HashMapOAuthIdentityStore;
     use crate::persistence::hashmap_oauth_state_store::HashMapOAuthStateStore;
@@ -1095,7 +1191,7 @@ MC4CAQAwBQYDK2VwBCIEIA2ZLlv7Fjn0b25zMCmAD3a/yfAHP1vNguNqqoum5wdH
         let flow = flow(provider.clone());
         let (state, nonce) = begin(&flow).await;
         *provider.id_token.lock().unwrap() = Some(token(&nonce));
-        flow.complete("id", "code", &state, &state).await
+        flow.complete("id", "code", &state, &state, users()).await
     }
 
     #[tokio::test]
@@ -1208,7 +1304,7 @@ MC4CAQAwBQYDK2VwBCIEIA2ZLlv7Fjn0b25zMCmAD3a/yfAHP1vNguNqqoum5wdH
         let flow = flow(Provider::default());
         let (state, _) = begin(&flow).await;
         assert!(matches!(
-            flow.complete("id", "code", &state, &state).await,
+            flow.complete("id", "code", &state, &state, users()).await,
             Err(OAuthFlowError::IdToken(_))
         ));
     }
@@ -1220,12 +1316,18 @@ MC4CAQAwBQYDK2VwBCIEIA2ZLlv7Fjn0b25zMCmAD3a/yfAHP1vNguNqqoum5wdH
         for _ in 0..3 {
             let (state, nonce) = begin(&flow).await;
             *provider.id_token.lock().unwrap() = Some(sign(&claims(&nonce), "k1"));
-            flow.complete("id", "code", &state, &state).await.unwrap();
+            flow.complete("id", "code", &state, &state, users())
+                .await
+                .unwrap();
         }
         assert_eq!(provider.key_fetches.load(Ordering::SeqCst), 1);
         let (state, nonce) = begin(&flow).await;
         *provider.id_token.lock().unwrap() = Some(sign(&claims(&nonce), "rotated"));
-        assert!(flow.complete("id", "code", &state, &state).await.is_err());
+        assert!(
+            flow.complete("id", "code", &state, &state, users())
+                .await
+                .is_err()
+        );
         assert_eq!(
             provider.key_fetches.load(Ordering::SeqCst),
             1,

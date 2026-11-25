@@ -326,17 +326,12 @@ where
 /// (OAuth not configured) has nothing to remove.
 #[async_trait]
 trait OAuthCleanup {
-    async fn forget_user(&self, email: &Email) -> Result<(), OAuthFlowError>;
-    /// Move the user's provider links to their new address.
-    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), OAuthFlowError>;
+    async fn forget_user(&self, user: &tempered_core::UserId) -> Result<(), OAuthFlowError>;
 }
 
 #[async_trait]
 impl OAuthCleanup for () {
-    async fn forget_user(&self, _email: &Email) -> Result<(), OAuthFlowError> {
-        Ok(())
-    }
-    async fn move_user(&self, _: &Email, _: &Email) -> Result<(), OAuthFlowError> {
+    async fn forget_user(&self, _: &tempered_core::UserId) -> Result<(), OAuthFlowError> {
         Ok(())
     }
 }
@@ -348,11 +343,8 @@ where
     ID: OAuthIdentityStore + Send + Sync,
     HC: OAuthHttpClient + Send + Sync,
 {
-    async fn forget_user(&self, email: &Email) -> Result<(), OAuthFlowError> {
-        self.flow.forget_user(email).await
-    }
-    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), OAuthFlowError> {
-        self.flow.move_user(old, new).await
+    async fn forget_user(&self, user: &tempered_core::UserId) -> Result<(), OAuthFlowError> {
+        self.flow.forget_user(user).await
     }
 }
 
@@ -1721,7 +1713,7 @@ where
             // reuses the address.
             self.passkeys.forget_user(&account).await?;
             // So are its provider links, which also count as proof of the address.
-            self.oauth.forget_user(&email).await?;
+            self.oauth.forget_user(&account.id).await?;
             // Proof that the address was verified belongs to this account, not to
             // the address: a later account that reuses it must prove it again.
             self.email_verify.forget(&email).await?;

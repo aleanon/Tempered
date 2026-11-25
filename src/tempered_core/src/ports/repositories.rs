@@ -407,51 +407,47 @@ pub enum OAuthIdentityStoreError {
 /// Maps an external provider identity `(provider, subject)` to a local user email.
 #[async_trait]
 pub trait OAuthIdentityStore: Send + Sync {
-    /// Link a provider identity to a local email.
+    /// Link a provider identity to a local account.
     ///
-    /// Idempotent when the identity already maps to the *same* email, but must
-    /// fail with [`OAuthIdentityStoreError::AlreadyLinked`] if `(provider,
-    /// subject)` is already bound to a *different* email — silently moving the
-    /// binding would enable account takeover. Re-linking to a different account
-    /// must be a deliberate, re-authenticated action.
+    /// Idempotent when the identity already maps to the *same* account, but
+    /// must fail with [`OAuthIdentityStoreError::AlreadyLinked`] if
+    /// `(provider, subject)` is already bound to a *different* one — silently
+    /// moving the binding would enable account takeover. Re-linking to a
+    /// different account must be a deliberate, re-authenticated action.
     async fn link_identity(
         &self,
         provider: String,
         subject: String,
-        email: Email,
+        user: UserId,
     ) -> Result<(), OAuthIdentityStoreError>;
 
-    /// Find the local email previously linked to a provider identity.
-    async fn find_email(
+    /// The account a provider identity is linked to.
+    async fn find_user(
         &self,
         provider: &str,
         subject: &str,
-    ) -> Result<Option<Email>, OAuthIdentityStoreError>;
+    ) -> Result<Option<UserId>, OAuthIdentityStoreError>;
 
-    /// Whether any provider identity is linked to `email`.
+    /// Whether any provider identity is linked to the account.
     ///
     /// A linked identity means a provider has already proven the address
     /// belongs to the account's user, so a later first login through another
     /// provider can trust the account as it is.
-    async fn has_identity_for_email(&self, email: &Email) -> Result<bool, OAuthIdentityStoreError>;
+    async fn has_identity_for_user(&self, user: &UserId) -> Result<bool, OAuthIdentityStoreError>;
 
-    /// The provider identities linked to `email`, as `(provider, subject)`.
+    /// The provider identities linked to the account, as `(provider, subject)`.
     async fn list_for_user(
         &self,
-        email: &Email,
+        user: &UserId,
     ) -> Result<Vec<(String, String)>, OAuthIdentityStoreError>;
 
-    /// Remove `email`'s link to `provider`; `false` if there was none.
-    async fn unlink(&self, email: &Email, provider: &str) -> Result<bool, OAuthIdentityStoreError>;
+    /// Remove the account's link to `provider`; `false` if there was none.
+    async fn unlink(&self, user: &UserId, provider: &str) -> Result<bool, OAuthIdentityStoreError>;
 
-    /// Remove every provider identity linked to `email`. Called when the
-    /// account is deleted: a link is a way to log in to that account, and
-    /// proof of its address, and neither may pass to a later account that
-    /// reuses the address. Succeeds when there is nothing to remove.
-    async fn unlink_all_for_email(&self, email: &Email) -> Result<(), OAuthIdentityStoreError>;
-
-    /// Move every identity linked to `old` to `new` (an email change).
-    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), OAuthIdentityStoreError>;
+    /// Remove every provider identity linked to the account. Called when it
+    /// is deleted (a store with a foreign key to the account may already
+    /// have). Succeeds when there is nothing to remove.
+    async fn unlink_all_for_user(&self, user: &UserId) -> Result<(), OAuthIdentityStoreError>;
 }
 
 // ApiKeyStore port, records and errors

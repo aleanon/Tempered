@@ -251,11 +251,13 @@ mod oauth_tests {
     /// Like [`flow`], for an account whose address is already proven: another
     /// provider is linked to it, so a first login through this one leaves the
     /// account (and its 2FA requirement) as it is.
-    async fn flow_for_a_proven_account()
-    -> OAuthFlow<HashMapOAuthStateStore, HashMapOAuthIdentityStore, MockClient> {
+    async fn flow_for_a_proven_account(
+        users: &HashMapUserStore,
+    ) -> OAuthFlow<HashMapOAuthStateStore, HashMapOAuthIdentityStore, MockClient> {
         let identities = HashMapOAuthIdentityStore::new();
+        let id = users.get_user(&email()).await.unwrap().id;
         identities
-            .link_identity("github".to_string(), "gh-1".to_string(), email())
+            .link_identity("github".to_string(), "gh-1".to_string(), id)
             .await
             .unwrap();
         OAuthFlow::new(
@@ -524,23 +526,12 @@ mod oauth_tests {
         let account = Account::signed_up().await;
         account.verified.mark_verified(&email()).await.unwrap();
         let scheme = account.scheme().await;
+        let id = account.users.get_user(&email()).await.unwrap().id;
         oauth_login(&scheme).await.unwrap();
-        assert!(
-            account
-                .identities
-                .has_identity_for_email(&email())
-                .await
-                .unwrap()
-        );
+        assert!(account.identities.has_identity_for_user(&id).await.unwrap());
 
         assert!(scheme.delete_account(email()).await.is_ok());
-        assert!(
-            !account
-                .identities
-                .has_identity_for_email(&email())
-                .await
-                .unwrap()
-        );
+        assert!(!account.identities.has_identity_for_user(&id).await.unwrap());
 
         // Someone signs up with the same address again. The old link neither
         // logs the provider's user straight in nor counts as proof: the new
@@ -557,7 +548,11 @@ mod oauth_tests {
         let account = Account::signed_up().await;
         account
             .identities
-            .link_identity("github".to_string(), "gh-1".to_string(), email())
+            .link_identity(
+                "github".to_string(),
+                "gh-1".to_string(),
+                account.users.get_user(&email()).await.unwrap().id,
+            )
             .await
             .unwrap();
         let scheme = account.scheme().await;
@@ -594,7 +589,11 @@ mod oauth_tests {
         let account = Account::signed_up().await;
         account
             .identities
-            .link_identity("google".to_string(), "sub-123".to_string(), email())
+            .link_identity(
+                "google".to_string(),
+                "sub-123".to_string(),
+                account.users.get_user(&email()).await.unwrap().id,
+            )
             .await
             .unwrap();
         let scheme = JwtScheme::new(
@@ -640,6 +639,7 @@ mod oauth_tests {
         let users = HashMapUserStore::new();
         add_account(&users, "the-users-own-password", true).await;
         let codes = HashMapTwoFaCodeStore::new();
+        let proven = flow_for_a_proven_account(&users).await;
         let scheme = JwtScheme::new(
             users.clone(),
             jwt_config(),
@@ -647,7 +647,7 @@ mod oauth_tests {
             HashMapTokenEpochStore::new(),
         )
         .supports_2fa(codes.clone(), MockEmailClient::new())
-        .supports_oauth(flow_for_a_proven_account().await);
+        .supports_oauth(proven);
 
         // The provider login yields a pending challenge, not a token.
         let outcome = oauth_login(&scheme).await.unwrap();
@@ -910,13 +910,14 @@ mod oauth_tests {
         // (proven) account, and must not let the login through without it.
         let users = HashMapUserStore::new();
         add_account(&users, "the-users-own-password", true).await;
+        let proven = flow_for_a_proven_account(&users).await;
         let scheme = JwtScheme::new(
             users,
             jwt_config(),
             HashSetBannedTokenStore::new(),
             HashMapTokenEpochStore::new(),
         )
-        .supports_oauth(flow_for_a_proven_account().await);
+        .supports_oauth(proven);
 
         let result = oauth_login(&scheme).await;
         assert!(matches!(result, Err(CredentialError::TwoFaNotConfigured)));
@@ -931,8 +932,9 @@ mod oauth_tests {
         let users = HashMapUserStore::new();
         add_account(&users, "the-users-own-password", true).await;
         let identities = HashMapOAuthIdentityStore::new();
+        let id = users.get_user(&email()).await.unwrap().id;
         identities
-            .link_identity("github".to_string(), "gh-1".to_string(), email())
+            .link_identity("github".to_string(), "gh-1".to_string(), id)
             .await
             .unwrap();
         let flow = OAuthFlow::new(
@@ -1032,6 +1034,7 @@ mod oauth_tests {
     async fn two_factor_callback_issues_no_cookie_and_redirects_to_the_code_step() {
         let users = HashMapUserStore::new();
         add_account(&users, "the-users-own-password", true).await;
+        let proven = flow_for_a_proven_account(&users).await;
         let scheme = JwtScheme::new(
             users,
             jwt_config(),
@@ -1039,7 +1042,7 @@ mod oauth_tests {
             HashMapTokenEpochStore::new(),
         )
         .supports_2fa(HashMapTwoFaCodeStore::new(), MockEmailClient::new())
-        .supports_oauth(flow_for_a_proven_account().await)
+        .supports_oauth(proven)
         .oauth_two_fa_redirect("/login?step=2fa#code");
 
         let outcome = oauth_login(&scheme).await.unwrap();

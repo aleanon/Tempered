@@ -629,48 +629,42 @@ pub async fn password_reset_token_store(store: impl tempered_core::PasswordReset
 
 /// [`OAuthIdentityStore`]: links never move between accounts, and one
 /// account's links can be removed.
-pub async fn oauth_identity_store(store: impl tempered_core::OAuthIdentityStore) {
+/// `users` are the ids of two accounts that exist (a store may require it).
+pub async fn oauth_identity_store(
+    store: impl tempered_core::OAuthIdentityStore,
+    users: [tempered_core::UserId; 2],
+) {
     use tempered_core::OAuthIdentityStoreError;
 
-    let alice = email("alice@example.com");
-    let bob = email("bob@example.com");
-    let link = |provider: &str, subject: &str, to: &Email| {
-        store.link_identity(provider.to_string(), subject.to_string(), to.clone())
+    let [alice, bob] = users;
+    let link = |provider: &str, subject: &str, to: &tempered_core::UserId| {
+        store.link_identity(provider.to_string(), subject.to_string(), *to)
     };
 
-    assert_eq!(store.find_email("google", "g-1").await.unwrap(), None);
-    assert!(!store.has_identity_for_email(&alice).await.unwrap());
+    assert_eq!(store.find_user("google", "g-1").await.unwrap(), None);
+    assert!(!store.has_identity_for_user(&alice).await.unwrap());
 
     link("google", "g-1", &alice).await.unwrap();
     link("google", "g-1", &alice).await.unwrap(); // idempotent
-    assert_eq!(
-        store.find_email("google", "g-1").await.unwrap(),
-        Some(alice.clone())
-    );
-    assert!(store.has_identity_for_email(&alice).await.unwrap());
+    assert_eq!(store.find_user("google", "g-1").await.unwrap(), Some(alice));
+    assert!(store.has_identity_for_user(&alice).await.unwrap());
     // Same subject at another provider is another identity.
-    assert_eq!(store.find_email("github", "g-1").await.unwrap(), None);
+    assert_eq!(store.find_user("github", "g-1").await.unwrap(), None);
 
     assert!(matches!(
         link("google", "g-1", &bob).await,
         Err(OAuthIdentityStoreError::AlreadyLinked)
     ));
-    assert_eq!(
-        store.find_email("google", "g-1").await.unwrap(),
-        Some(alice.clone())
-    );
+    assert_eq!(store.find_user("google", "g-1").await.unwrap(), Some(alice));
 
     link("github", "h-1", &alice).await.unwrap();
     link("github", "h-2", &bob).await.unwrap();
-    store.unlink_all_for_email(&alice).await.unwrap();
-    store.unlink_all_for_email(&alice).await.unwrap();
-    assert!(!store.has_identity_for_email(&alice).await.unwrap());
-    assert_eq!(store.find_email("google", "g-1").await.unwrap(), None);
-    assert_eq!(store.find_email("github", "h-1").await.unwrap(), None);
-    assert_eq!(
-        store.find_email("github", "h-2").await.unwrap(),
-        Some(bob.clone())
-    );
+    store.unlink_all_for_user(&alice).await.unwrap();
+    store.unlink_all_for_user(&alice).await.unwrap();
+    assert!(!store.has_identity_for_user(&alice).await.unwrap());
+    assert_eq!(store.find_user("google", "g-1").await.unwrap(), None);
+    assert_eq!(store.find_user("github", "h-1").await.unwrap(), None);
+    assert_eq!(store.find_user("github", "h-2").await.unwrap(), Some(bob));
     // Unlinked, the identity can be linked again (to a new account).
     link("google", "g-1", &bob).await.unwrap();
 
@@ -690,19 +684,8 @@ pub async fn oauth_identity_store(store: impl tempered_core::OAuthIdentityStore)
     );
     assert!(store.unlink(&bob, "github").await.unwrap());
     assert!(!store.unlink(&bob, "github").await.unwrap());
-    assert_eq!(store.find_email("github", "h-2").await.unwrap(), None);
-    assert_eq!(
-        store.find_email("google", "g-1").await.unwrap(),
-        Some(bob.clone())
-    );
-
-    // An email change moves the links.
-    let moved = email("bob@new.example.com");
-    store.reassign(&bob, &moved).await.unwrap();
-    assert_eq!(
-        store.find_email("google", "g-1").await.unwrap(),
-        Some(moved)
-    );
+    assert_eq!(store.find_user("github", "h-2").await.unwrap(), None);
+    assert_eq!(store.find_user("google", "g-1").await.unwrap(), Some(bob));
 }
 
 /// [`PasskeyCredentialStore`]: insert-only ids, the sign-count rule, and

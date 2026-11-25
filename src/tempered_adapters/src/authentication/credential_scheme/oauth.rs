@@ -40,7 +40,7 @@ where
         let identity = self
             .oauth
             .flow
-            .complete(provider, code, query_state, cookie_state)
+            .complete(provider, code, query_state, cookie_state, &self.user_store)
             .await?;
         let email = identity.email().clone();
 
@@ -50,7 +50,7 @@ where
             self.prepare_account_for_first_link(&email).await?;
             // Linked last: if anything above failed, the next attempt starts
             // from an unlinked identity and secures the account again.
-            self.oauth.flow.link(&identity).await?;
+            self.oauth.flow.link(&identity, &self.user_store).await?;
         }
 
         // The login opens once the account is in its final state (securing it
@@ -70,7 +70,12 @@ where
         // at this address.
         let lock = self.lock_credentials(&email).await?;
         let marked: Result<(), CredentialError<T::Error>> = async {
-            if !self.oauth.flow.is_linked(&identity).await? {
+            if !self
+                .oauth
+                .flow
+                .is_linked(&identity, &self.user_store)
+                .await?
+            {
                 // Unlinked since it was verified: the account was deleted.
                 return Err(UserStoreError::UserNotFound.into());
             }
@@ -121,7 +126,7 @@ where
         let identity = self
             .oauth
             .flow
-            .complete_link(provider, code, query_state, cookie_state)
+            .complete_link(provider, code, query_state, cookie_state, &self.user_store)
             .await?;
         let account = identity.email().clone();
         // Under the credential lock, like every new way in: an account
@@ -138,12 +143,16 @@ where
             // their own provider and make the account look proven.
             if !identity.vouches_for_email() {
                 let proven = self.email_verify.proof(&account).await? == AddressProof::Verified
-                    || self.oauth.flow.has_linked_identity(&account).await?;
+                    || self
+                        .oauth
+                        .flow
+                        .has_linked_identity(&account, &self.user_store)
+                        .await?;
                 if !proven {
                     return Err(CredentialError::AddressNotProven);
                 }
             }
-            self.oauth.flow.link(&identity).await?;
+            self.oauth.flow.link(&identity, &self.user_store).await?;
             if identity.vouches_for_email() {
                 self.email_verify.mark_verified(&account).await?;
             }
@@ -156,11 +165,22 @@ where
     }
 
     async fn oauth_links(&self, email: &Email) -> Result<Vec<String>, Self::OAuth2Error> {
-        Ok(self.oauth.flow.links(email).await?)
+        let user = match self.subject_for(email).await {
+            Ok(user) => user.id,
+            // No account, no links.
+            Err(UserStoreError::UserNotFound) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(self.oauth.flow.links(&user).await?)
     }
 
     async fn unlink_oauth(&self, email: &Email, provider: &str) -> Result<bool, Self::OAuth2Error> {
-        Ok(self.oauth.flow.unlink(email, provider).await?)
+        let user = match self.subject_for(email).await {
+            Ok(user) => user.id,
+            Err(UserStoreError::UserNotFound) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(self.oauth.flow.unlink(&user, provider).await?)
     }
 }
 
@@ -208,8 +228,12 @@ where
         }
 
         let proof = self.email_verify.proof(email).await?;
-        let proven =
-            proof == AddressProof::Verified || self.oauth.flow.has_linked_identity(email).await?;
+        let proven = proof == AddressProof::Verified
+            || self
+                .oauth
+                .flow
+                .has_linked_identity(email, &self.user_store)
+                .await?;
         if proven {
             return Ok(());
         }
