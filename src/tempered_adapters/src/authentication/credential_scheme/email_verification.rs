@@ -273,22 +273,45 @@ where
         Ok(())
     }
 
-    /// Undo a partial move, best effort: the credentials back to `old`, then
-    /// the account. What cannot be undone is logged; nothing it leaves behind
-    /// has a live session, which ended before the move.
+    /// Undo a partial move, best effort: each credential store back to
+    /// `old` (every one is tried, whichever fail), then the account. What
+    /// cannot be undone is logged for repair; nothing it leaves behind has a
+    /// live session, which ended before the move.
     async fn roll_back_move(&self, old: &Email, new: &Email) {
-        if let Err(e) = self.move_credentials(new, old).await {
-            tracing::error!(error = %e, "email change rollback: credentials not all moved back");
+        let mut failed = Vec::new();
+        if let Err(e) = self.passkeys.move_user(new, old).await {
+            failed.push(("passkeys", e.to_string()));
+        }
+        if let Err(e) = self.oauth.move_user(new, old).await {
+            failed.push(("provider links", e.to_string()));
+        }
+        if let Err(e) = self.two_fa.move_user(new, old).await {
+            failed.push(("authenticator app", e.to_string()));
+        }
+        if let Some(keys) = self.api_key_store()
+            && let Err(e) = keys.reassign(new, old).await
+        {
+            failed.push(("API keys", e.to_string()));
         }
         // The old address was proven before the change; the new one was not.
+        if let Err(e) = self.email_verify.mark_verified(old).await {
+            failed.push(("old address's proof", e.to_string()));
+        }
         if let Err(e) = self.email_verify.forget(new).await {
-            tracing::error!(error = %e, "email change rollback: new address still marked verified");
+            failed.push(("new address's proof", e.to_string()));
         }
         if let Err(e) = self.user_store.change_email(new, old).await {
-            tracing::error!(error = ?e, "email change rollback: the account stays at the new address");
+            failed.push(("account", format!("{e:?}")));
         }
         if let Err(e) = self.revoke_all_tokens(new).await {
-            tracing::error!(error = %e, "email change rollback: tokens for the new address not revoked");
+            failed.push(("tokens for the new address", e.to_string()));
+        }
+        for (what, error) in &failed {
+            tracing::error!(
+                what,
+                error,
+                "email change rollback incomplete: repair by moving these records to the account's address"
+            );
         }
     }
 }
