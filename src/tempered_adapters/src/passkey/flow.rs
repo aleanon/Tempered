@@ -92,6 +92,7 @@ where
                 credential_data: verified.credential_data,
                 sign_count: verified.sign_count,
                 owner: bound.clone(),
+                name: None,
             })
             .await
             .map_err(|e| match e {
@@ -221,6 +222,29 @@ where
     ///
     /// Enrolments the user has started but not finished are dropped too, so
     /// one begun before this call cannot add a passkey after it.
+    /// The user's credentials.
+    pub async fn list(&self, email: &Email) -> Result<Vec<PasskeyCredential>, PasskeyFlowError> {
+        Ok(self.credential_store.list_for_user(email).await?)
+    }
+
+    /// Rename one of the user's credentials.
+    pub async fn rename(
+        &self,
+        email: &Email,
+        id: &CredentialId,
+        name: Option<String>,
+    ) -> Result<bool, PasskeyFlowError> {
+        Ok(self
+            .credential_store
+            .rename_credential(email, id, name)
+            .await?)
+    }
+
+    /// Remove one of the user's credentials.
+    pub async fn remove(&self, email: &Email, id: &CredentialId) -> Result<bool, PasskeyFlowError> {
+        Ok(self.credential_store.delete_credential(email, id).await?)
+    }
+
     pub async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError> {
         self.challenge_store.delete_all_for_user(email).await?;
         Ok(self.credential_store.delete_all_for_user(email).await?)

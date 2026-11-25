@@ -24,6 +24,8 @@ pub struct PasskeyCredential {
     pub credential_data: Vec<u8>,
     pub sign_count: u32,
     pub owner: Email,
+    /// What the user calls it ("work laptop"), for their list of passkeys.
+    pub name: Option<String>,
 }
 
 /// Server-generated, single-use handle for one in-flight WebAuthn ceremony.

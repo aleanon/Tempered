@@ -299,6 +299,23 @@ pub trait PasskeyCredentialStore: Send + Sync {
     /// [`list_for_user`](Self::list_for_user) — otherwise a later account
     /// created with the same email would inherit the old owner's passkeys.
     async fn delete_all_for_user(&self, owner: &Email) -> Result<(), PasskeyStoreError>;
+
+    /// Remove one of `owner`'s credentials; `false` if they have none by
+    /// that id (another user's id is "none").
+    async fn delete_credential(
+        &self,
+        owner: &Email,
+        id: &CredentialId,
+    ) -> Result<bool, PasskeyStoreError>;
+
+    /// Rename one of `owner`'s credentials; `false` if they have none by
+    /// that id.
+    async fn rename_credential(
+        &self,
+        owner: &Email,
+        id: &CredentialId,
+        name: Option<String>,
+    ) -> Result<bool, PasskeyStoreError>;
 }
 
 #[derive(Debug, Error)]
@@ -408,6 +425,15 @@ pub trait OAuthIdentityStore: Send + Sync {
     /// belongs to the account's user, so a later first login through another
     /// provider can trust the account as it is.
     async fn has_identity_for_email(&self, email: &Email) -> Result<bool, OAuthIdentityStoreError>;
+
+    /// The provider identities linked to `email`, as `(provider, subject)`.
+    async fn list_for_user(
+        &self,
+        email: &Email,
+    ) -> Result<Vec<(String, String)>, OAuthIdentityStoreError>;
+
+    /// Remove `email`'s link to `provider`; `false` if there was none.
+    async fn unlink(&self, email: &Email, provider: &str) -> Result<bool, OAuthIdentityStoreError>;
 
     /// Remove every provider identity linked to `email`. Called when the
     /// account is deleted: a link is a way to log in to that account, and

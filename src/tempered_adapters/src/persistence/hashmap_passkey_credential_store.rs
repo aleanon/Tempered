@@ -96,6 +96,34 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
             .retain(|_, cred| &cred.owner != owner);
         Ok(())
     }
+
+    async fn delete_credential(
+        &self,
+        owner: &Email,
+        id: &CredentialId,
+    ) -> Result<bool, PasskeyStoreError> {
+        let mut credentials = self.credentials.write().await;
+        if credentials.get(id).is_some_and(|c| &c.owner == owner) {
+            credentials.remove(id);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    async fn rename_credential(
+        &self,
+        owner: &Email,
+        id: &CredentialId,
+        name: Option<String>,
+    ) -> Result<bool, PasskeyStoreError> {
+        match self.credentials.write().await.get_mut(id) {
+            Some(cred) if &cred.owner == owner => {
+                cred.name = name;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
 }
 
 #[cfg(test)]

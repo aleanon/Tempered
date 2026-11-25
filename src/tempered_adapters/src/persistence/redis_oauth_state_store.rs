@@ -31,6 +31,8 @@ struct Stored {
     code_verifier: String,
     #[serde(default)]
     nonce: Option<String>,
+    #[serde(default)]
+    link_to: Option<String>,
 }
 
 fn unexpected(e: impl std::fmt::Display) -> OAuthStateStoreError {
@@ -48,6 +50,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
             provider: pending.provider,
             code_verifier: pending.code_verifier.expose_secret().clone(),
             nonce: pending.nonce.map(|n| n.expose_secret().clone()),
+            link_to: pending.link_to.map(|e| e.as_ref().expose_secret().clone()),
         })
         .map_err(unexpected)?;
         self.client
@@ -74,6 +77,11 @@ impl OAuthStateStore for RedisOAuthStateStore {
             provider: stored.provider,
             code_verifier: Secret::new(stored.code_verifier),
             nonce: stored.nonce.map(Secret::new),
+            link_to: stored
+                .link_to
+                .map(|e| tempered_core::Email::try_from(Secret::new(e)))
+                .transpose()
+                .map_err(unexpected)?,
         })
     }
 }

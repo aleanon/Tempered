@@ -76,4 +76,8 @@ pub struct PendingAuthorization {
     /// (so a token issued for another login cannot be replayed into this
     /// one). `None` for plain OAuth2 providers.
     pub nonce: Option<Secret<String>>,
+    /// When the request links a provider to an account that is logged in
+    /// (rather than logging in): that account. The callback then attaches
+    /// the provider identity to it, whatever address the provider reports.
+    pub link_to: Option<crate::Email>,
 }

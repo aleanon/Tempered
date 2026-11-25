@@ -121,6 +121,7 @@ pub(crate) async fn oauth_state_store(store: impl tempered_core::OAuthStateStore
                 provider: "google".to_string(),
                 code_verifier: Secret::new("verifier-1".to_string()),
                 nonce: Some(Secret::new("nonce-1".to_string())),
+                link_to: Some(email("linker@example.com")),
             },
         )
         .await
@@ -576,6 +577,28 @@ pub(crate) async fn oauth_identity_store(store: impl tempered_core::OAuthIdentit
     );
     // Unlinked, the identity can be linked again (to a new account).
     link("google", "g-1", &bob).await.unwrap();
+
+    // A user's links, and unlinking one provider.
+    let mut listed = store.list_for_user(&bob).await.unwrap();
+    listed.sort();
+    assert_eq!(
+        listed,
+        [
+            ("github".to_string(), "h-2".to_string()),
+            ("google".to_string(), "g-1".to_string())
+        ]
+    );
+    assert!(
+        !store.unlink(&alice, "github").await.unwrap(),
+        "not alice's"
+    );
+    assert!(store.unlink(&bob, "github").await.unwrap());
+    assert!(!store.unlink(&bob, "github").await.unwrap());
+    assert_eq!(store.find_email("github", "h-2").await.unwrap(), None);
+    assert_eq!(
+        store.find_email("google", "g-1").await.unwrap(),
+        Some(bob.clone())
+    );
 }
 
 /// [`PasskeyCredentialStore`]: insert-only ids, the sign-count rule, and
@@ -590,6 +613,7 @@ pub(crate) async fn passkey_credential_store(store: impl tempered_core::PasskeyC
         credential_data: vec![0, 1, 2, 255],
         sign_count: count,
         owner: owner.clone(),
+        name: None,
     };
     let id = |s: &str| CredentialId(s.to_string());
 
@@ -671,6 +695,32 @@ pub(crate) async fn passkey_credential_store(store: impl tempered_core::PasskeyC
     assert!(store.list_for_user(&alice).await.unwrap().is_empty());
     assert!(store.get_credential(&id("a1")).await.is_err());
     assert_eq!(store.get_credential(&id("b1")).await.unwrap().owner, bob);
+
+    // Rename and delete, owner-scoped.
+    assert!(
+        !store
+            .rename_credential(&alice, &id("b1"), Some("x".into()))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .rename_credential(&bob, &id("b1"), Some("phone".into()))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .get_credential(&id("b1"))
+            .await
+            .unwrap()
+            .name
+            .as_deref(),
+        Some("phone")
+    );
+    assert!(!store.delete_credential(&alice, &id("b1")).await.unwrap());
+    assert!(store.delete_credential(&bob, &id("b1")).await.unwrap());
+    assert!(store.get_credential(&id("b1")).await.is_err());
 }
 
 /// [`ApiKeyStore`]: lookup by prefix, per-owner listing, revocation.

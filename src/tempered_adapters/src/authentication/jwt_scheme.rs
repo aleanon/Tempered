@@ -701,6 +701,94 @@ mod oauth_tests {
         assert!(scheme.verify_2fa(email(), attempt_id, code).await.is_err());
     }
 
+    /// A logged-in user links a provider whose address is not theirs; the
+    /// provider then logs in to their account, and the provider's address
+    /// gains nothing.
+    #[tokio::test]
+    async fn a_linked_provider_logs_in_to_the_account_that_linked_it() {
+        let (scheme, users) = scheme_with_oauth();
+        let me = Email::try_from(Secret::new("me@example.com".to_string())).unwrap();
+        users
+            .add_user(User::new(
+                me.clone(),
+                Password::try_from(Secret::new("my-own-password".to_string())).unwrap(),
+                false,
+            ))
+            .await
+            .unwrap();
+
+        let auth = scheme.begin_oauth_link("google", me.clone()).await.unwrap();
+        // A link state does not finish as a login...
+        assert!(
+            scheme
+                .complete_oauth("google", "code", &auth.state, &auth.state)
+                .await
+                .is_err()
+        );
+        let auth = scheme.begin_oauth_link("google", me.clone()).await.unwrap();
+        let linked = scheme
+            .complete_oauth_link("google", "code", &auth.state, &auth.state)
+            .await
+            .unwrap();
+        assert_eq!(linked, me);
+        assert_eq!(scheme.oauth_links(&me).await.unwrap(), ["google"]);
+
+        // ...and a login state does not finish as a link.
+        let auth = scheme.begin_oauth("google").await.unwrap();
+        assert!(
+            scheme
+                .complete_oauth_link("google", "code", &auth.state, &auth.state)
+                .await
+                .is_err()
+        );
+
+        // The provider (reporting user@example.com) now logs in to me.
+        let LoginOutcome::Success(token) = oauth_login(&scheme).await.unwrap() else {
+            panic!("no 2FA here");
+        };
+        assert!(validates(&scheme, &token).await);
+        assert!(
+            users.get_user(&email()).await.is_err(),
+            "no account was made for the provider's address"
+        );
+
+        // Unlinked, it is a stranger again.
+        assert!(scheme.unlink_oauth(&me, "google").await.unwrap());
+        assert!(!scheme.unlink_oauth(&me, "google").await.unwrap());
+        assert!(scheme.oauth_links(&me).await.unwrap().is_empty());
+    }
+
+    /// An identity already linked to one account cannot be linked to another.
+    #[tokio::test]
+    async fn an_identity_linked_elsewhere_cannot_be_linked_again() {
+        let (scheme, users) = scheme_with_oauth();
+        // The provider's own login made the account user@example.com and
+        // linked sub-123 to it.
+        oauth_login(&scheme).await.unwrap();
+        let other = Email::try_from(Secret::new("other@example.com".to_string())).unwrap();
+        users
+            .add_user(User::new(
+                other.clone(),
+                Password::try_from(Secret::new("other-password".to_string())).unwrap(),
+                false,
+            ))
+            .await
+            .unwrap();
+        let auth = scheme
+            .begin_oauth_link("google", other.clone())
+            .await
+            .unwrap();
+        let result = scheme
+            .complete_oauth_link("google", "code", &auth.state, &auth.state)
+            .await;
+        assert!(matches!(
+            result,
+            Err(CredentialError::OAuth(
+                crate::oauth::OAuthFlowError::IdentityConflict
+            ))
+        ));
+    }
+
     /// Whoever signed up an unproven account may have added an
     /// authenticator app to it. Securing the account removes that app too,
     /// with the password and passkeys.
@@ -1031,6 +1119,41 @@ mod passkey_tests {
     }
 
     #[tokio::test]
+    async fn a_user_lists_renames_and_removes_only_their_own_passkeys() {
+        let (scheme, _users) = scheme_with_passkeys().await;
+        enroll(&scheme, "cred-a").await;
+        enroll(&scheme, "cred-b").await;
+        let listed = scheme.passkeys(&email()).await.unwrap();
+        assert_eq!(listed.len(), 2);
+
+        let a = tempered_core::CredentialId("cred-a".to_string());
+        assert!(
+            scheme
+                .rename_passkey(&email(), &a, Some("laptop".into()))
+                .await
+                .unwrap()
+        );
+        let listed = scheme.passkeys(&email()).await.unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .find(|p| p.id == "cred-a")
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("laptop")
+        );
+
+        // Someone else's id is "none" to this user.
+        let stranger = Email::try_from(Secret::new("stranger@example.com".to_string())).unwrap();
+        assert!(!scheme.delete_passkey(&stranger, &a).await.unwrap());
+        assert!(!scheme.rename_passkey(&stranger, &a, None).await.unwrap());
+
+        assert!(scheme.delete_passkey(&email(), &a).await.unwrap());
+        assert_eq!(scheme.passkeys(&email()).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn register_then_authenticate_issues_a_jwt_that_validates() {
         let (scheme, _users) = scheme_with_passkeys().await;
 
@@ -1350,6 +1473,21 @@ mod passkey_tests {
     #[async_trait::async_trait]
     impl PasskeyCredentialStore for UnavailableCredentialStore {
         async fn add_credential(&self, _: PasskeyCredential) -> Result<(), PasskeyStoreError> {
+            Err(PasskeyStoreError::UnexpectedError("down".into()))
+        }
+        async fn delete_credential(
+            &self,
+            _: &Email,
+            _: &CredentialId,
+        ) -> Result<bool, PasskeyStoreError> {
+            Err(PasskeyStoreError::UnexpectedError("down".into()))
+        }
+        async fn rename_credential(
+            &self,
+            _: &Email,
+            _: &CredentialId,
+            _: Option<String>,
+        ) -> Result<bool, PasskeyStoreError> {
             Err(PasskeyStoreError::UnexpectedError("down".into()))
         }
         async fn get_credential(

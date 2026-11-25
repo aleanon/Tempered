@@ -257,6 +257,33 @@ pub trait SupportsOAuth2: AuthenticationScheme {
         query_state: &str,
         cookie_state: &str,
     ) -> Result<LoginOutcome<Self::Token>, Self::OAuth2Error>;
+
+    /// Begin linking `provider` to the logged-in account `email` (from the
+    /// validated session, never the request). The callback attaches the
+    /// provider identity to that account, whatever address the provider
+    /// reports.
+    async fn begin_oauth_link(
+        &self,
+        provider: &str,
+        email: Email,
+    ) -> Result<AuthorizationRequest, Self::OAuth2Error>;
+
+    /// Complete a link begun with [`begin_oauth_link`](Self::begin_oauth_link);
+    /// returns the account linked. Logs nobody in. Refuses an identity
+    /// already linked to another account.
+    async fn complete_oauth_link(
+        &self,
+        provider: &str,
+        code: &str,
+        query_state: &str,
+        cookie_state: &str,
+    ) -> Result<Email, Self::OAuth2Error>;
+
+    /// The providers linked to `email`.
+    async fn oauth_links(&self, email: &Email) -> Result<Vec<String>, Self::OAuth2Error>;
+
+    /// Unlink `provider` from `email`; `false` if it was not linked.
+    async fn unlink_oauth(&self, email: &Email, provider: &str) -> Result<bool, Self::OAuth2Error>;
 }
 
 // ============================================================================
@@ -319,6 +346,33 @@ pub trait SupportsPasskeys: AuthenticationScheme {
         ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<LoginOutcome<Self::Token>, Self::PasskeyError>;
+
+    /// The user's passkeys.
+    async fn passkeys(&self, email: &Email) -> Result<Vec<PasskeySummary>, Self::PasskeyError>;
+
+    /// Rename one of the user's passkeys; `false` if they have none by
+    /// that id.
+    async fn rename_passkey(
+        &self,
+        email: &Email,
+        id: &crate::CredentialId,
+        name: Option<String>,
+    ) -> Result<bool, Self::PasskeyError>;
+
+    /// Remove one of the user's passkeys; `false` if they have none by that
+    /// id.
+    async fn delete_passkey(
+        &self,
+        email: &Email,
+        id: &crate::CredentialId,
+    ) -> Result<bool, Self::PasskeyError>;
+}
+
+/// A passkey as its owner's list shows it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PasskeySummary {
+    pub id: String,
+    pub name: Option<String>,
 }
 
 // ============================================================================

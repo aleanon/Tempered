@@ -61,6 +61,29 @@ impl OAuthIdentityStore for HashMapOAuthIdentityStore {
         self.identities.write().await.retain(|_, e| e != email);
         Ok(())
     }
+
+    async fn list_for_user(
+        &self,
+        email: &Email,
+    ) -> Result<Vec<(String, String)>, OAuthIdentityStoreError> {
+        let mut links: Vec<(String, String)> = self
+            .identities
+            .read()
+            .await
+            .iter()
+            .filter(|(_, e)| *e == email)
+            .map(|(key, _)| key.clone())
+            .collect();
+        links.sort();
+        Ok(links)
+    }
+
+    async fn unlink(&self, email: &Email, provider: &str) -> Result<bool, OAuthIdentityStoreError> {
+        let mut identities = self.identities.write().await;
+        let before = identities.len();
+        identities.retain(|(p, _), e| !(p == provider && e == email));
+        Ok(identities.len() != before)
+    }
 }
 
 #[cfg(test)]

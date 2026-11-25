@@ -48,11 +48,11 @@ pub use ports::{
 pub use strategies::{
     auth_validator::{AuthValidator, IdentityClaims},
     authenticator::{
-        AuthenticationScheme, AuthorizationRequest, LoginOutcome, RequiresEmailVerification,
-        SupportsAccountDeletion, SupportsApiKeyIssuance, SupportsElevation, SupportsEmailLogin,
-        SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset,
-        SupportsRegistration, SupportsTokenRevocation, SupportsTotp, SupportsTwoFactor,
-        TotpEnrollment,
+        AuthenticationScheme, AuthorizationRequest, LoginOutcome, PasskeySummary,
+        RequiresEmailVerification, SupportsAccountDeletion, SupportsApiKeyIssuance,
+        SupportsElevation, SupportsEmailLogin, SupportsOAuth2, SupportsPasskeys,
+        SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
+        SupportsTokenRevocation, SupportsTotp, SupportsTwoFactor, TotpEnrollment,
     },
 };
 

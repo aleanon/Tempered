@@ -161,6 +161,25 @@ where
     /// initiating browser (see that type's docs) and presented back to
     /// [`complete`](Self::complete).
     pub async fn begin(&self, provider: &str) -> Result<AuthorizationRequest, OAuthFlowError> {
+        self.begin_inner(provider, None).await
+    }
+
+    /// Step 1 of linking `provider` to the logged-in account `account`: like
+    /// [`begin`](Self::begin), with the account recorded in the pending
+    /// request. Finish with [`complete_link`](Self::complete_link).
+    pub async fn begin_link(
+        &self,
+        provider: &str,
+        account: Email,
+    ) -> Result<AuthorizationRequest, OAuthFlowError> {
+        self.begin_inner(provider, Some(account)).await
+    }
+
+    async fn begin_inner(
+        &self,
+        provider: &str,
+        link_to: Option<Email>,
+    ) -> Result<AuthorizationRequest, OAuthFlowError> {
         let config = self.provider(provider)?;
         let state = random_state();
         let code_verifier = generate_verifier();
@@ -180,6 +199,7 @@ where
                     provider: config.name.clone(),
                     code_verifier,
                     nonce,
+                    link_to,
                 },
             )
             .await
@@ -202,13 +222,13 @@ where
     /// `cookie_state` is the value previously bound to the initiating browser
     /// (see [`AuthorizationRequest`]). The two must match, which proves the same
     /// browser that began the flow is completing it.
-    pub async fn complete(
+    async fn redeem_callback(
         &self,
         provider: &str,
         code: &str,
         query_state: &str,
         cookie_state: &str,
-    ) -> Result<VerifiedIdentity, OAuthFlowError> {
+    ) -> Result<(Option<Email>, OAuthUserInfo), OAuthFlowError> {
         let config = self.provider(provider)?;
 
         // Bind the callback to the initiating browser before trusting `state`.
@@ -249,6 +269,23 @@ where
                     .await?
             }
         };
+        Ok((pending.link_to, info))
+    }
+
+    pub async fn complete(
+        &self,
+        provider: &str,
+        code: &str,
+        query_state: &str,
+        cookie_state: &str,
+    ) -> Result<VerifiedIdentity, OAuthFlowError> {
+        let (link_to, info) = self
+            .redeem_callback(provider, code, query_state, cookie_state)
+            .await?;
+        // A link request finishes only as a link.
+        if link_to.is_some() {
+            return Err(OAuthFlowError::InvalidState);
+        }
 
         // A linked identity is the provider's `subject`, which is stable;
         // the email is not (OIDC Core §5.7: do not key on it). So a linked
@@ -325,6 +362,59 @@ where
             return Err(refused("userinfo describes another subject".to_string()));
         }
         Ok(info)
+    }
+
+    /// Step 2 of linking: the identity the provider proves, for the account
+    /// the link was begun for (whatever address the provider reports). A
+    /// login request does not finish here, and an identity linked to another
+    /// account is refused.
+    pub async fn complete_link(
+        &self,
+        provider: &str,
+        code: &str,
+        query_state: &str,
+        cookie_state: &str,
+    ) -> Result<VerifiedIdentity, OAuthFlowError> {
+        let (link_to, info) = self
+            .redeem_callback(provider, code, query_state, cookie_state)
+            .await?;
+        let Some(account) = link_to else {
+            return Err(OAuthFlowError::InvalidState);
+        };
+        let linked = self.linked_email(provider, &info.subject).await?;
+        if linked.as_ref().is_some_and(|e| e != &account) {
+            return Err(OAuthFlowError::IdentityConflict);
+        }
+        let reported = Email::try_from(Secret::new(info.email)).ok();
+        Ok(VerifiedIdentity {
+            provider: provider.to_string(),
+            subject: info.subject,
+            vouches_for_email: info.email_verified && reported.as_ref() == Some(&account),
+            email: account,
+            already_linked: linked.is_some(),
+        })
+    }
+
+    /// The providers linked to `email`.
+    pub async fn links(&self, email: &Email) -> Result<Vec<String>, OAuthFlowError> {
+        let mut providers: Vec<String> = self
+            .identity_store
+            .list_for_user(email)
+            .await
+            .map_err(|e| OAuthFlowError::Identity(e.to_string()))?
+            .into_iter()
+            .map(|(provider, _)| provider)
+            .collect();
+        providers.dedup();
+        Ok(providers)
+    }
+
+    /// Remove `email`'s link to `provider`.
+    pub async fn unlink(&self, email: &Email, provider: &str) -> Result<bool, OAuthFlowError> {
+        self.identity_store
+            .unlink(email, provider)
+            .await
+            .map_err(|e| OAuthFlowError::Identity(e.to_string()))
     }
 
     /// Record a verified identity as a way to log in to its email's account.

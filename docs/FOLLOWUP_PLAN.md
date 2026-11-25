@@ -574,8 +574,15 @@ Should-have:
   the scheme) checked at signup, password change and reset (before the
   link is spent); `BreachedPasswordCheck` behind `breached-passwords`
   (Add-Padding, fails open).
-- **8.11 Account self-service routes.** Link or unlink an OAuth provider
+- **8.11 Account self-service routes.** ✅ DONE 2026-11-25. Link or unlink an OAuth provider
   while logged in, and list, rename or delete passkeys.
+  As built: `PendingAuthorization.link_to`; `OAuthFlow::{begin_link,
+  complete_link}` (each kind of state finishes only as its kind; the
+  callback route tells them apart by the `__Host-oauth_link_state`
+  cookie); linking under the credential lock, marks verified only if the
+  provider vouches for this address. Store ports gained `list_for_user` /
+  `unlink` and `delete_credential` / `rename_credential` (owner-scoped);
+  `PasskeyCredential.name` (migration, `.sqlx` regenerated).
 - **8.12 API-key management.** Issue/list/revoke routes in the elevated
   tier, scope enforcement (`require_scope`), expiry and last-used.
 - **8.13 Observability.** `#[instrument]` spans on the flows, plus metrics

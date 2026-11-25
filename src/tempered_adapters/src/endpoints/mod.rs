@@ -72,6 +72,12 @@ pub enum RouteId {
     EndSession,
     EmailLoginStart,
     EmailLoginVerify,
+    OAuthLinkStart,
+    OAuthLinks,
+    OAuthUnlink,
+    PasskeyList,
+    PasskeyRename,
+    PasskeyDelete,
 }
 
 /// What a request must prove before a route runs. The tiers nest: a

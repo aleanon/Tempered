@@ -30,12 +30,14 @@ fn credential(
     owner: String,
     credential_data: Vec<u8>,
     sign_count: i64,
+    name: Option<String>,
 ) -> Result<PasskeyCredential, PasskeyStoreError> {
     Ok(PasskeyCredential {
         credential_id: CredentialId(credential_id),
         owner: Email::try_from(Secret::new(owner)).map_err(unexpected)?,
         credential_data,
         sign_count: u32::try_from(sign_count).map_err(unexpected)?,
+        name,
     })
 }
 
@@ -45,13 +47,14 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
     async fn add_credential(&self, cred: PasskeyCredential) -> Result<(), PasskeyStoreError> {
         sqlx::query!(
             r#"
-                INSERT INTO passkey_credentials (credential_id, owner, credential_data, sign_count)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO passkey_credentials (credential_id, owner, credential_data, sign_count, name)
+                VALUES ($1, $2, $3, $4, $5)
             "#,
             cred.credential_id.as_str(),
             cred.owner.as_ref().expose_secret(),
             cred.credential_data,
-            i64::from(cred.sign_count)
+            i64::from(cred.sign_count),
+            cred.name
         )
         .execute(&self.pool)
         .await
@@ -69,7 +72,7 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
     ) -> Result<PasskeyCredential, PasskeyStoreError> {
         let row = sqlx::query!(
             r#"
-                SELECT credential_id, owner, credential_data, sign_count
+                SELECT credential_id, owner, credential_data, sign_count, name
                 FROM passkey_credentials WHERE credential_id = $1
             "#,
             id.as_str()
@@ -83,6 +86,7 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
             row.owner,
             row.credential_data,
             row.sign_count,
+            row.name,
         )
     }
 
@@ -93,7 +97,7 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
     ) -> Result<Vec<PasskeyCredential>, PasskeyStoreError> {
         sqlx::query!(
             r#"
-                SELECT credential_id, owner, credential_data, sign_count
+                SELECT credential_id, owner, credential_data, sign_count, name
                 FROM passkey_credentials WHERE owner = $1
             "#,
             owner.as_ref().expose_secret()
@@ -108,9 +112,43 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
                 row.owner,
                 row.credential_data,
                 row.sign_count,
+                row.name,
             )
         })
         .collect()
+    }
+
+    async fn delete_credential(
+        &self,
+        owner: &Email,
+        id: &CredentialId,
+    ) -> Result<bool, PasskeyStoreError> {
+        let deleted =
+            sqlx::query("DELETE FROM passkey_credentials WHERE credential_id = $1 AND owner = $2")
+                .bind(id.as_str())
+                .bind(owner.as_ref().expose_secret())
+                .execute(&self.pool)
+                .await
+                .map_err(unexpected)?;
+        Ok(deleted.rows_affected() == 1)
+    }
+
+    async fn rename_credential(
+        &self,
+        owner: &Email,
+        id: &CredentialId,
+        name: Option<String>,
+    ) -> Result<bool, PasskeyStoreError> {
+        let renamed = sqlx::query(
+            "UPDATE passkey_credentials SET name = $3 WHERE credential_id = $1 AND owner = $2",
+        )
+        .bind(id.as_str())
+        .bind(owner.as_ref().expose_secret())
+        .bind(name)
+        .execute(&self.pool)
+        .await
+        .map_err(unexpected)?;
+        Ok(renamed.rows_affected() == 1)
     }
 
     #[tracing::instrument(name = "Update passkey after authentication", skip_all)]
@@ -181,6 +219,7 @@ mod tests {
                 credential_data: vec![1],
                 sign_count: 1,
                 owner: contract::email("a@example.com"),
+                name: None,
             })
             .await
             .unwrap();

@@ -225,6 +225,22 @@ budget. An account that requires 2FA needs a second factor other than the
 inbox: with an authenticator app it is asked for the app's code (`206`);
 without one it is refused (`403`) and signs in with its password.
 
+### Account self-service
+
+With OAuth on, a logged-in user can manage their provider logins:
+`GET /oauth/links` lists the providers linked to the account; `GET
+/oauth/{provider}/link` (a verified address needed, like any new way in)
+sends them to the provider and attaches that provider identity to *their*
+account, whatever address the provider reports (the callback is the
+provider's usual one; a separate state cookie tells a link from a login,
+and logs nobody in); `DELETE /oauth/links/{provider}` unlinks it.
+
+With passkeys on: `GET /passkey/credentials` lists `{ id, name }`, and
+`PATCH /passkey/credentials/{id} { name }` and `DELETE
+/passkey/credentials/{id}` rename or remove one, at the enrolment tier
+(under `/elevated` with `e.supports_passkey_enrollment()`). Another user's
+id is a `404`.
+
 ### Devices (session schemes)
 
 A session scheme serves `GET /sessions` and `DELETE /sessions/{handle}` to

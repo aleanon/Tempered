@@ -239,6 +239,37 @@ fn a_scheme_with_every_capability_serves_the_default_table() {
             "/elevated/totp/recovery-codes",
             Elevated,
         ),
+        row(
+            OAuthLinkStart,
+            Method::GET,
+            "/oauth/{provider}/link",
+            Verified,
+        ),
+        row(OAuthLinks, Method::GET, "/oauth/links", Tier::Login),
+        row(
+            OAuthUnlink,
+            Method::DELETE,
+            "/oauth/links/{provider}",
+            Verified,
+        ),
+        row(
+            PasskeyList,
+            Method::GET,
+            "/passkey/credentials",
+            Tier::Login,
+        ),
+        row(
+            PasskeyRename,
+            Method::PATCH,
+            "/passkey/credentials/{id}",
+            Verified,
+        ),
+        row(
+            PasskeyDelete,
+            Method::DELETE,
+            "/passkey/credentials/{id}",
+            Verified,
+        ),
     ];
     expected.sort_by_key(|row| row.0);
     assert_eq!(
@@ -332,13 +363,17 @@ fn tier_rules_hold_for_every_scheme_built_here() {
                 ChangePassword
                 | PasskeyRegisterStart
                 | PasskeyRegisterFinish
+                | PasskeyRename
+                | PasskeyDelete
+                | OAuthLinkStart
+                | OAuthUnlink
                 | Elevate
                 | VerifyElevation2Fa => {
                     assert!(spec.tier >= Tier::Verified, "{spec:?}")
                 }
                 // Needs the account's login as well as the inbox.
                 VerifyEmail | ResendVerification | Logout | VerifyToken | ListSessions
-                | EndSession => {
+                | EndSession | OAuthLinks | PasskeyList => {
                     assert_eq!(spec.tier, Tier::Login, "{spec:?}")
                 }
                 DeleteAccount => assert!(spec.tier >= Tier::Login, "{spec:?}"),

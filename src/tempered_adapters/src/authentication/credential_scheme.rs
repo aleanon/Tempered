@@ -2310,6 +2310,53 @@ where
             .map_err(CredentialError::Token)?;
         Ok(LoginOutcome::Success(token))
     }
+
+    async fn begin_oauth_link(
+        &self,
+        provider: &str,
+        email: Email,
+    ) -> Result<AuthorizationRequest, Self::OAuth2Error> {
+        Ok(self.oauth.flow.begin_link(provider, email).await?)
+    }
+
+    async fn complete_oauth_link(
+        &self,
+        provider: &str,
+        code: &str,
+        query_state: &str,
+        cookie_state: &str,
+    ) -> Result<Email, Self::OAuth2Error> {
+        let identity = self
+            .oauth
+            .flow
+            .complete_link(provider, code, query_state, cookie_state)
+            .await?;
+        let account = identity.email().clone();
+        // Under the credential lock, like every new way in: an account
+        // deletion either finishes first (and the account is gone) or waits
+        // and removes the link with the rest.
+        let lock = self.lock_credentials(&account).await?;
+        let result: Result<(), CredentialError<T::Error>> = async {
+            self.user_store.get_user(&account).await?;
+            self.oauth.flow.link(&identity).await?;
+            if identity.vouches_for_email() {
+                self.email_verify.mark_verified(&account).await?;
+            }
+            Ok(())
+        }
+        .await;
+        self.unlock_credentials(&account, lock).await;
+        result?;
+        Ok(account)
+    }
+
+    async fn oauth_links(&self, email: &Email) -> Result<Vec<String>, Self::OAuth2Error> {
+        Ok(self.oauth.flow.links(email).await?)
+    }
+
+    async fn unlink_oauth(&self, email: &Email, provider: &str) -> Result<bool, Self::OAuth2Error> {
+        Ok(self.oauth.flow.unlink(email, provider).await?)
+    }
 }
 
 // Private helpers: the slot traits in the bounds are internal by design.
@@ -2450,6 +2497,10 @@ where
 {
     fn oauth_state_cookie_name(&self) -> &str {
         &self.oauth.state_cookie_name
+    }
+
+    fn oauth_link_redirect(&self) -> &str {
+        &self.oauth.post_login_redirect
     }
 
     fn create_oauth_start_response<RB: ResponseBuilder>(
@@ -2652,6 +2703,40 @@ where
                 .await
                 .map_err(CredentialError::Token)?,
         ))
+    }
+
+    async fn passkeys(
+        &self,
+        email: &Email,
+    ) -> Result<Vec<tempered_core::PasskeySummary>, Self::PasskeyError> {
+        Ok(self
+            .passkeys
+            .flow
+            .list(email)
+            .await?
+            .into_iter()
+            .map(|c| tempered_core::PasskeySummary {
+                id: c.credential_id.0,
+                name: c.name,
+            })
+            .collect())
+    }
+
+    async fn rename_passkey(
+        &self,
+        email: &Email,
+        id: &tempered_core::CredentialId,
+        name: Option<String>,
+    ) -> Result<bool, Self::PasskeyError> {
+        Ok(self.passkeys.flow.rename(email, id, name).await?)
+    }
+
+    async fn delete_passkey(
+        &self,
+        email: &Email,
+        id: &tempered_core::CredentialId,
+    ) -> Result<bool, Self::PasskeyError> {
+        Ok(self.passkeys.flow.remove(email, id).await?)
     }
 }
 

@@ -127,6 +127,40 @@ fn bad_request(message: impl std::fmt::Display) -> EndpointResponse {
 /// A failed OAuth callback spends the state cookie too. A success clears it
 /// in `create_oauth_callback_response`; a failure must as well, or the
 /// cookie lingers until it expires and the next attempt starts beside it.
+/// The cookie that binds a provider *link* (not a login) to the browser.
+/// Separate from the login state cookie, so the callback knows which one it
+/// is finishing, and each refuses the other's state.
+pub const OAUTH_LINK_STATE_COOKIE: &str = "__Host-oauth_link_state";
+
+/// `response` with the link state cookie expired.
+fn with_link_state_cleared(mut response: EndpointResponse) -> EndpointResponse {
+    let cookie = crate::cookie_util::expired_cookie(OAUTH_LINK_STATE_COOKIE);
+    if let Ok(value) = http::HeaderValue::from_str(&cookie) {
+        response
+            .headers_mut()
+            .append(http::header::SET_COOKIE, value);
+    }
+    response
+}
+
+/// `200 {}` if the thing was the user's, `404` otherwise.
+fn found(done: bool) -> Result<EndpointResponse, EndpointResponse> {
+    if done {
+        Ok(json_response(StatusCode::OK, json!({})))
+    } else {
+        Err(error_response(StatusCode::NOT_FOUND, "Not found"))
+    }
+}
+
+fn redirect(location: &str, cookie: &str) -> EndpointResponse {
+    http::Response::builder()
+        .status(StatusCode::FOUND)
+        .header(http::header::LOCATION, location)
+        .header(http::header::SET_COOKIE, cookie)
+        .body(String::new())
+        .expect("a redirect always builds")
+}
+
 fn with_state_cleared<S: HttpOAuth2Scheme>(
     scheme: &S,
     mut response: EndpointResponse,
@@ -1025,6 +1059,26 @@ where
             o.path_or(RouteId::OAuthCallback, "/oauth/{provider}/callback"),
             Tier::Public,
         ));
+        // Self-service. Linking adds a way in, so it needs a verified
+        // address, like passkey enrolment; listing needs a login.
+        out.push(route(
+            RouteId::OAuthLinkStart,
+            Method::GET,
+            o.path_or(RouteId::OAuthLinkStart, "/oauth/{provider}/link"),
+            Tier::Verified,
+        ));
+        out.push(route(
+            RouteId::OAuthLinks,
+            Method::GET,
+            o.path_or(RouteId::OAuthLinks, "/oauth/links"),
+            Tier::Login,
+        ));
+        out.push(route(
+            RouteId::OAuthUnlink,
+            Method::DELETE,
+            o.path_or(RouteId::OAuthUnlink, "/oauth/links/{provider}"),
+            Tier::Verified,
+        ));
     }
 
     async fn handle(
@@ -1032,7 +1086,7 @@ where
         scheme: &S,
         id: RouteId,
         req: &EndpointRequest,
-        _who: Option<&Email>,
+        who: Option<&Email>,
     ) -> Option<EndpointResponse> {
         let provider = || {
             req.param("provider")
@@ -1043,6 +1097,38 @@ where
                 handlers::handle_oauth_start(scheme, provider()?, HttpResponseBuilder::new())
                     .await
                     .map_err(classified)
+            }),
+            RouteId::OAuthLinkStart => respond!({
+                let email = who.cloned().ok_or_else(not_logged_in)?;
+                let authorization = scheme
+                    .begin_oauth_link(provider()?, email)
+                    .await
+                    .map_err(classified)?;
+                let cookie = format!(
+                    "{OAUTH_LINK_STATE_COOKIE}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600",
+                    authorization.state
+                );
+                Ok(redirect(&authorization.authorize_url, &cookie))
+            }),
+            RouteId::OAuthLinks => respond!({
+                let email = who.cloned().ok_or_else(not_logged_in)?;
+                let providers = scheme.oauth_links(&email).await.map_err(classified)?;
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({ "providers": providers }),
+                ))
+            }),
+            RouteId::OAuthUnlink => respond!({
+                let email = who.cloned().ok_or_else(not_logged_in)?;
+                if scheme
+                    .unlink_oauth(&email, provider()?)
+                    .await
+                    .map_err(classified)?
+                {
+                    Ok(json_response(StatusCode::OK, json!({})))
+                } else {
+                    Err(error_response(StatusCode::NOT_FOUND, "Not linked"))
+                }
             }),
             RouteId::OAuthCallback => respond!({
                 // The provider sends the user back with `error=` when they
@@ -1066,8 +1152,20 @@ where
                         bad_request("Missing code or state"),
                     ));
                 };
-                // The browser-bound state lives in the cookie the start leg set.
+                // A link, if the browser holds a link state: it finishes as a
+                // link only, and logs nobody in.
                 let head = req.head();
+                if let Some(link_state) =
+                    tempered_core::AuthRequest::cookie(&head, OAUTH_LINK_STATE_COOKIE)
+                {
+                    let cleared = crate::cookie_util::expired_cookie(OAUTH_LINK_STATE_COOKIE);
+                    return scheme
+                        .complete_oauth_link(provider()?, &code, &state, link_state)
+                        .await
+                        .map(|_| redirect(scheme.oauth_link_redirect(), &cleared))
+                        .map_err(|e| with_link_state_cleared(classified(e)));
+                }
+                // The browser-bound state lives in the cookie the start leg set.
                 let cookie_state =
                     tempered_core::AuthRequest::cookie(&head, scheme.oauth_state_cookie_name())
                         .unwrap_or("");
@@ -1145,6 +1243,30 @@ where
         ] {
             out.push(route(id, Method::POST, o.path_or(id, &default), tier));
         }
+        // The user's own passkeys: listing needs a login; renaming or
+        // removing one is a credential change, at the enrolment tier.
+        for (id, method, default, tier) in [
+            (
+                RouteId::PasskeyList,
+                Method::GET,
+                format!("{prefix}/credentials"),
+                Tier::Login,
+            ),
+            (
+                RouteId::PasskeyRename,
+                Method::PATCH,
+                format!("{enrol_prefix}/credentials/{{id}}"),
+                enrol_tier,
+            ),
+            (
+                RouteId::PasskeyDelete,
+                Method::DELETE,
+                format!("{enrol_prefix}/credentials/{{id}}"),
+                enrol_tier,
+            ),
+        ] {
+            out.push(route(id, method, o.path_or(id, &default), tier));
+        }
     }
 
     async fn handle(
@@ -1195,6 +1317,45 @@ where
                 )
                 .await
                 .map_err(classified)
+            }),
+            RouteId::PasskeyList => respond!({
+                let email = who.ok_or_else(not_logged_in)?;
+                let passkeys = scheme.passkeys(email).await.map_err(classified)?;
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({ "passkeys": passkeys }),
+                ))
+            }),
+            RouteId::PasskeyRename => respond!({
+                #[derive(Deserialize)]
+                struct Rename {
+                    name: Option<String>,
+                }
+                let email = who.ok_or_else(not_logged_in)?;
+                let request: Rename = parse(req)?;
+                let name = request
+                    .name
+                    .map(|n| n.trim().chars().take(64).collect::<String>())
+                    .filter(|n| !n.is_empty());
+                let id =
+                    tempered_core::CredentialId(req.param("id").unwrap_or_default().to_string());
+                found(
+                    scheme
+                        .rename_passkey(email, &id, name)
+                        .await
+                        .map_err(classified)?,
+                )
+            }),
+            RouteId::PasskeyDelete => respond!({
+                let email = who.ok_or_else(not_logged_in)?;
+                let id =
+                    tempered_core::CredentialId(req.param("id").unwrap_or_default().to_string());
+                found(
+                    scheme
+                        .delete_passkey(email, &id)
+                        .await
+                        .map_err(classified)?,
+                )
             }),
             _ => None,
         }

@@ -103,6 +103,32 @@ impl OAuthIdentityStore for PostgresOAuthIdentityStore {
         .map_err(unexpected)?;
         Ok(())
     }
+
+    async fn list_for_user(
+        &self,
+        email: &Email,
+    ) -> Result<Vec<(String, String)>, OAuthIdentityStoreError> {
+        use sqlx::Row;
+        let rows = sqlx::query(
+            "SELECT provider, subject FROM oauth_identities WHERE email = $1 ORDER BY provider, subject",
+        )
+        .bind(email.as_ref().expose_secret())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(unexpected)?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    async fn unlink(&self, email: &Email, provider: &str) -> Result<bool, OAuthIdentityStoreError> {
+        let deleted =
+            sqlx::query("DELETE FROM oauth_identities WHERE email = $1 AND provider = $2")
+                .bind(email.as_ref().expose_secret())
+                .bind(provider)
+                .execute(&self.pool)
+                .await
+                .map_err(unexpected)?;
+        Ok(deleted.rows_affected() > 0)
+    }
 }
 
 #[cfg(test)]

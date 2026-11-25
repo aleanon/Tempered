@@ -240,6 +240,11 @@ pub trait HttpOAuth2Scheme: HttpAuthenticationScheme + SupportsOAuth2 {
     /// the start redirect and the callback.
     fn oauth_state_cookie_name(&self) -> &str;
 
+    /// Where the browser goes after linking a provider to its account.
+    fn oauth_link_redirect(&self) -> &str {
+        "/"
+    }
+
     /// Build the redirect to the provider, setting the state cookie from
     /// [`AuthorizationRequest::state`].
     fn create_oauth_start_response<B: ResponseBuilder>(

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                SELECT credential_id, owner, credential_data, sign_count\n                FROM passkey_credentials WHERE credential_id = $1\n            ",
+  "query": "\n                SELECT credential_id, owner, credential_data, sign_count, name\n                FROM passkey_credentials WHERE owner = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -22,6 +22,11 @@
         "ordinal": 3,
         "name": "sign_count",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "name",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -33,8 +38,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "a6670ddc8abff3929c7956be6e1597b9586065560a9d07e3058487f251b16b17"
+  "hash": "8533ab1cdc20689dc7c60322394d45f92df231f4965df4ed9bdbc603a3f01113"
 }
