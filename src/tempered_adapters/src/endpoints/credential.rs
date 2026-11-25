@@ -1045,7 +1045,7 @@ where
     ID: Send + Sync,
     HC: Send + Sync,
 {
-    fn routes(&self, _flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+    fn routes(&self, flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
         // GET: the browser is redirected through both.
         out.push(route(
             RouteId::OAuthStart,
@@ -1060,12 +1060,19 @@ where
             Tier::Public,
         ));
         // Self-service. Linking adds a way in, so it needs a verified
-        // address, like passkey enrolment; listing needs a login.
+        // address (or an elevated token, with step-up), like passkey
+        // enrolment; listing needs a login. The link starts with a POST, so
+        // another site cannot start it in a visitor's browser (after logging
+        // that browser in to the attacker's provider account).
+        let (link_path, link_tier) = match flags.oauth_linking {
+            Authz::Login => ("/oauth/{provider}/link", Tier::Verified),
+            Authz::Elevated => ("/elevated/oauth/{provider}/link", Tier::Elevated),
+        };
         out.push(route(
             RouteId::OAuthLinkStart,
-            Method::GET,
-            o.path_or(RouteId::OAuthLinkStart, "/oauth/{provider}/link"),
-            Tier::Verified,
+            Method::POST,
+            o.path_or(RouteId::OAuthLinkStart, link_path),
+            link_tier,
         ));
         out.push(route(
             RouteId::OAuthLinks,

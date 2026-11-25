@@ -701,11 +701,11 @@ mod oauth_tests {
         assert!(scheme.verify_2fa(email(), attempt_id, code).await.is_err());
     }
 
-    /// A logged-in user links a provider whose address is not theirs; the
-    /// provider then logs in to their account, and the provider's address
-    /// gains nothing.
+    /// A provider that does not vouch for the account's address cannot be
+    /// linked to an unproven account: a linked identity counts as proof of
+    /// the address, and a squatter could otherwise link their own.
     #[tokio::test]
-    async fn a_linked_provider_logs_in_to_the_account_that_linked_it() {
+    async fn a_non_vouching_provider_cannot_be_linked_to_an_unproven_account() {
         let (scheme, users) = scheme_with_oauth();
         let me = Email::try_from(Secret::new("me@example.com".to_string())).unwrap();
         users
@@ -716,6 +716,38 @@ mod oauth_tests {
             ))
             .await
             .unwrap();
+        let auth = scheme.begin_oauth_link("google", me.clone()).await.unwrap();
+        let result = scheme
+            .complete_oauth_link("google", "code", &auth.state, &auth.state)
+            .await;
+        assert!(matches!(result, Err(CredentialError::AddressNotProven)));
+        assert!(scheme.oauth_links(&me).await.unwrap().is_empty());
+    }
+
+    /// A logged-in user with a proven address links a provider whose
+    /// address is not theirs; the provider then logs in to their account.
+    #[tokio::test]
+    async fn a_linked_provider_logs_in_to_the_account_that_linked_it() {
+        let users = HashMapUserStore::new();
+        let verified = HashMapEmailVerificationTokenStore::new();
+        let scheme = JwtScheme::new(
+            users.clone(),
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_email_verification(verified.clone(), MockEmailClient::new())
+        .supports_oauth(flow());
+        let me = Email::try_from(Secret::new("me@example.com".to_string())).unwrap();
+        users
+            .add_user(User::new(
+                me.clone(),
+                Password::try_from(Secret::new("my-own-password".to_string())).unwrap(),
+                false,
+            ))
+            .await
+            .unwrap();
+        verified.mark_verified(&me).await.unwrap();
 
         let auth = scheme.begin_oauth_link("google", me.clone()).await.unwrap();
         // A link state does not finish as a login...

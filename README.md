@@ -228,10 +228,13 @@ without one it is refused (`403`) and signs in with its password.
 ### Account self-service
 
 With OAuth on, a logged-in user can manage their provider logins:
-`GET /oauth/links` lists the providers linked to the account; `GET
-/oauth/{provider}/link` (a verified address needed, like any new way in)
-sends them to the provider and attaches that provider identity to *their*
-account, whatever address the provider reports (the callback is the
+`GET /oauth/links` lists the providers linked to the account; `POST
+/oauth/{provider}/link` (a verified address needed, like any new way in;
+`/elevated/...` with `e.supports_oauth_linking()`) sends them to the
+provider and attaches that provider identity to *their* account, whatever
+address the provider reports. A provider that does not vouch for the
+account's own address can be linked only once that address is proven
+(verified, or vouched for by an earlier link) (the callback is the
 provider's usual one; a separate state cookie tells a link from a login,
 and logs nobody in); `DELETE /oauth/links/{provider}` unlinks it.
 

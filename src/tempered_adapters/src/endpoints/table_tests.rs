@@ -241,7 +241,7 @@ fn a_scheme_with_every_capability_serves_the_default_table() {
         ),
         row(
             OAuthLinkStart,
-            Method::GET,
+            Method::POST,
             "/oauth/{provider}/link",
             Verified,
         ),

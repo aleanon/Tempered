@@ -111,7 +111,7 @@ async fn the_self_service_routes_mount_and_need_a_login() {
     let app: Router = auth_service(scheme, String::new()).into();
     for (method, path) in [
         ("GET", "/oauth/links"),
-        ("GET", "/oauth/google/link"),
+        ("POST", "/oauth/google/link"),
         ("DELETE", "/oauth/links/google"),
         ("GET", "/passkey/credentials"),
         ("PATCH", "/passkey/credentials/abc"),
@@ -125,4 +125,14 @@ async fn the_self_service_routes_mount_and_need_a_login() {
         let status = app.clone().oneshot(request).await.unwrap().status();
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
     }
+
+    // Another site cannot start a link in a visitor's browser.
+    let cross = Request::post("/oauth/google/link")
+        .header("sec-fetch-site", "cross-site")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(cross).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
 }

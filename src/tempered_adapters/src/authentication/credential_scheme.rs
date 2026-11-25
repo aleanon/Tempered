@@ -96,6 +96,9 @@ pub struct RouteFlags {
     /// when the scheme has passkeys (`supports_passkeys`); this decides which
     /// bucket they go in. Defaults to [`Authz::Login`].
     pub passkey_enrollment: Authz,
+    /// What linking an OAuth provider while logged in requires. Defaults
+    /// to [`Authz::Login`] (a verified address).
+    pub oauth_linking: Authz,
 }
 
 // ============================================================================
@@ -812,6 +815,9 @@ impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
         if caps.passkey_enrollment {
             self.routes.passkey_enrollment = Authz::Elevated;
         }
+        if caps.oauth_linking {
+            self.routes.oauth_linking = Authz::Elevated;
+        }
 
         CredentialScheme {
             user_store: self.user_store,
@@ -1100,6 +1106,7 @@ pub struct ElevatedCapabilities {
     password_change: bool,
     account_deletion: bool,
     passkey_enrollment: bool,
+    oauth_linking: bool,
 }
 
 impl ElevatedCapabilities {
@@ -1126,6 +1133,13 @@ impl ElevatedCapabilities {
     /// is unaffected.
     pub fn supports_passkey_enrollment(mut self) -> Self {
         self.passkey_enrollment = true;
+        self
+    }
+
+    /// Require an elevated token to link an OAuth provider to the account
+    /// (`/elevated/oauth/{provider}/link`): a new way in, like a passkey.
+    pub fn supports_oauth_linking(mut self) -> Self {
+        self.oauth_linking = true;
         self
     }
 }
@@ -2338,6 +2352,19 @@ where
         let lock = self.lock_credentials(&account).await?;
         let result: Result<(), CredentialError<T::Error>> = async {
             self.user_store.get_user(&account).await?;
+            // A linked identity counts as proof of the account's address (a
+            // later first login through another provider trusts the account
+            // as it is). So a provider that does not vouch for this address
+            // may be linked only to an account whose address is already
+            // proven; otherwise whoever squatted on the address could link
+            // their own provider and make the account look proven.
+            if !identity.vouches_for_email() {
+                let proven = self.email_verify.proof(&account).await? == AddressProof::Verified
+                    || self.oauth.flow.has_linked_identity(&account).await?;
+                if !proven {
+                    return Err(CredentialError::AddressNotProven);
+                }
+            }
             self.oauth.flow.link(&identity).await?;
             if identity.vouches_for_email() {
                 self.email_verify.mark_verified(&account).await?;
@@ -2817,6 +2844,11 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
     #[error("{0}")]
     TotpNotEnrolled(&'static str),
 
+    /// Linking a provider that does not vouch for the account's address,
+    /// to an account whose address is not proven.
+    #[error("Verify your address before linking this provider")]
+    AddressNotProven,
+
     /// The password policy refused the new password.
     #[error("{0}")]
     PasswordRejected(String),
@@ -2910,6 +2942,10 @@ where
             }
             CredentialError::TotpNotEnrolled(why) => (ErrorCategory::BadRequest, why.to_string()),
             CredentialError::PasswordRejected(why) => (ErrorCategory::BadRequest, why),
+            CredentialError::AddressNotProven => (
+                ErrorCategory::Forbidden,
+                "Verify your address before linking this provider".to_string(),
+            ),
             CredentialError::EmailLoginNotAllowed => (
                 ErrorCategory::Forbidden,
                 "This account signs in with its password".to_string(),
