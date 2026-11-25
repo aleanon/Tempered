@@ -208,17 +208,22 @@ change it with `.max_lifetime(seconds)`. A JWT has no sliding expiry: its
 
 ### Passwordless login by email
 
-`.supports_email_login(EmailLogin::code())`, on a scheme with 2FA, lets a
-user log in with a mailed six-digit code: `POST /email-login/start
+`.supports_email_login(EmailLogin::code(store))`, on a scheme with 2FA,
+lets a user log in with a mailed six-digit code. `store` is a code store of
+its own (with Redis: `RedisTwoFaCodeStore::new(conn).with_namespace(
+"email_login")`), so a sign-in code is never a second factor and never
+disturbs a pending 2FA login: `POST /email-login/start
 { email }` answers `{ loginAttemptId }` at once, for any address, and mails
 the code afterwards only if the account exists (so neither the answer nor
 its timing reveals that); `POST /email-login/verify { email,
 loginAttemptId, code }` logs in. `EmailLogin::link(page)` also mails a link
-to `page` with `email`, `loginAttemptId` and `code` in the query; the page
+to `page` (`EmailLogin::link(store, page)`) with `email`, `loginAttemptId`
+and `code` in the query; the page
 posts them (a link that logged in on `GET` would be used up by mail
-scanners that open links). The code is single-use with the 2FA attempt
-budget, and an account that requires 2FA is still asked for its second
-factor (`206`).
+scanners that open links). The code is single-use with an attempt
+budget. An account that requires 2FA needs a second factor other than the
+inbox: with an authenticator app it is asked for the app's code (`206`);
+without one it is refused (`403`) and signs in with its password.
 
 ### Devices (session schemes)
 

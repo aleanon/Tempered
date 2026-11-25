@@ -115,8 +115,15 @@ pub struct TwoFa<T, E, P = ()> {
 }
 
 /// Settings for passwordless login by email.
+///
+/// The codes live in a [`TwoFaCodeStore`] of their own, never the 2FA
+/// slot's: a sign-in code must not be redeemable as a second factor at
+/// `/verify-2fa`, and starting an email login must not replace (or spend
+/// the attempts of) someone's pending 2FA challenge. With Redis, give it a
+/// namespace: `RedisTwoFaCodeStore::new(conn).with_namespace("email_login")`.
 #[derive(Clone)]
 pub struct EmailLogin {
+    store: Arc<dyn TwoFaCodeStore>,
     /// The app page a sign-in link opens; it reads `email`,
     /// `loginAttemptId` and `code` from the query and posts them to
     /// `/email-login/verify`. `None` mails the code only.
@@ -125,9 +132,10 @@ pub struct EmailLogin {
 }
 
 impl EmailLogin {
-    /// Mail the code only.
-    pub fn code() -> Self {
+    /// Mail the code only, keeping codes in `store`.
+    pub fn code(store: impl TwoFaCodeStore + 'static) -> Self {
         Self {
+            store: Arc::new(store),
             link_base: None,
             deferred: Deferred::default(),
         }
@@ -136,8 +144,9 @@ impl EmailLogin {
     /// Also mail a link to `page` (an absolute URL in your app) carrying the
     /// code. The page must post it: a link that logged in on `GET` would be
     /// used up by mail scanners that open links to check them.
-    pub fn link(page: impl Into<String>) -> Self {
+    pub fn link(store: impl TwoFaCodeStore + 'static, page: impl Into<String>) -> Self {
         Self {
+            store: Arc::new(store),
             link_base: Some(page.into().into()),
             deferred: Deferred::default(),
         }
@@ -1549,7 +1558,7 @@ where
         let attempt_id = TwoFaAttemptId::new();
         let (users, store, mail) = (
             self.user_store.clone(),
-            self.two_fa.store.clone(),
+            settings.store.clone(),
             self.two_fa.email.clone(),
         );
         let link_base = settings.link_base.clone();
@@ -1601,23 +1610,36 @@ where
         attempt_id: TwoFaAttemptId,
         code: TwoFaCode,
     ) -> Result<LoginOutcome<Self::Token>, Self::EmailLoginError> {
-        if self.two_fa.email_login.is_none() {
+        let Some(settings) = &self.two_fa.email_login else {
             return Err(CredentialError::TwoFaNotConfigured);
-        }
+        };
         // Taken before the code is checked, like a password login's.
         let ticket = self
             .tokens
             .begin(&email)
             .await
             .map_err(CredentialError::Token)?;
-        // The mailed code, never an app code: this proves the inbox only.
-        self.two_fa
+        // A code from the email-login store: it proves the inbox, nothing
+        // more, and is not redeemable as a second factor anywhere.
+        settings
             .store
             .redeem_code(&email, &attempt_id, &code)
             .await?;
         let user = self.user_store.get_user(&email).await?;
         if user.requires_2fa() {
-            // The inbox is one factor; a 2FA account needs its second.
+            // The inbox is one factor, and a 2FA account needs a second one
+            // that is not the inbox again: its authenticator app. Without
+            // one, its factors are the password and the inbox, and this
+            // login cannot stand in for the password.
+            let has_app = self
+                .two_fa
+                .totp
+                .uses_totp(&email)
+                .await
+                .map_err(TwoFaChallengeError::from)?;
+            if !has_app {
+                return Err(CredentialError::EmailLoginNotAllowed);
+            }
             let attempt_id = self
                 .two_fa
                 .issue_challenge(&email, ChallengePurpose::SignIn)
@@ -2634,6 +2656,10 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
     /// started, or no authenticator app enabled.
     #[error("{0}")]
     TotpNotEnrolled(&'static str),
+
+    /// Email login for an account whose second factor is the inbox too.
+    #[error("This account signs in with its password")]
+    EmailLoginNotAllowed,
 }
 
 impl<TE> ClassifyError for CredentialError<TE>
@@ -2719,6 +2745,10 @@ where
                 (ErrorCategory::Internal, "Internal error".to_string())
             }
             CredentialError::TotpNotEnrolled(why) => (ErrorCategory::BadRequest, why.to_string()),
+            CredentialError::EmailLoginNotAllowed => (
+                ErrorCategory::Forbidden,
+                "This account signs in with its password".to_string(),
+            ),
             CredentialError::OAuth(e) => e.classify(),
             CredentialError::Passkey(e) => e.classify(),
         }

@@ -50,7 +50,12 @@ impl EmailClient for Outbox {
     }
 }
 
-fn app(outbox: &Outbox, login: EmailLogin) -> Router {
+fn app(outbox: &Outbox, link: Option<&str>) -> Router {
+    // Email-login codes in a store of their own, apart from 2FA codes.
+    let login = match link {
+        None => EmailLogin::code(HashMapTwoFaCodeStore::new()),
+        Some(page) => EmailLogin::link(HashMapTwoFaCodeStore::new(), page),
+    };
     let scheme = JwtScheme::new(
         HashMapUserStore::new(),
         JwtAuthConfig {
@@ -96,7 +101,7 @@ async fn sign_up(app: &Router, email: &str, two_fa: bool) {
 #[tokio::test]
 async fn a_mailed_code_logs_in_once() {
     let outbox = Outbox::default();
-    let app = app(&outbox, EmailLogin::code());
+    let app = app(&outbox, None);
     sign_up(&app, "user@example.com", false).await;
 
     let (status, _, body) = post(
@@ -123,7 +128,7 @@ async fn a_mailed_code_logs_in_once() {
 #[tokio::test]
 async fn an_unknown_address_gets_the_same_answer_and_no_mail() {
     let outbox = Outbox::default();
-    let app = app(&outbox, EmailLogin::code());
+    let app = app(&outbox, None);
     let (status, _, body) = post(
         &app,
         "/email-login/start",
@@ -138,10 +143,7 @@ async fn an_unknown_address_gets_the_same_answer_and_no_mail() {
 #[tokio::test]
 async fn a_link_carries_the_code_to_the_apps_page() {
     let outbox = Outbox::default();
-    let app = app(
-        &outbox,
-        EmailLogin::link("https://app.example.com/login/email"),
-    );
+    let app = app(&outbox, Some("https://app.example.com/login/email"));
     sign_up(&app, "user@example.com", false).await;
     post(
         &app,
@@ -168,10 +170,12 @@ async fn a_link_carries_the_code_to_the_apps_page() {
     );
 }
 
+/// A 2FA account whose second factor is mailed codes has the password and
+/// the inbox as factors; an email login would leave only the inbox.
 #[tokio::test]
-async fn a_two_factor_account_is_still_asked_for_its_second_factor() {
+async fn a_two_factor_account_without_an_app_cannot_log_in_by_email() {
     let outbox = Outbox::default();
-    let app = app(&outbox, EmailLogin::code());
+    let app = app(&outbox, None);
     sign_up(&app, "user@example.com", true).await;
     let (_, _, body) = post(
         &app,
@@ -181,8 +185,53 @@ async fn a_two_factor_account_is_still_asked_for_its_second_factor() {
     .await;
     let (_, code) = outbox.mail(0).await.unwrap();
     let verify = json!({ "email": "user@example.com", "loginAttemptId": body["loginAttemptId"], "code": code });
-    let (status, cookie, body) = post(&app, "/email-login/verify", verify).await;
-    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    let (status, cookie, _) = post(&app, "/email-login/verify", verify).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(cookie.is_none());
-    assert!(body["loginAttemptId"].is_string());
+}
+
+/// An email-login code is not a second factor: `/verify-2fa` (which issues
+/// a token outright) must not accept it.
+#[tokio::test]
+async fn an_email_login_code_is_not_accepted_as_a_second_factor() {
+    let outbox = Outbox::default();
+    let app = app(&outbox, None);
+    sign_up(&app, "user@example.com", true).await;
+    let (_, _, body) = post(
+        &app,
+        "/email-login/start",
+        json!({ "email": "user@example.com" }),
+    )
+    .await;
+    let (_, code) = outbox.mail(0).await.unwrap();
+    let as_two_fa = json!({ "email": "user@example.com", "loginAttemptId": body["loginAttemptId"], "2FACode": code });
+    let (status, cookie, _) = post(&app, "/verify-2fa", as_two_fa).await;
+    assert!(status.is_client_error(), "{status}");
+    assert!(cookie.is_none());
+}
+
+/// Starting an email login (which anyone can do for any address) must not
+/// replace a pending 2FA challenge.
+#[tokio::test]
+async fn an_email_login_does_not_disturb_a_pending_two_factor_login() {
+    let outbox = Outbox::default();
+    let app = app(&outbox, None);
+    sign_up(&app, "user@example.com", true).await;
+    let credentials = json!({ "email": "user@example.com", "password": "correct-horse" });
+    let (status, _, body) = post(&app, "/login", credentials).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    let attempt = body["loginAttemptId"].clone();
+    let (_, two_fa_code) = outbox.mail(0).await.unwrap();
+
+    post(
+        &app,
+        "/email-login/start",
+        json!({ "email": "user@example.com" }),
+    )
+    .await;
+    outbox.mail(1).await.unwrap();
+
+    let verify =
+        json!({ "email": "user@example.com", "loginAttemptId": attempt, "2FACode": two_fa_code });
+    assert_eq!(post(&app, "/verify-2fa", verify).await.0, StatusCode::OK);
 }

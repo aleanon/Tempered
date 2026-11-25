@@ -560,7 +560,12 @@ Should-have:
   to an app page that posts it (`EmailLogin::link`), so link scanners
   cannot use it up. `SupportsEmailLogin`; routes `/email-login/{start,
   verify}` (public, rate-limited as mail / second factor); start is
-  account-blind (deferred send). 2FA accounts still get a second factor.
+  account-blind (deferred send). Hardened after the security review:
+  email-login codes have a store of their own (`EmailLogin::code(store)`,
+  `RedisTwoFaCodeStore::with_namespace`), so they are not redeemable at
+  `/verify-2fa` and cannot overwrite a pending 2FA challenge; a 2FA
+  account may log in by email only with an authenticator app as its
+  second factor (else 403).
 - **8.9 Email change** (verify the new address, notify the old one,
   elevated). This needs 9.5 first.
 - **8.10 Password policy** port and an optional breached-password check

@@ -15,6 +15,8 @@ pub enum ErrorCategory {
     Unauthorized,
     /// Invalid input, malformed data, or validation failure (HTTP 400).
     BadRequest,
+    /// Authenticated, but this is not allowed for this account (HTTP 403).
+    Forbidden,
     /// Conflict with existing state, e.g. a duplicate (HTTP 409).
     Conflict,
     /// The target resource does not exist (HTTP 404).

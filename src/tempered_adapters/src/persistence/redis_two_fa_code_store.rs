@@ -18,6 +18,8 @@ use tempered_core::{Email, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeS
 pub struct RedisTwoFaCodeStore {
     client: ConnectionManager,
     max_attempts: u32,
+    /// Prefix before every key; empty by default.
+    namespace: std::sync::Arc<str>,
 }
 
 impl RedisTwoFaCodeStore {
@@ -30,7 +32,36 @@ impl RedisTwoFaCodeStore {
         Self {
             client,
             max_attempts,
+            namespace: "".into(),
         }
+    }
+
+    /// Keep this store's codes and counters under `{namespace}:`, apart from
+    /// any other code store on the server (passwordless email login needs a
+    /// store of its own).
+    pub fn with_namespace(mut self, namespace: &str) -> Self {
+        self.namespace = if namespace.is_empty() {
+            "".into()
+        } else {
+            format!("{namespace}:").into()
+        };
+        self
+    }
+
+    fn get_key(&self, email: &Email) -> String {
+        format!(
+            "{}{TWO_FA_CODE_PREFIX}{}",
+            self.namespace,
+            email.as_ref().expose_secret()
+        )
+    }
+
+    fn get_attempts_key(&self, email: &Email) -> String {
+        format!(
+            "{}{TWO_FA_ATTEMPTS_PREFIX}{}",
+            self.namespace,
+            email.as_ref().expose_secret()
+        )
     }
 }
 
@@ -77,7 +108,7 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
         login_attempt_id: TwoFaAttemptId,
         two_fa_code: TwoFaCode,
     ) -> Result<(), TwoFaCodeStoreError> {
-        let key = get_key(&user_id);
+        let key = self.get_key(&user_id);
         // The attempts counter is left alone: a new code is not a new budget.
         redis::pipe()
             .atomic()
@@ -105,8 +136,8 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
         two_fa_code: &TwoFaCode,
     ) -> Result<(), TwoFaCodeStoreError> {
         let outcome: String = redis::Script::new(REDEEM_SCRIPT)
-            .key(get_key(user_id))
-            .key(get_attempts_key(user_id))
+            .key(self.get_key(user_id))
+            .key(self.get_attempts_key(user_id))
             .arg(login_attempt_id.to_string())
             .arg(two_fa_code.as_str())
             .arg(self.max_attempts)
@@ -129,7 +160,7 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
         user_id: &Email,
     ) -> Result<(TwoFaAttemptId, TwoFaCode), TwoFaCodeStoreError> {
         let (attempt, code): (Option<String>, Option<String>) = redis::cmd("HMGET")
-            .arg(get_key(user_id))
+            .arg(self.get_key(user_id))
             .arg("attempt")
             .arg("code")
             .query_async(&mut self.client.clone())
@@ -148,7 +179,7 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
         let removed: i64 = self
             .client
             .clone()
-            .del(get_key(user_id))
+            .del(self.get_key(user_id))
             .await
             .map_err(unexpected)?;
         if removed == 0 {
@@ -162,18 +193,6 @@ const TEN_MINUTES_IN_SECONDS: u64 = 600;
 const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 const TWO_FA_CODE_PREFIX: &str = "two_fa_code:";
 const TWO_FA_ATTEMPTS_PREFIX: &str = "two_fa_attempts:";
-
-fn get_key(email: &Email) -> String {
-    format!("{}{}", TWO_FA_CODE_PREFIX, email.as_ref().expose_secret())
-}
-
-fn get_attempts_key(email: &Email) -> String {
-    format!(
-        "{}{}",
-        TWO_FA_ATTEMPTS_PREFIX,
-        email.as_ref().expose_secret()
-    )
-}
 
 #[cfg(test)]
 mod tests {

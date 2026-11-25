@@ -226,6 +226,7 @@ pub fn status_for(category: ErrorCategory) -> StatusCode {
         ErrorCategory::Conflict => StatusCode::CONFLICT,
         ErrorCategory::NotFound => StatusCode::NOT_FOUND,
         ErrorCategory::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+        ErrorCategory::Forbidden => StatusCode::FORBIDDEN,
         ErrorCategory::BadGateway => StatusCode::BAD_GATEWAY,
         ErrorCategory::Internal => StatusCode::INTERNAL_SERVER_ERROR,
     }
