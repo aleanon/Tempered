@@ -134,6 +134,45 @@ pub trait TokenStrategy: Clone + Send + Sync + 'static {
     async fn refresh(&self, _presented: &str) -> Option<Result<Self::Token, Self::Error>> {
         None
     }
+
+    /// Whether this strategy keeps sessions a user can list and end (and
+    /// so serves `/sessions`).
+    fn lists_sessions(&self) -> bool {
+        false
+    }
+
+    /// The user's sessions, marking the one `current` names. `None` when
+    /// the strategy keeps no list (JWTs).
+    async fn sessions(
+        &self,
+        _email: &Email,
+        _current: Option<&Self::Token>,
+    ) -> Option<Result<Vec<SessionInfo>, Self::Error>> {
+        None
+    }
+
+    /// End the user's session with this handle; `false` if they have none
+    /// by it. `None` when the strategy keeps no list.
+    async fn end_session(
+        &self,
+        _email: &Email,
+        _handle: &str,
+    ) -> Option<Result<bool, Self::Error>> {
+        None
+    }
+}
+
+/// One of a user's sessions, as their device list shows it. The handle
+/// names the session without being it (a session id is a credential).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub handle: String,
+    pub created_at: u64,
+    pub last_seen: Option<u64>,
+    pub user_agent: Option<String>,
+    /// The session this request came with.
+    pub current: bool,
 }
 
 /// How long a credential lock lives if its holder never releases it. The work

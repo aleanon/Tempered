@@ -337,7 +337,8 @@ fn tier_rules_hold_for_every_scheme_built_here() {
                     assert!(spec.tier >= Tier::Verified, "{spec:?}")
                 }
                 // Needs the account's login as well as the inbox.
-                VerifyEmail | ResendVerification | Logout | VerifyToken => {
+                VerifyEmail | ResendVerification | Logout | VerifyToken | ListSessions
+                | EndSession => {
                     assert_eq!(spec.tier, Tier::Login, "{spec:?}")
                 }
                 DeleteAccount => assert!(spec.tier >= Tier::Login, "{spec:?}"),

@@ -23,6 +23,8 @@ pub(crate) async fn session_store(store: impl SessionStore) {
         email: email.clone(),
         created_at,
         scope: "__Host-session".to_string(),
+        last_seen: None,
+        user_agent: None,
     };
     store
         .create_session(a1.clone(), record(&alice, 100))
@@ -43,10 +45,37 @@ pub(crate) async fn session_store(store: impl SessionStore) {
         Err(SessionStoreError::SessionNotFound)
     ));
     // Touching extends the expiry, not the age.
-    assert_eq!(store.touch_session(&a1).await.unwrap(), record(&alice, 100));
-    assert_eq!(store.get_session(&a1).await.unwrap(), record(&alice, 100));
+    let seen = tempered_core::SessionSeen {
+        at: 500,
+        user_agent: Some("Firefox"),
+    };
+    assert_eq!(
+        store.touch_session(&a1, seen).await.unwrap(),
+        record(&alice, 100)
+    );
+    // The visit is recorded; the first device stays.
+    let later = tempered_core::SessionSeen {
+        at: 600,
+        user_agent: Some("curl"),
+    };
+    store.touch_session(&a1, later).await.unwrap();
+    let touched = store.get_session(&a1).await.unwrap();
+    assert_eq!(touched.last_seen, Some(600));
+    assert_eq!(touched.user_agent.as_deref(), Some("Firefox"));
+    assert_eq!(touched.created_at, 100);
+
+    // A user's list holds their live sessions only.
+    let mut listed: Vec<u64> = store
+        .list_for_user(&alice)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, r)| r.created_at)
+        .collect();
+    listed.sort_unstable();
+    assert_eq!(listed, [100, 200]);
     assert!(matches!(
-        store.touch_session(&SessionId::new()).await,
+        store.touch_session(&SessionId::new(), seen).await,
         Err(SessionStoreError::SessionNotFound)
     ));
 

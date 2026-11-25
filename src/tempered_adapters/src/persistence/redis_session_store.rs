@@ -3,7 +3,9 @@ use std::sync::Arc;
 use redis::{AsyncCommands, aio::ConnectionManager};
 use secrecy::{ExposeSecret, Secret};
 
-use tempered_core::{Email, SessionId, SessionRecord, SessionStore, SessionStoreError};
+use tempered_core::{
+    Email, SessionId, SessionRecord, SessionSeen, SessionStore, SessionStoreError,
+};
 
 use super::redis_support::{self, user_key};
 
@@ -11,19 +13,24 @@ const SESSION_PREFIX: &str = "session:";
 const USER_SESSIONS_PREFIX: &str = "user_sessions:";
 const REVOCATIONS_PREFIX: &str = "session_revocations:";
 
-/// `GETEX` the session (`KEYS[1]`) with a new TTL (`ARGV[1]`), then `EXPIRE`
-/// the owner's set (`ARGV[2]` + the address, after the second `:` of
-/// `{created_at}:{scope}:{email}`). Returns the value, or nil.
+/// Read the session (`KEYS[1]`, JSON), record the visit (`last_seen` =
+/// `ARGV[3]`; `user_agent` = `ARGV[4]` if it has none and that is not
+/// empty), store it again with a new TTL (`ARGV[1]`), and `EXPIRE` the
+/// owner's set (`ARGV[2]` + the address). Returns the value as it was, or
+/// nil. One script, so the read, the update and both expiries are one round
+/// trip and cannot interleave with another request's.
 static TOUCH_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::new(|| {
     redis::Script::new(
         r"
-        local value = redis.call('GETEX', KEYS[1], 'EX', ARGV[1])
+        local value = redis.call('GET', KEYS[1])
         if not value then return false end
-        local first = string.find(value, ':', 1, true)
-        local second = first and string.find(value, ':', first + 1, true)
-        if second then
-            redis.call('EXPIRE', ARGV[2] .. string.sub(value, second + 1), ARGV[1])
+        local record = cjson.decode(value)
+        record.last_seen = tonumber(ARGV[3])
+        if (record.user_agent == nil or record.user_agent == cjson.null) and ARGV[4] ~= '' then
+            record.user_agent = ARGV[4]
         end
+        redis.call('SET', KEYS[1], cjson.encode(record), 'EX', ARGV[1])
+        redis.call('EXPIRE', ARGV[2] .. record.email, ARGV[1])
         return value
         ",
     )
@@ -32,9 +39,8 @@ static TOUCH_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::n
 /// Redis-backed [`SessionStore`].
 ///
 /// Keys (each after the store's namespace, if it has one):
-/// - `session:{id}` → `{created_at}:{scope}:{email}` (creation time in Unix
-///   seconds, the session's [`scope`](SessionRecord::scope), then the
-///   owner's address), expiring after `ttl_seconds` and refreshed by
+/// - `session:{id}` → the [`SessionRecord`] as JSON, expiring after
+///   `ttl_seconds` and refreshed by
 ///   [`touch_session`](SessionStore::touch_session) (sliding expiry);
 /// - `user_sessions:{email}` → the set of the user's session ids, for
 ///   "log out everywhere";
@@ -104,34 +110,43 @@ fn unexpected(e: redis::RedisError) -> SessionStoreError {
     SessionStoreError::UnexpectedError(e.to_string())
 }
 
-fn encode(record: &SessionRecord) -> String {
-    format!(
-        "{}:{}:{}",
-        record.created_at,
-        record.scope,
-        record.email.as_ref().expose_secret()
-    )
+/// The stored form of a [`SessionRecord`].
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Stored {
+    email: String,
+    created_at: u64,
+    scope: String,
+    #[serde(default)]
+    last_seen: Option<u64>,
+    #[serde(default)]
+    user_agent: Option<String>,
 }
 
-/// Read a stored `{created_at}:{scope}:{email}`. A value in another shape is
-/// corrupt data, reported as an error rather than as a missing session.
+fn encode(record: &SessionRecord) -> String {
+    serde_json::to_string(&Stored {
+        email: record.email.as_ref().expose_secret().clone(),
+        created_at: record.created_at,
+        scope: record.scope.clone(),
+        last_seen: record.last_seen,
+        user_agent: record.user_agent.clone(),
+    })
+    .expect("a session record serialises")
+}
+
+/// Read a stored record. A value in another shape is corrupt data, reported
+/// as an error rather than as a missing session.
 fn decode(value: Option<String>) -> Result<SessionRecord, SessionStoreError> {
-    let corrupt =
-        |what: &str| SessionStoreError::UnexpectedError(format!("corrupt session: {what}"));
     let value = value.ok_or(SessionStoreError::SessionNotFound)?;
-    let (created_at, rest) = value
-        .split_once(':')
-        .ok_or_else(|| corrupt("no creation time"))?;
-    let (scope, email) = rest.split_once(':').ok_or_else(|| corrupt("no scope"))?;
-    let created_at = created_at
-        .parse()
-        .map_err(|_| corrupt("creation time is not a number"))?;
-    let email = Email::try_from(Secret::new(email.to_string()))
+    let stored: Stored = serde_json::from_str(&value)
+        .map_err(|e| SessionStoreError::UnexpectedError(format!("corrupt session: {e}")))?;
+    let email = Email::try_from(Secret::new(stored.email))
         .map_err(|e| SessionStoreError::UnexpectedError(e.to_string()))?;
     Ok(SessionRecord {
         email,
-        created_at,
-        scope: scope.to_string(),
+        created_at: stored.created_at,
+        scope: stored.scope,
+        last_seen: stored.last_seen,
+        user_agent: stored.user_agent,
     })
 }
 
@@ -168,18 +183,47 @@ impl SessionStore for RedisSessionStore {
         decode(value)
     }
 
-    async fn touch_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError> {
-        // One round trip: the script reads and slides the session, then
-        // extends the user's set, which must live as long as their longest
-        // session.
+    async fn touch_session(
+        &self,
+        id: &SessionId,
+        seen: SessionSeen<'_>,
+    ) -> Result<SessionRecord, SessionStoreError> {
         let value: Option<String> = TOUCH_SCRIPT
             .key(self.session_key(id))
             .arg(self.ttl_seconds)
             .arg(&self.keys.user_sessions)
+            .arg(seen.at)
+            .arg(seen.user_agent.unwrap_or(""))
             .invoke_async(&mut self.client.clone())
             .await
             .map_err(unexpected)?;
         decode(value)
+    }
+
+    async fn list_for_user(
+        &self,
+        email: &Email,
+    ) -> Result<Vec<(SessionId, SessionRecord)>, SessionStoreError> {
+        let mut client = self.client.clone();
+        let set = user_key(&self.keys.user_sessions, email);
+        let ids: Vec<String> = client.smembers(&set).await.map_err(unexpected)?;
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys: Vec<String> = ids
+            .iter()
+            .map(|id| format!("{}{id}", self.keys.session))
+            .collect();
+        let values: Vec<Option<String>> = client.mget(&keys).await.map_err(unexpected)?;
+        let mut live = Vec::new();
+        for (id, value) in ids.into_iter().zip(values) {
+            // Expired sessions linger in the set until it expires; skip them.
+            let (Some(value), Some(id)) = (value, SessionId::parse(&id)) else {
+                continue;
+            };
+            live.push((id, decode(Some(value))?));
+        }
+        Ok(live)
     }
 
     async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError> {
@@ -279,6 +323,8 @@ mod tests {
                     email: contract::email("a@example.com"),
                     created_at: 1,
                     scope: "s".to_string(),
+                    last_seen: None,
+                    user_agent: None,
                 },
             )
             .await
@@ -291,7 +337,11 @@ mod tests {
         let set = user_key(&store.keys.user_sessions, &contract::email("a@example.com"));
         let _: bool = connection.expire(&key, 5).await.unwrap();
         let _: bool = connection.expire(&set, 5).await.unwrap();
-        let record = store.touch_session(&id).await.unwrap();
+        let seen = tempered_core::SessionSeen {
+            at: 2,
+            user_agent: None,
+        };
+        let record = store.touch_session(&id, seen).await.unwrap();
         assert_eq!(record.created_at, 1);
         // Both the session and the user's set were slid.
         let ttl: i64 = connection.ttl(&key).await.unwrap();
@@ -313,6 +363,8 @@ mod tests {
             email: alice.clone(),
             created_at: 1,
             scope: scope.to_string(),
+            last_seen: None,
+            user_agent: None,
         };
         let (l, e) = (SessionId::new(), SessionId::new());
         login.create_session(l.clone(), record("s")).await.unwrap();

@@ -206,6 +206,15 @@ absolute lifetime to 24 hours (`DEFAULT_MAX_SESSION_LIFETIME_SECONDS`);
 change it with `.max_lifetime(seconds)`. A JWT has no sliding expiry: its
 `token_ttl_in_seconds` is already its absolute lifetime.
 
+### Devices (session schemes)
+
+A session scheme serves `GET /sessions` and `DELETE /sessions/{handle}` to
+any logged-in user. The list holds their sessions, newest use first:
+`{ handle, createdAt, lastSeen, userAgent, current }`, where `userAgent` is
+the browser of the session's first authenticated request and `current`
+marks the one asking. `handle` names a session without being it (a hash of
+the id, which is a credential). Ending a session logs that device out.
+
 ### Refresh tokens and bearer clients
 
 `JwtScheme::supports_refresh_tokens(RefreshTokens::new(store, ttl))` issues

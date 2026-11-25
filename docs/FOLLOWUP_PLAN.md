@@ -543,9 +543,15 @@ Should-have:
   Bearer ends it; a revoked family leaves a tombstone that refuses
   in-flight rotations; Redis does every multi-key step in one script and
   never shortens an index TTL.
-- **8.7 Session and device management.** `SessionStore::list_for_user`,
+- **8.7 Session and device management.** ✅ DONE 2026-11-25. `SessionStore::list_for_user`,
   per-session metadata (created, last seen, user agent), and list/revoke
   routes.
+  As built: `SessionRecord` gained `last_seen` and `user_agent`, which
+  `touch_session(id, SessionSeen)` records (UA from the first use, so no
+  login path changed); `list_for_user`. Redis session values are JSON, and
+  touch is one `cjson` script. `TokenStrategy::{lists_sessions, sessions,
+  end_session}` (session strategy only); routes `GET /sessions`, `DELETE
+  /sessions/{handle}` (login tier), handles = SHA-256 of the id.
 - **8.8 Passwordless login**: magic links and email OTP, as a new slot over
   the existing token-store shapes.
 - **8.9 Email change** (verify the new address, notify the old one,

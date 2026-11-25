@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use tempered_core::{Email, SessionId, SessionRecord, SessionStore, SessionStoreError};
+use tempered_core::{
+    Email, SessionId, SessionRecord, SessionSeen, SessionStore, SessionStoreError,
+};
 
 /// In-memory session store for tests and local development.
 ///
@@ -46,9 +48,36 @@ impl SessionStore for HashMapSessionStore {
             .ok_or(SessionStoreError::SessionNotFound)
     }
 
-    async fn touch_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError> {
-        // No expiry in-memory: touching is reading.
-        self.get_session(id).await
+    async fn touch_session(
+        &self,
+        id: &SessionId,
+        seen: SessionSeen<'_>,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        // No expiry in-memory: touching records the visit.
+        let mut sessions = self.sessions.write().await;
+        let record = sessions
+            .get_mut(id)
+            .ok_or(SessionStoreError::SessionNotFound)?;
+        let before = record.clone();
+        record.last_seen = Some(seen.at);
+        if record.user_agent.is_none() {
+            record.user_agent = seen.user_agent.map(str::to_string);
+        }
+        Ok(before)
+    }
+
+    async fn list_for_user(
+        &self,
+        email: &Email,
+    ) -> Result<Vec<(SessionId, SessionRecord)>, SessionStoreError> {
+        Ok(self
+            .sessions
+            .read()
+            .await
+            .iter()
+            .filter(|(_, r)| &r.email == email)
+            .map(|(id, r)| (id.clone(), r.clone()))
+            .collect())
     }
 
     async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError> {

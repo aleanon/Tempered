@@ -199,6 +199,22 @@ where
             ),
             route(Logout, Method::POST, path(Logout, "/logout"), Tier::Login),
         ];
+        if self.token_strategy().lists_sessions() {
+            // The user's own sessions: a login is enough (ending one is
+            // logging out a device, not a credential change).
+            out.push(route(
+                ListSessions,
+                Method::GET,
+                path(ListSessions, "/sessions"),
+                Tier::Login,
+            ));
+            out.push(route(
+                EndSession,
+                Method::DELETE,
+                path(EndSession, "/sessions/{handle}"),
+                Tier::Login,
+            ));
+        }
         if self.token_strategy().refreshes() {
             // Public: the refresh token is the credential.
             out.push(route(
@@ -362,6 +378,35 @@ where
         who: Option<&Email>,
     ) -> Option<EndpointResponse> {
         match id {
+            RouteId::ListSessions => respond!({
+                let email = who.cloned().ok_or_else(not_logged_in)?;
+                let tokens = self.token_strategy();
+                let current = tokens.extract(&req.head());
+                let sessions = tokens
+                    .sessions(&email, current.as_ref())
+                    .await
+                    .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Not found"))?
+                    .map_err(classified)?;
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({ "sessions": sessions }),
+                ))
+            }),
+            RouteId::EndSession => respond!({
+                let email = who.cloned().ok_or_else(not_logged_in)?;
+                let handle = req.param("handle").unwrap_or_default();
+                let ended = self
+                    .token_strategy()
+                    .end_session(&email, handle)
+                    .await
+                    .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Not found"))?
+                    .map_err(classified)?;
+                if ended {
+                    Ok(json_response(StatusCode::OK, json!({})))
+                } else {
+                    Err(error_response(StatusCode::NOT_FOUND, "No such session"))
+                }
+            }),
             RouteId::Refresh => respond!({
                 #[derive(Deserialize)]
                 struct RefreshBody {

@@ -20,13 +20,13 @@ use crate::cookie_util::cookie_value;
 use async_trait::async_trait;
 use tempered_core::{
     AuthRequest, AuthValidator, ClassifyError, Email, ErrorCategory, SessionId, SessionRecord,
-    SessionStore, SessionStoreError, UserStore,
+    SessionSeen, SessionStore, SessionStoreError, UserStore,
 };
 use thiserror::Error;
 
 use crate::authentication::credential_scheme::{CredentialScheme, ElevatedCapabilities, Elevation};
 use crate::authentication::token_strategy::{
-    ACCOUNT_BUSY, TokenStrategy, USER_LOCK_TTL_SECONDS, UserLock,
+    ACCOUNT_BUSY, SessionInfo, TokenStrategy, USER_LOCK_TTL_SECONDS, UserLock,
 };
 
 // ============================================================================
@@ -172,6 +172,8 @@ where
             email: email.clone(),
             created_at: unix_now(),
             scope: self.config.cookie_name.clone(),
+            last_seen: None,
+            user_agent: None,
         };
         self.store.create_session(id.clone(), record).await?;
 
@@ -236,6 +238,78 @@ where
             .and_then(SessionId::parse)
             .map(SessionToken)
     }
+
+    fn lists_sessions(&self) -> bool {
+        true
+    }
+
+    async fn sessions(
+        &self,
+        email: &Email,
+        current: Option<&SessionToken>,
+    ) -> Option<Result<Vec<SessionInfo>, SessionError>> {
+        let current = current.map(|t| session_handle(&t.0));
+        Some(self.mine(email).await.map(|sessions| {
+            let mut list: Vec<SessionInfo> = sessions
+                .into_iter()
+                .map(|(id, record)| {
+                    let handle = session_handle(&id);
+                    SessionInfo {
+                        current: current.as_deref() == Some(handle.as_str()),
+                        handle,
+                        created_at: record.created_at,
+                        last_seen: record.last_seen,
+                        user_agent: record.user_agent,
+                    }
+                })
+                .collect();
+            list.sort_by_key(|s| std::cmp::Reverse(s.last_seen.unwrap_or(s.created_at)));
+            list
+        }))
+    }
+
+    async fn end_session(&self, email: &Email, handle: &str) -> Option<Result<bool, SessionError>> {
+        Some(
+            async {
+                let Some((id, _)) =
+                    self.mine(email).await?.into_iter().find(|(id, _)| {
+                        tempered_core::constant_time_eq(&session_handle(id), handle)
+                    })
+                else {
+                    return Ok(false);
+                };
+                match self.store.delete_session(&id).await {
+                    Ok(()) | Err(SessionStoreError::SessionNotFound) => Ok(true),
+                    Err(e) => Err(e.into()),
+                }
+            }
+            .await,
+        )
+    }
+}
+
+impl<S: SessionStore> SessionTokens<S> {
+    /// The user's sessions of this strategy's kind (a shared store may hold
+    /// their elevated sessions too).
+    async fn mine(&self, email: &Email) -> Result<Vec<(SessionId, SessionRecord)>, SessionError> {
+        Ok(self
+            .store
+            .list_for_user(email)
+            .await?
+            .into_iter()
+            .filter(|(_, r)| r.scope == self.config.cookie_name)
+            .collect())
+    }
+}
+
+/// A session's public name: a hash of its id, which the id cannot be
+/// recovered from.
+fn session_handle(id: &SessionId) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(id.to_string().as_bytes())[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 // ============================================================================
@@ -337,7 +411,16 @@ where
         let id = SessionId::parse(&raw).ok_or(SessionError::InvalidSession)?;
 
         // One store call: read the session and slide its idle timeout.
-        let record = self.session_store.touch_session(&id).await?;
+        let record = self
+            .session_store
+            .touch_session(
+                &id,
+                SessionSeen {
+                    at: unix_now(),
+                    user_agent: user_agent(parts),
+                },
+            )
+            .await?;
 
         // Only a session this strategy issued: a login session id placed in
         // the elevated cookie must not pass as elevated, even if both kinds
@@ -357,6 +440,16 @@ where
             email: record.email,
         })
     }
+}
+
+/// The request's `User-Agent`, cut to a length worth keeping.
+fn user_agent(parts: &http::request::Parts) -> Option<&str> {
+    let agent = parts.headers.get(http::header::USER_AGENT)?.to_str().ok()?;
+    let mut end = agent.len().min(256);
+    while !agent.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(&agent[..end])
 }
 
 // ============================================================================
@@ -527,6 +620,8 @@ mod tests {
                 email: email.clone(),
                 created_at: unix_now() - age,
                 scope: "session".to_string(),
+                last_seen: None,
+                user_agent: None,
             };
             let store = store.clone();
             async move {

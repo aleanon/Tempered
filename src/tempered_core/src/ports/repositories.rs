@@ -502,6 +502,21 @@ pub struct SessionRecord {
     pub email: Email,
     pub created_at: u64,
     pub scope: String,
+    /// When the session was last used (Unix seconds), for the user's device
+    /// list. Set by [`touch_session`](SessionStore::touch_session).
+    pub last_seen: Option<u64>,
+    /// The `User-Agent` of the first request the session was used for (the
+    /// device it was opened on). Set once by
+    /// [`touch_session`](SessionStore::touch_session).
+    pub user_agent: Option<String>,
+}
+
+/// What a request that uses a session tells its store.
+#[derive(Debug, Clone, Copy)]
+pub struct SessionSeen<'a> {
+    /// Unix seconds.
+    pub at: u64,
+    pub user_agent: Option<&'a str>,
 }
 
 #[async_trait]
@@ -524,7 +539,21 @@ pub trait SessionStore: Send + Sync {
     /// round trip. A missing session is
     /// [`SessionNotFound`](SessionStoreError::SessionNotFound). In-memory
     /// stores without expiry just read.
-    async fn touch_session(&self, id: &SessionId) -> Result<SessionRecord, SessionStoreError>;
+    ///
+    /// Also record `seen`: set `last_seen` to `seen.at`, and `user_agent`
+    /// to `seen.user_agent` if the session has none yet (the first device
+    /// stays). Return the record as it was before this request.
+    async fn touch_session(
+        &self,
+        id: &SessionId,
+        seen: SessionSeen<'_>,
+    ) -> Result<SessionRecord, SessionStoreError>;
+
+    /// The user's live sessions, for their device list.
+    async fn list_for_user(
+        &self,
+        email: &Email,
+    ) -> Result<Vec<(SessionId, SessionRecord)>, SessionStoreError>;
 
     /// Delete a single session (logout).
     async fn delete_session(&self, id: &SessionId) -> Result<(), SessionStoreError>;
