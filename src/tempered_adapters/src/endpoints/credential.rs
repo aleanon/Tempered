@@ -30,8 +30,8 @@ use super::{
 };
 use crate::authentication::api_key_scheme::ApiKeyScheme;
 use crate::authentication::credential_scheme::{
-    Authz, CredentialScheme, Elevation, EmailVerify, OAuth, Passkeys, PasswordReset, RouteFlags,
-    TwoFa,
+    Authz, CredentialScheme, Elevation, ElevationRevoke, EmailVerify, OAuth, Passkeys,
+    PasswordReset, RouteFlags, TwoFa,
 };
 use crate::authentication::token_strategy::TokenStrategy;
 use crate::authentication::totp::Totp;
@@ -179,7 +179,7 @@ where
     LoginClaims<Self>: IdentityClaims,
     T: TokenStrategy,
     F: SlotEndpoints<Self>,
-    L: SlotEndpoints<Self>,
+    L: SlotEndpoints<Self> + ElevationRevoke,
     R: SlotEndpoints<Self>,
     M: SlotEndpoints<Self>,
     O: SlotEndpoints<Self>,
@@ -347,7 +347,7 @@ where
     <<Self as AuthenticationScheme>::Validator as AuthValidator>::Error: ClassifyError,
     LoginClaims<Self>: IdentityClaims,
     T: TokenStrategy,
-    L: SlotEndpoints<Self>,
+    L: SlotEndpoints<Self> + ElevationRevoke,
     M: SlotEndpoints<Self>,
 {
     /// Check `tier` and return who passed it (`None` for public routes).
@@ -396,8 +396,7 @@ where
                 let email = who.cloned().ok_or_else(not_logged_in)?;
                 let handle = req.param("handle").unwrap_or_default();
                 let ended = self
-                    .token_strategy()
-                    .end_session(&email, handle)
+                    .end_device_session(&email, handle)
                     .await
                     .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Not found"))?
                     .map_err(classified)?;

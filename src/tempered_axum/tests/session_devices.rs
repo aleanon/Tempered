@@ -130,3 +130,68 @@ async fn nobody_can_end_another_users_session() {
         StatusCode::OK
     );
 }
+
+/// Ending a device also ends elevated sessions: the elevated tier checks
+/// only the elevated cookie, so one opened on that device would outlive it.
+#[tokio::test]
+async fn ending_a_device_ends_elevated_sessions_too() {
+    let scheme = SessionScheme::new(
+        HashMapUserStore::new(),
+        HashMapSessionStore::new(),
+        SessionConfig::new("session", 3600),
+    )
+    .supports_registration()
+    .supports_elevation(
+        HashMapSessionStore::new(),
+        SessionConfig::new("elevated", 300),
+        |e| e,
+    );
+    let app: Router = auth_service(scheme, String::new()).into();
+
+    let stolen = sign_up_and_log_in(&app, "user@example.com").await;
+    let elevate = json_with_cookie(
+        "/elevate",
+        &stolen,
+        r#"{"email":"user@example.com","password":"correct-horse"}"#,
+    );
+    let (status, elevated, _) = send(&app, elevate).await;
+    assert_eq!(status, StatusCode::OK);
+    let elevated = elevated.unwrap();
+    let check = |cookie: &str| {
+        Request::post("/elevated/verify-token")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(send(&app, check(&elevated)).await.0, StatusCode::OK);
+
+    // The owner, on another device, ends the stolen one.
+    let owner = login(&app, "user@example.com").await;
+    let (_, _, body) = send(&app, get("/sessions", &owner, "Owner")).await;
+    let handle = body["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["current"] == false)
+        .unwrap()["handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let end = Request::delete(format!("/sessions/{handle}"))
+        .header(header::COOKIE, &owner)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&app, end).await.0, StatusCode::OK);
+    assert_eq!(
+        send(&app, check(&elevated)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+fn json_with_cookie(path: &str, cookie: &str, body: &str) -> Request<Body> {
+    Request::post(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, cookie)
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}

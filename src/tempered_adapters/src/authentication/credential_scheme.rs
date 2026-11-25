@@ -629,7 +629,7 @@ impl<TE: TokenStrategy> ElevatedCookieName for Elevation<TE> {
 /// the same cutoff twice, which is harmless. `()` (no elevation) has nothing
 /// to revoke.
 #[async_trait]
-trait ElevationRevoke {
+pub(crate) trait ElevationRevoke {
     async fn revoke_all_elevated(&self, email: &Email) -> Result<(), ElevatedRevokeError>;
 }
 
@@ -1121,6 +1121,32 @@ where
             .map_err(CredentialError::ElevatedToken)?;
         self.password_reset.forget_resets(email).await?;
         Ok(())
+    }
+}
+
+#[allow(private_bounds)]
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    T: TokenStrategy,
+    L: ElevationRevoke + Sync,
+{
+    /// End the user's session with `handle` (a device log-out). Their
+    /// elevated sessions end with it: one may belong to that device, the
+    /// elevated tier asks for nothing else, and elevation is short-lived and
+    /// easily taken again. `None` when the strategy keeps no session list.
+    pub(crate) async fn end_device_session(
+        &self,
+        email: &Email,
+        handle: &str,
+    ) -> Option<Result<bool, CredentialError<T::Error>>> {
+        let ended = match self.tokens.end_session(email, handle).await? {
+            Ok(ended) => ended,
+            Err(e) => return Some(Err(CredentialError::Token(e))),
+        };
+        if ended && let Err(e) = self.elevation.revoke_all_elevated(email).await {
+            return Some(Err(CredentialError::ElevatedToken(e)));
+        }
+        Some(Ok(ended))
     }
 }
 
