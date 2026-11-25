@@ -1478,7 +1478,68 @@ where
 {
     type TotpError = CredentialError<T::Error>;
 
+    // Adding or removing a second factor and removing a user's credentials
+    // (account deletion, securing an unproven account) exclude each other,
+    // as passkey enrolment does. The session that authorised the request may
+    // have been revoked since the middleware checked it; then the cleanup
+    // also removed the pending secret, and there is nothing left to confirm.
+
     async fn start_totp(&self, email: Email) -> Result<TotpEnrollment, Self::TotpError> {
+        let lock = self.lock_credentials(&email).await?;
+        let result = self.start_totp_unlocked(email.clone()).await;
+        self.unlock_credentials(&email, lock).await;
+        result
+    }
+
+    async fn confirm_totp(
+        &self,
+        email: Email,
+        code: TwoFaCode,
+    ) -> Result<Vec<String>, Self::TotpError> {
+        let lock = self.lock_credentials(&email).await?;
+        let result = self.confirm_totp_unlocked(email.clone(), code).await;
+        self.unlock_credentials(&email, lock).await;
+        result
+    }
+
+    async fn disable_totp(&self, email: Email) -> Result<(), Self::TotpError> {
+        let lock = self.lock_credentials(&email).await?;
+        let result = self.disable_totp_unlocked(email.clone()).await;
+        self.unlock_credentials(&email, lock).await;
+        result
+    }
+
+    async fn regenerate_recovery_codes(
+        &self,
+        email: Email,
+    ) -> Result<Vec<String>, Self::TotpError> {
+        let lock = self.lock_credentials(&email).await?;
+        let result = self.regenerate_recovery_codes_unlocked(email.clone()).await;
+        self.unlock_credentials(&email, lock).await;
+        result
+    }
+}
+
+impl<U, T, S, E, TS, L, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E, Totp<TS>>, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    S: TwoFaCodeStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
+    TS: TotpStore + Clone + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    // The work of each `SupportsTotp` method; the trait methods run these
+    // under the credential lock.
+
+    async fn start_totp_unlocked(
+        &self,
+        email: Email,
+    ) -> Result<TotpEnrollment, CredentialError<T::Error>> {
         let totp = &self.two_fa.totp;
         let secret = totp::new_secret();
         let enrollment = TotpEnrollment {
@@ -1493,11 +1554,11 @@ where
         Ok(enrollment)
     }
 
-    async fn confirm_totp(
+    async fn confirm_totp_unlocked(
         &self,
         email: Email,
         code: TwoFaCode,
-    ) -> Result<Vec<String>, Self::TotpError> {
+    ) -> Result<Vec<String>, CredentialError<T::Error>> {
         let store = &self.two_fa.totp.store;
         let Some(pending) = store.pending(&email).await? else {
             return Err(CredentialError::TotpNotEnrolled(
@@ -1519,14 +1580,14 @@ where
         Ok(shown)
     }
 
-    async fn disable_totp(&self, email: Email) -> Result<(), Self::TotpError> {
+    async fn disable_totp_unlocked(&self, email: Email) -> Result<(), CredentialError<T::Error>> {
         Ok(self.two_fa.totp.store.delete_all_for_user(&email).await?)
     }
 
-    async fn regenerate_recovery_codes(
+    async fn regenerate_recovery_codes_unlocked(
         &self,
         email: Email,
-    ) -> Result<Vec<String>, Self::TotpError> {
+    ) -> Result<Vec<String>, CredentialError<T::Error>> {
         let store = &self.two_fa.totp.store;
         if store.active(&email).await?.is_none() {
             return Err(CredentialError::TotpNotEnrolled(
@@ -2039,7 +2100,10 @@ where
             self.two_fa.forget_user(email).await?;
             self.two_fa.cancel_pending(email).await?;
             self.revoke_all_tokens(email).await?;
+            // Once more, in case the lock expired under a slow store and an
+            // enrolment authorised before the revocation slipped in.
             self.passkeys.forget_user(email).await?;
+            self.two_fa.forget_user(email).await?;
             Ok(())
         }
         .await;

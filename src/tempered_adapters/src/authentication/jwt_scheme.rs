@@ -1846,6 +1846,7 @@ mod totp_tests {
         outbox: Outbox,
         totp: HashMapTotpStore,
         users: HashMapUserStore,
+        epochs: HashMapTokenEpochStore,
     }
 
     async fn setup()
@@ -1865,11 +1866,12 @@ mod totp_tests {
             .unwrap();
         let outbox = Outbox::default();
         let totp = HashMapTotpStore::new();
+        let epochs = HashMapTokenEpochStore::new();
         let scheme = JwtScheme::new(
             users.clone(),
             config("jwt", "a-test-secret-that-is-long-enough"),
             HashSetBannedTokenStore::new(),
-            HashMapTokenEpochStore::new(),
+            epochs.clone(),
         )
         .supports_2fa(HashMapTwoFaCodeStore::new(), outbox.clone())
         .supports_elevation(
@@ -1883,6 +1885,7 @@ mod totp_tests {
             outbox,
             totp,
             users,
+            epochs,
         }
     }
 
@@ -2052,6 +2055,34 @@ mod totp_tests {
         let attempt = second_step(&s.scheme).await;
         let fresh = TwoFaCode::parse(new[0].clone()).unwrap();
         assert!(s.scheme.verify_2fa(email(), attempt, fresh).await.is_ok());
+    }
+
+    /// Confirming an app and removing the user's credentials exclude each
+    /// other: while someone holds the credential lock (an account deletion,
+    /// or a provider login securing the account), no app is confirmed.
+    #[tokio::test]
+    async fn an_app_is_not_confirmed_while_the_credentials_are_locked() {
+        use tempered_core::TokenEpochStore;
+        let s = setup().await;
+        s.scheme.start_totp(email()).await.ok().unwrap();
+        let secret = s
+            .totp
+            .pending(&email())
+            .await
+            .unwrap()
+            .unwrap()
+            .expose_secret()
+            .clone();
+        assert!(
+            s.epochs
+                .try_lock_user(&email(), "cleanup", 30)
+                .await
+                .unwrap()
+        );
+
+        let result = s.scheme.confirm_totp(email(), code_for(&secret, 0)).await;
+        assert!(result.is_err());
+        assert!(s.totp.active(&email()).await.unwrap().is_none());
     }
 
     #[tokio::test]
