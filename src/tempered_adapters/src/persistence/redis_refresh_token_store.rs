@@ -110,8 +110,9 @@ static REVOKE_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::
     ))
 });
 
-fn unexpected(e: impl std::fmt::Display) -> RefreshTokenStoreError {
-    RefreshTokenStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> RefreshTokenStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    RefreshTokenStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 fn token_key(token: &RefreshTokenHash) -> String {

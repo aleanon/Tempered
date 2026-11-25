@@ -21,8 +21,9 @@ impl PostgresPasskeyCredentialStore {
     }
 }
 
-fn unexpected(e: impl std::fmt::Display) -> PasskeyStoreError {
-    PasskeyStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> PasskeyStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    PasskeyStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 fn credential(

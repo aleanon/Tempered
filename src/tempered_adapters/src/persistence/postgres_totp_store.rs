@@ -19,8 +19,9 @@ impl PostgresTotpStore {
     }
 }
 
-fn unexpected(e: sqlx::Error) -> TotpStoreError {
-    TotpStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> TotpStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    TotpStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 fn key(email: &Email) -> &str {

@@ -56,7 +56,7 @@ pub use strategies::{
     },
 };
 
-pub use error::{ClassifyError, ErrorCategory};
+pub use error::{ClassifyError, ErrorCategory, Failure};
 pub use http_abstraction::{
     AuthRequest, AuthResponseHelpers, HttpResponseBuilderExt, ResponseBuilder, ResponseBuilderError,
 };

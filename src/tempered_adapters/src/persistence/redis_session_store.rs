@@ -106,8 +106,9 @@ impl RedisSessionStore {
     }
 }
 
-fn unexpected(e: redis::RedisError) -> SessionStoreError {
-    SessionStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> SessionStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    SessionStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 /// The stored form of a [`SessionRecord`].
@@ -137,10 +138,13 @@ fn encode(record: &SessionRecord) -> String {
 /// as an error rather than as a missing session.
 fn decode(value: Option<String>) -> Result<SessionRecord, SessionStoreError> {
     let value = value.ok_or(SessionStoreError::SessionNotFound)?;
-    let stored: Stored = serde_json::from_str(&value)
-        .map_err(|e| SessionStoreError::UnexpectedError(format!("corrupt session: {e}")))?;
+    let stored: Stored = serde_json::from_str(&value).map_err(|e| {
+        SessionStoreError::UnexpectedError(tempered_core::Failure::message(format!(
+            "corrupt session: {e}"
+        )))
+    })?;
     let email = Email::try_from(Secret::new(stored.email))
-        .map_err(|e| SessionStoreError::UnexpectedError(e.to_string()))?;
+        .map_err(|e| SessionStoreError::UnexpectedError(e.to_string().into()))?;
     Ok(SessionRecord {
         email,
         created_at: stored.created_at,

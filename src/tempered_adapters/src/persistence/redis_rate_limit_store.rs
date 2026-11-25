@@ -48,7 +48,7 @@ impl RateLimitStore for RedisRateLimitStore {
             .arg(window_seconds)
             .invoke_async(&mut self.client.clone())
             .await
-            .map_err(|e| RateLimitStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| RateLimitStoreError::UnexpectedError(e.to_string().into()))?;
         Ok(WindowCount {
             count,
             resets_in_seconds: ttl.max(1) as u64,

@@ -35,8 +35,9 @@ struct Stored {
     link_to: Option<String>,
 }
 
-fn unexpected(e: impl std::fmt::Display) -> OAuthStateStoreError {
-    OAuthStateStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> OAuthStateStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    OAuthStateStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 #[async_trait::async_trait]

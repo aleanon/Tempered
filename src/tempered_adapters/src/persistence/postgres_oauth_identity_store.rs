@@ -19,8 +19,9 @@ impl PostgresOAuthIdentityStore {
     }
 }
 
-fn unexpected(e: impl std::fmt::Display) -> OAuthIdentityStoreError {
-    OAuthIdentityStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> OAuthIdentityStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    OAuthIdentityStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 fn parse_email(value: String) -> Result<Email, OAuthIdentityStoreError> {
@@ -59,7 +60,9 @@ impl OAuthIdentityStore for PostgresOAuthIdentityStore {
             Some(existing) if existing == email => Ok(()),
             Some(_) => Err(OAuthIdentityStoreError::AlreadyLinked),
             // Unlinked in between: a deletion won; the caller can retry.
-            None => Err(unexpected("identity was unlinked while being linked")),
+            None => Err(OAuthIdentityStoreError::UnexpectedError(
+                "identity was unlinked while being linked".into(),
+            )),
         }
     }
 

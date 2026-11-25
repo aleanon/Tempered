@@ -38,8 +38,9 @@ impl RedisEmailVerificationTokenStore {
     }
 }
 
-fn unexpected(e: impl std::fmt::Display) -> EmailVerificationStoreError {
-    EmailVerificationStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> EmailVerificationStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    EmailVerificationStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 fn token_key(token: &str) -> String {

@@ -52,3 +52,78 @@ pub trait ClassifyError {
     /// Classify this error and produce a client-safe message.
     fn classify(self) -> (ErrorCategory, String);
 }
+
+/// The cause of an unexpected failure in a store or client: what went
+/// wrong, and when there was one, the original error as its
+/// [`source`](std::error::Error::source), so a caller can tell a
+/// connection failure from a constraint violation by downcasting it.
+///
+/// Cheap to clone; compares by message.
+#[derive(Clone)]
+pub struct Failure {
+    message: String,
+    source: Option<std::sync::Arc<dyn std::error::Error + Send + Sync>>,
+}
+
+impl Failure {
+    /// A failure caused by `error`, kept as the source.
+    pub fn new(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self {
+            message: error.to_string(),
+            source: Some(std::sync::Arc::new(error)),
+        }
+    }
+
+    /// A failure with a message and no underlying error.
+    pub fn message(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// The underlying error as `E`, if it is one.
+    pub fn downcast_ref<E: std::error::Error + 'static>(&self) -> Option<&E> {
+        self.source.as_deref().and_then(|e| e.downcast_ref::<E>())
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::fmt::Debug for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Failure").field(&self.message).finish()
+    }
+}
+
+impl std::error::Error for Failure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source
+            .as_deref()
+            .map(|e| e as &(dyn std::error::Error + 'static))
+    }
+}
+
+impl PartialEq for Failure {
+    fn eq(&self, other: &Self) -> bool {
+        self.message == other.message
+    }
+}
+
+impl Eq for Failure {}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self::message(message)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        Self::message(message)
+    }
+}

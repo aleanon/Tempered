@@ -640,9 +640,13 @@ OAuth slot instead.
   capability: `two_factor` (2FA, email login, TOTP), `elevation`,
   `password_reset`, `email_verification`, `oauth`, `passkeys`. Children
   see the struct's private fields, so nothing became more visible.
-- **9.4 Error sources.** Store errors carry `String`. Keep the underlying
+- **9.4 Error sources.** ✅ DONE 2026-11-25. Store errors carry `String`. Keep the underlying
   error as `#[source]` so callers can match unique-violation against
   connection failure.
+  As built: `tempered_core::Failure` (message + `Arc<dyn Error>` source,
+  Clone, compares by message, `downcast_ref`) in every store error's
+  `UnexpectedError(#[source] Failure)`; the stores' helpers keep the
+  sqlx/redis error. `From<String>`/`From<&str>` for message-only causes.
 - **9.5 Stable user id.** Every store keys on `Email`. A UUID with the
   (case-folded) email as a lookup index makes email change possible and
   simplifies cleanup. This touches every port (L).

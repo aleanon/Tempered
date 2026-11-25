@@ -35,7 +35,7 @@ impl TokenEpochStore for RedisTokenEpochStore {
             .clone()
             .get(key)
             .await
-            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
+            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string().into()))
     }
 
     async fn revoke_before(&self, email: &Email, cutoff: i64) -> Result<(), TokenEpochStoreError> {
@@ -56,7 +56,7 @@ impl TokenEpochStore for RedisTokenEpochStore {
             .arg(self.ttl_seconds)
             .invoke_async(&mut self.client.clone())
             .await
-            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string().into()))?;
         Ok(())
     }
 
@@ -68,19 +68,19 @@ impl TokenEpochStore for RedisTokenEpochStore {
     ) -> Result<bool, TokenEpochStoreError> {
         redis_support::try_lock_user(&mut self.client.clone(), email, holder, ttl_seconds)
             .await
-            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
+            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string().into()))
     }
 
     async fn unlock_user(&self, email: &Email, holder: &str) -> Result<(), TokenEpochStoreError> {
         redis_support::unlock_user(&mut self.client.clone(), email, holder)
             .await
-            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
+            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string().into()))
     }
 
     async fn is_user_locked(&self, email: &Email) -> Result<bool, TokenEpochStoreError> {
         redis_support::is_user_locked(&mut self.client.clone(), email)
             .await
-            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string()))
+            .map_err(|e| TokenEpochStoreError::UnexpectedError(e.to_string().into()))
     }
 }
 

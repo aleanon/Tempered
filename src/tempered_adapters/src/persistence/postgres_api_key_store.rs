@@ -16,12 +16,15 @@ impl PostgresApiKeyStore {
     }
 }
 
-fn unexpected(e: impl std::fmt::Display) -> ApiKeyStoreError {
-    ApiKeyStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> ApiKeyStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    ApiKeyStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 fn parse_id(value: &str) -> Result<ApiKeyId, ApiKeyStoreError> {
-    ApiKeyId::parse(value).ok_or_else(|| unexpected(format!("malformed key id {value:?}")))
+    ApiKeyId::parse(value).ok_or_else(|| {
+        ApiKeyStoreError::UnexpectedError(format!("malformed key id {value:?}").into())
+    })
 }
 
 #[async_trait::async_trait]

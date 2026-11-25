@@ -26,7 +26,7 @@ pub enum UserStoreError {
     #[error("Incorrect password")]
     IncorrectPassword,
     #[error("Unexpected error {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 impl PartialEq for UserStoreError {
@@ -83,7 +83,7 @@ pub trait BannedTokenStore: Send + Sync {
 #[derive(Debug, Error)]
 pub enum TokenEpochStoreError {
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 /// Per-user revocation cutoffs ("token epochs") for token schemes with no
@@ -146,7 +146,7 @@ pub enum TwoFaCodeStoreError {
     #[error("2FA code expired")]
     CodeExpired,
     #[error("Unexpected error")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 #[cfg(debug_assertions)]
@@ -165,7 +165,7 @@ pub enum PasswordResetTokenStoreError {
     #[error("Token not found")]
     TokenNotFound,
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 #[async_trait]
@@ -212,7 +212,7 @@ pub enum EmailVerificationStoreError {
     #[error("Token not found or expired")]
     TokenNotFound,
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 /// Maps verification tokens to emails (pending verifications) and tracks verified status.
@@ -256,7 +256,7 @@ pub enum PasskeyStoreError {
     #[error("Signature counter did not advance")]
     SignCountNotAdvanced,
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 #[async_trait]
@@ -323,7 +323,7 @@ pub enum ChallengeStoreError {
     #[error("Challenge not found or expired")]
     ChallengeNotFound,
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 /// Holds in-flight WebAuthn ceremonies between their `start` and `finish` legs:
@@ -359,7 +359,7 @@ pub enum OAuthStateStoreError {
     #[error("Unknown or expired state")]
     UnknownState,
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 /// Stores each in-flight authorization request — the provider it was sent to
@@ -392,7 +392,7 @@ pub enum OAuthIdentityStoreError {
     #[error("Identity already linked to a different account")]
     AlreadyLinked,
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 /// Maps an external provider identity `(provider, subject)` to a local user email.
@@ -482,7 +482,7 @@ pub enum ApiKeyStoreError {
     #[error("API key prefix already in use")]
     PrefixTaken,
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 #[async_trait]
@@ -523,7 +523,7 @@ pub enum SessionStoreError {
     #[error("Session not found")]
     SessionNotFound,
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 /// What a [`SessionStore`] keeps for a session: whose it is, when it was
@@ -694,7 +694,7 @@ pub trait TwoFaCodeStore: Send + Sync {
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum RateLimitStoreError {
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 /// The state of one counter after a hit.
@@ -728,7 +728,7 @@ pub trait RateLimitStore: Send + Sync {
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum TotpStoreError {
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 /// SHA-256 of a recovery code. Recovery codes are random (50 bits), so a
@@ -809,7 +809,7 @@ pub enum RefreshTokenStoreError {
     #[error("Refresh token reused")]
     Reused { email: Email },
     #[error("Unexpected error: {0}")]
-    UnexpectedError(String),
+    UnexpectedError(#[source] crate::error::Failure),
 }
 
 /// SHA-256 of a refresh token. Tokens are 256 random bits, so a fast hash

@@ -28,7 +28,7 @@ const STORE_DETAIL: &str = "relation \"password_reset_tokens\" on db-internal-7:
 struct BrokenResetStore;
 
 fn broken() -> PasswordResetTokenStoreError {
-    PasswordResetTokenStoreError::UnexpectedError(STORE_DETAIL.to_string())
+    PasswordResetTokenStoreError::UnexpectedError(STORE_DETAIL.to_string().into())
 }
 
 #[async_trait::async_trait]
@@ -108,7 +108,7 @@ async fn a_failing_store_does_not_leak_into_the_reset_response() {
 struct Broken2FaStore;
 
 fn broken_2fa() -> tempered_core::TwoFaCodeStoreError {
-    tempered_core::TwoFaCodeStoreError::UnexpectedError(STORE_DETAIL.to_string())
+    tempered_core::TwoFaCodeStoreError::UnexpectedError(STORE_DETAIL.to_string().into())
 }
 
 #[async_trait::async_trait]

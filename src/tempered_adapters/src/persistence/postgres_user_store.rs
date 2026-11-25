@@ -72,7 +72,7 @@ impl UserStore for PostgresUserStore {
             .hasher
             .hash(user.password())
             .await
-            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| UserStoreError::UnexpectedError(e.into()))?;
 
         let query = sqlx::query!(
             r#"
@@ -90,7 +90,7 @@ impl UserStore for PostgresUserStore {
             {
                 return UserStoreError::UserAlreadyExists;
             }
-            UserStoreError::UnexpectedError(e.to_string())
+            UserStoreError::UnexpectedError(tempered_core::Failure::new(e))
         })?;
 
         Ok(())
@@ -115,7 +115,7 @@ impl UserStore for PostgresUserStore {
         let result = query
             .execute(&self.pool)
             .await
-            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?;
 
         if result.rows_affected() == 0 {
             return Err(UserStoreError::UserNotFound);
@@ -133,7 +133,7 @@ impl UserStore for PostgresUserStore {
             .hasher
             .hash(&new_password)
             .await
-            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| UserStoreError::UnexpectedError(e.into()))?;
 
         let query = sqlx::query!(
             r#"
@@ -148,7 +148,7 @@ impl UserStore for PostgresUserStore {
         let updated = query
             .execute(&self.pool)
             .await
-            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?;
 
         // No row: the account is gone (deleted since a reset link was sent,
         // say). Report it rather than succeed at changing nothing.
@@ -176,7 +176,7 @@ impl UserStore for PostgresUserStore {
         let row = query
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?;
 
         let Some(row) = row else {
             // Run a verification against a throwaway hash so the "no such user"
@@ -193,13 +193,13 @@ impl UserStore for PostgresUserStore {
             .hasher
             .verify(&stored, password)
             .await
-            .map_err(UserStoreError::UnexpectedError)?;
+            .map_err(|e| UserStoreError::UnexpectedError(e.into()))?;
         let PasswordVerdict::Match { needs_rehash } = verified else {
             return Err(UserStoreError::IncorrectPassword);
         };
 
         let email = Email::try_from(Secret::from(row.email))
-            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?;
         if needs_rehash {
             self.upgrade_hash(&email, stored.expose_secret(), password)
                 .await;
@@ -221,7 +221,7 @@ impl UserStore for PostgresUserStore {
         let row = query
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?;
 
         let Some(row) = row else {
             return Err(UserStoreError::UserNotFound);
@@ -232,7 +232,7 @@ impl UserStore for PostgresUserStore {
             Secret::from(row.password_hash),
             row.requires_2fa,
         )
-        .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+        .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?;
 
         Ok(user)
     }
@@ -250,7 +250,7 @@ impl UserStore for PostgresUserStore {
         let result = query
             .execute(&self.pool)
             .await
-            .map_err(|e| UserStoreError::UnexpectedError(e.to_string()))?;
+            .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?;
 
         if result.rows_affected() == 0 {
             return Err(UserStoreError::UserNotFound);
@@ -598,10 +598,16 @@ mod tests {
             store.authenticate_user(&email, &password).await,
             Err(UserStoreError::UnexpectedError(_))
         ));
+        let Err(UserStoreError::UnexpectedError(failure)) = store.get_user(&email).await else {
+            panic!("an outage is an unexpected error");
+        };
+        // The database's own error is kept, for callers that need to tell
+        // failures apart.
         assert!(matches!(
-            store.get_user(&email).await,
-            Err(UserStoreError::UnexpectedError(_))
+            failure.downcast_ref::<sqlx::Error>(),
+            Some(sqlx::Error::PoolClosed)
         ));
+        assert!(std::error::Error::source(&failure).is_some());
     }
 
     /// A stored hash that does not parse is the server's fault, not a wrong

@@ -68,8 +68,9 @@ impl From<StoredKind> for CeremonyKind {
     }
 }
 
-fn unexpected(e: impl std::fmt::Display) -> ChallengeStoreError {
-    ChallengeStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> ChallengeStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    ChallengeStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 fn ceremony_key(id: &str) -> String {

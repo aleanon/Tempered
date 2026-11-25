@@ -65,8 +65,9 @@ impl RedisTwoFaCodeStore {
     }
 }
 
-fn unexpected(e: impl std::fmt::Display) -> TwoFaCodeStoreError {
-    TwoFaCodeStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> TwoFaCodeStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    TwoFaCodeStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 /// KEYS: code hash, attempts counter.
@@ -157,7 +158,9 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
             "wrong_attempt" => Err(TwoFaCodeStoreError::InvalidAttemptId),
             "wrong_code" => Err(TwoFaCodeStoreError::Invalid2FACode),
             "too_many" => Err(TwoFaCodeStoreError::TooManyAttempts),
-            other => Err(unexpected(format!("unexpected script reply {other:?}"))),
+            other => Err(TwoFaCodeStoreError::UnexpectedError(
+                format!("unexpected script reply {other:?}").into(),
+            )),
         }
     }
 
@@ -175,9 +178,12 @@ impl TwoFaCodeStore for RedisTwoFaCodeStore {
         let (Some(attempt), Some(code)) = (attempt, code) else {
             return Err(TwoFaCodeStoreError::UserNotFound);
         };
-        let attempt = TwoFaAttemptId::parse(&attempt)
-            .map_err(|e| unexpected(format!("stored attempt id: {e}")))?;
-        let code = TwoFaCode::parse(code).map_err(|e| unexpected(format!("stored code: {e}")))?;
+        let attempt = TwoFaAttemptId::parse(&attempt).map_err(|e| {
+            TwoFaCodeStoreError::UnexpectedError(format!("stored attempt id: {e}").into())
+        })?;
+        let code = TwoFaCode::parse(code).map_err(|e| {
+            TwoFaCodeStoreError::UnexpectedError(format!("stored code: {e}").into())
+        })?;
         Ok((attempt, code))
     }
 

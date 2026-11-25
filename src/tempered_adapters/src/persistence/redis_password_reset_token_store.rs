@@ -30,8 +30,9 @@ impl RedisPasswordResetTokenStore {
     }
 }
 
-fn unexpected(e: impl std::fmt::Display) -> PasswordResetTokenStoreError {
-    PasswordResetTokenStoreError::UnexpectedError(e.to_string())
+fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> PasswordResetTokenStoreError {
+    // Keep the store's own error as the source (a caller can downcast it).
+    PasswordResetTokenStoreError::UnexpectedError(tempered_core::Failure::new(e))
 }
 
 fn parse_email(value: Option<String>) -> Result<Email, PasswordResetTokenStoreError> {
