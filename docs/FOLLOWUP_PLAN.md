@@ -655,7 +655,11 @@ OAuth slot instead.
   As built: `persistence::contract` is public under `testing` (and in
   tests), re-exported as `tempered::testing`; README "Writing your own
   store".
-- **9.7 Capability bundle (only if more slots are planned).** A ninth slot
+- **9.7 Capability bundle (only if more slots are planned).** ✅ SETTLED
+  2026-11-25: not needed. Every feature since went into an existing slot
+  as a typed parameter (`TwoFa<S, E, P>`) or onto the scheme as data
+  (rate limiter, password policy, API-key management, events, deferred
+  runner), so the slot count is unchanged. A ninth slot
   touches about 36 impl headers that each spell out all eight generics. A
   `Capabilities` bundle with associated types would shrink them to
   `<U, T, C>`.
