@@ -117,6 +117,13 @@ where
             .flow
             .confirm_enrolled(&owner, &credential_id)
             .await?;
+        // The ticket is for the address read above. If the account moved
+        // since, its old address may be anyone's soon: refuse, rather than
+        // mint a token naming it. A move from here on revokes the ticket.
+        let user = self.user_store.get_user_by_id(&owner).await?;
+        if user.email != email {
+            return Err(CredentialError::AccountBusy);
+        }
         if self.passkeys.requires_2fa && user.requires_2fa() {
             let attempt_id = self
                 .two_fa

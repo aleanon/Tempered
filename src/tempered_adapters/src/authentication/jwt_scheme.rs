@@ -1347,6 +1347,101 @@ mod passkey_tests {
         assert!(!token.as_str().is_empty());
     }
 
+    /// A user store whose account moves to another address right after the
+    /// first lookup by id: an email change racing a passkey login.
+    #[derive(Clone)]
+    struct MovesAfterLookup {
+        inner: HashMapUserStore,
+        moved: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl UserStore for MovesAfterLookup {
+        async fn add_user(&self, user: User) -> Result<(), UserStoreError> {
+            self.inner.add_user(user).await
+        }
+        async fn set_new_password(&self, e: &Email, p: Password) -> Result<(), UserStoreError> {
+            self.inner.set_new_password(e, p).await
+        }
+        async fn authenticate_user(
+            &self,
+            e: &Email,
+            p: &Password,
+        ) -> Result<tempered_core::ValidatedUser, UserStoreError> {
+            self.inner.authenticate_user(e, p).await
+        }
+        async fn get_user(&self, e: &Email) -> Result<User, UserStoreError> {
+            self.inner.get_user(e).await
+        }
+        async fn get_user_by_id(&self, id: &tempered_core::UserId) -> Result<User, UserStoreError> {
+            let user = self.inner.get_user_by_id(id).await?;
+            if !self.moved.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let new = Email::try_from(Secret::new("moved@example.com".to_string())).unwrap();
+                self.inner.change_email(&user.email, &new).await?;
+            }
+            Ok(user)
+        }
+        async fn set_requires_2fa(&self, e: &Email, r: bool) -> Result<(), UserStoreError> {
+            self.inner.set_requires_2fa(e, r).await
+        }
+        async fn delete_user(&self, e: &Email) -> Result<(), UserStoreError> {
+            self.inner.delete_user(e).await
+        }
+        async fn change_email(&self, old: &Email, new: &Email) -> Result<(), UserStoreError> {
+            self.inner.change_email(old, new).await
+        }
+    }
+
+    /// The address a passkey login opens its ticket for must still be the
+    /// account's when the token is issued: a token naming an address the
+    /// account just left could act on whoever takes it next.
+    #[tokio::test]
+    async fn a_passkey_login_racing_an_email_change_issues_nothing() {
+        let users = HashMapUserStore::new();
+        let password = Password::try_from(Secret::new("a-long-password".to_string())).unwrap();
+        users
+            .add_user(User::new(email(), password, false))
+            .await
+            .unwrap();
+        let moving = MovesAfterLookup {
+            inner: users.clone(),
+            moved: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let scheme = JwtScheme::new(
+            moving.clone(),
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_passkeys(PasskeyFlow::new(
+            HashMapPasskeyCredentialStore::new(),
+            HashMapChallengeStore::new(),
+            MockVerifier,
+        ));
+        let enrolment = scheme.start_passkey_registration(email()).await.unwrap();
+        let response = reply_with_count(&enrolment, "cred-abc", 0);
+        scheme
+            .finish_passkey_registration(email(), enrolment.ceremony_id, response)
+            .await
+            .unwrap();
+
+        // Arm the move: the login's first lookup by id triggers it.
+        moving
+            .moved
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let ceremony = scheme.start_passkey_authentication(None).await.unwrap();
+        let result = scheme
+            .finish_passkey_authentication(
+                ceremony.ceremony_id.clone(),
+                reply_with_count(&ceremony, "cred-abc", 1),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(CredentialError::AccountBusy)),
+            "{result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn passkey_of_a_deleted_account_cannot_log_in() {
         let (scheme, users) = scheme_with_passkeys().await;
