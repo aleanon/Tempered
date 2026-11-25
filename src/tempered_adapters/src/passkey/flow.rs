@@ -1,7 +1,7 @@
 //! Framework-agnostic WebAuthn / passkey ceremony orchestration.
 //!
 //! Like [`OAuthFlow`](crate::oauth::OAuthFlow), this verifies a credential and
-//! **yields a domain [`Email`]** rather than issuing a token itself — the app
+//! **yields the account's [`UserId`]** rather than issuing a token itself — the app
 //! issues whatever token its primary scheme uses.
 //!
 //! The cryptographic work (challenge generation, attestation/assertion
@@ -18,7 +18,7 @@ use rand::RngCore;
 use tempered_core::{
     CeremonyId, CeremonyKind, ChallengeStore, ChallengeStoreError, ClassifyError, CredentialId,
     Email, ErrorCategory, PasskeyCeremony, PasskeyCredential, PasskeyCredentialStore,
-    PasskeyStoreError, PendingCeremony, WebAuthnError, WebAuthnVerifier,
+    PasskeyStoreError, PendingCeremony, Subject, UserId, WebAuthnError, WebAuthnVerifier,
 };
 use thiserror::Error;
 
@@ -45,41 +45,41 @@ where
 
     /// Registration step 1: issue creation options for an enrolling user.
     ///
-    /// `email` must be the **already-authenticated** user. Enrolling a passkey
-    /// grants the ability to log in as that user, so the caller has to prove who
-    /// they are first (a logged-in session); never take this value from an
-    /// unauthenticated request.
+    /// `user` must be the **already-authenticated** account. Enrolling a
+    /// passkey grants the ability to log in as it, so the caller has to prove
+    /// who they are first (a logged-in session); never take this value from
+    /// an unauthenticated request.
     pub async fn start_registration(
         &self,
-        email: Email,
+        user: Subject,
     ) -> Result<PasskeyCeremony, PasskeyFlowError> {
         // Lets the verifier tell the browser which authenticators are already
         // enrolled, so the same one is not registered twice.
-        let existing = self.credential_store.list_for_user(&email).await?;
-        let start = self.verifier.start_registration(&email, &existing)?;
-        self.park(CeremonyKind::Registration, Some(email), start)
+        let existing = self.credential_store.list_for_user(&user.id).await?;
+        let start = self.verifier.start_registration(&user, &existing)?;
+        self.park(CeremonyKind::Registration, Some(user), start)
             .await
     }
 
     /// Registration step 2: verify the attestation and store the credential.
     ///
-    /// `email` is the authenticated user finishing the ceremony. It must be the
-    /// same user who started it: a ceremony begun in one account's session can
-    /// not be completed from another's.
+    /// `user` is the authenticated account finishing the ceremony. It must be
+    /// the one that started it: a ceremony begun in one account's session
+    /// can not be completed from another's.
     #[tracing::instrument(name = "PasskeyFlow::finish_registration", skip_all)]
     pub async fn finish_registration(
         &self,
-        email: &Email,
+        user: &Subject,
         ceremony_id: CeremonyId,
         response: serde_json::Value,
-    ) -> Result<Email, PasskeyFlowError> {
+    ) -> Result<(), PasskeyFlowError> {
         let pending = self
             .consume(&ceremony_id, CeremonyKind::Registration)
             .await?;
         let bound = pending.user.ok_or(PasskeyFlowError::MissingUser)?;
         // Reported exactly like an unknown ceremony, so a caller learns nothing
         // about ceremonies that belong to other users.
-        if &bound != email {
+        if bound.id != user.id {
             return Err(ChallengeStoreError::ChallengeNotFound.into());
         }
 
@@ -92,7 +92,7 @@ where
                 credential_id: verified.credential_id,
                 credential_data: verified.credential_data,
                 sign_count: verified.sign_count,
-                owner: bound.clone(),
+                owner: bound.id,
                 name: None,
             })
             .await
@@ -102,31 +102,30 @@ where
                 }
                 other => other.into(),
             })?;
-
-        Ok(bound)
+        Ok(())
     }
 
-    /// Authentication step 1: issue request options. `email = None` for a
+    /// Authentication step 1: issue request options. `user = None` for a
     /// usernameless (discoverable-credential) ceremony.
     pub async fn start_authentication(
         &self,
-        email: Option<Email>,
+        user: Option<Subject>,
     ) -> Result<PasskeyCeremony, PasskeyFlowError> {
-        let allowed = match &email {
-            Some(e) => self.credential_store.list_for_user(e).await?,
+        let allowed = match &user {
+            Some(u) => self.credential_store.list_for_user(&u.id).await?,
             None => Vec::new(),
         };
         let start = self.verifier.start_authentication(&allowed)?;
-        self.park(CeremonyKind::Authentication, email, start).await
+        self.park(CeremonyKind::Authentication, user, start).await
     }
 
     /// Authentication step 2: verify the assertion, enforce the sign-count
-    /// invariant, and return the owning user's email.
+    /// invariant, and return the owning account's id.
     pub async fn finish_authentication(
         &self,
         ceremony_id: CeremonyId,
         response: serde_json::Value,
-    ) -> Result<Email, PasskeyFlowError> {
+    ) -> Result<UserId, PasskeyFlowError> {
         Ok(self
             .finish_authentication_with_credential(ceremony_id, response)
             .await?
@@ -141,7 +140,7 @@ where
         &self,
         ceremony_id: CeremonyId,
         response: serde_json::Value,
-    ) -> Result<(Email, CredentialId), PasskeyFlowError> {
+    ) -> Result<(UserId, CredentialId), PasskeyFlowError> {
         // Consume the ceremony regardless of the outcome (single use).
         let pending = self
             .consume(&ceremony_id, CeremonyKind::Authentication)
@@ -161,7 +160,7 @@ where
         // user's credentials. (Usernameless ceremonies carry no user; there the
         // credential alone identifies the account.)
         if let Some(expected) = &pending.user
-            && &stored.owner != expected
+            && stored.owner != expected.id
         {
             return Err(PasskeyFlowError::WrongCredential);
         }
@@ -208,7 +207,7 @@ where
     /// fails here, one removed afterwards is caught by the ticket.
     pub async fn confirm_enrolled(
         &self,
-        owner: &Email,
+        owner: &UserId,
         credential_id: &CredentialId,
     ) -> Result<(), PasskeyFlowError> {
         let stored = self.credential_store.get_credential(credential_id).await?;
@@ -218,48 +217,46 @@ where
         Ok(())
     }
 
-    /// Move the user's credentials to their new address (an email change).
-    ///
-    /// Enrolments started under `old` are dropped first: one finishing after
-    /// the move would store a passkey under the freed address, for whoever
-    /// registers it next.
-    pub async fn move_user(&self, old: &Email, new: &Email) -> Result<(), PasskeyFlowError> {
-        self.challenge_store.delete_all_for_user(old).await?;
-        Ok(self.credential_store.reassign(old, new).await?)
+    /// Drop the ceremonies started under `address` (an email change: they
+    /// are filed by address). The passkeys themselves belong to the account
+    /// id and stay.
+    pub async fn drop_ceremonies(&self, address: &Email) -> Result<(), PasskeyFlowError> {
+        Ok(self.challenge_store.delete_all_for_user(address).await?)
     }
 
-    /// The user's credentials.
-    pub async fn list(&self, email: &Email) -> Result<Vec<PasskeyCredential>, PasskeyFlowError> {
-        Ok(self.credential_store.list_for_user(email).await?)
+    /// The account's credentials.
+    pub async fn list(&self, user: &UserId) -> Result<Vec<PasskeyCredential>, PasskeyFlowError> {
+        Ok(self.credential_store.list_for_user(user).await?)
     }
 
-    /// Rename one of the user's credentials.
+    /// Rename one of the account's credentials.
     pub async fn rename(
         &self,
-        email: &Email,
+        user: &UserId,
         id: &CredentialId,
         name: Option<String>,
     ) -> Result<bool, PasskeyFlowError> {
         Ok(self
             .credential_store
-            .rename_credential(email, id, name)
+            .rename_credential(user, id, name)
             .await?)
     }
 
-    /// Remove one of the user's credentials.
-    pub async fn remove(&self, email: &Email, id: &CredentialId) -> Result<bool, PasskeyFlowError> {
-        Ok(self.credential_store.delete_credential(email, id).await?)
+    /// Remove one of the account's credentials.
+    pub async fn remove(&self, user: &UserId, id: &CredentialId) -> Result<bool, PasskeyFlowError> {
+        Ok(self.credential_store.delete_credential(user, id).await?)
     }
 
-    /// Remove every passkey enrolled for `email`. Call when the account is
-    /// deleted, so its credentials cannot outlive it or be inherited by a later
-    /// account that reuses the address.
+    /// Remove every passkey enrolled for the account. Call when it is
+    /// deleted, so its credentials cannot outlive it.
     ///
-    /// Enrolments the user has started but not finished are dropped too, so
-    /// one begun before this call cannot add a passkey after it.
-    pub async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError> {
-        self.challenge_store.delete_all_for_user(email).await?;
-        Ok(self.credential_store.delete_all_for_user(email).await?)
+    /// Enrolments it has started but not finished are dropped too, so one
+    /// begun before this call cannot add a passkey after it.
+    pub async fn forget_user(&self, user: &Subject) -> Result<(), PasskeyFlowError> {
+        self.challenge_store
+            .delete_all_for_user(&user.email)
+            .await?;
+        Ok(self.credential_store.delete_all_for_user(&user.id).await?)
     }
 
     /// Keep a started ceremony's state server-side under a fresh id, and return
@@ -267,7 +264,7 @@ where
     async fn park(
         &self,
         kind: CeremonyKind,
-        user: Option<Email>,
+        user: Option<Subject>,
         start: tempered_core::CeremonyStart,
     ) -> Result<PasskeyCeremony, PasskeyFlowError> {
         let ceremony_id = random_ceremony_id();
@@ -393,7 +390,7 @@ pub(crate) mod test_support {
 
     use serde_json::{Value, json};
     use tempered_core::{
-        CeremonyStart, CeremonyState, CredentialId, Email, PasskeyCredential, VerifiedAssertion,
+        CeremonyStart, CeremonyState, CredentialId, PasskeyCredential, VerifiedAssertion,
         VerifiedRegistration, WebAuthnError, WebAuthnVerifier,
     };
 
@@ -428,7 +425,7 @@ pub(crate) mod test_support {
     impl WebAuthnVerifier for MockVerifier {
         fn start_registration(
             &self,
-            _email: &Email,
+            _user: &tempered_core::Subject,
             _existing: &[PasskeyCredential],
         ) -> Result<CeremonyStart, WebAuthnError> {
             Ok(start())
@@ -517,15 +514,22 @@ mod tests {
         )
     }
 
-    fn email() -> Email {
-        Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
+    /// The test account (a fixed id, so tests can compare owners).
+    fn email() -> Subject {
+        Subject {
+            id: UserId::from_uuid(uuid::Uuid::from_u128(1)),
+            email: Email::try_from(Secret::new("user@example.com".to_string())).unwrap(),
+        }
     }
 
-    fn other_email() -> Email {
-        Email::try_from(Secret::new("attacker@example.com".to_string())).unwrap()
+    fn other_email() -> Subject {
+        Subject {
+            id: UserId::from_uuid(uuid::Uuid::from_u128(2)),
+            email: Email::try_from(Secret::new("attacker@example.com".to_string())).unwrap(),
+        }
     }
 
-    async fn register_for(flow: &Flow, who: Email, cred_id: &str) {
+    async fn register_for(flow: &Flow, who: Subject, cred_id: &str) {
         let ceremony = flow.start_registration(who.clone()).await.unwrap();
         let response = reply(&ceremony, cred_id);
         flow.finish_registration(&who, ceremony.ceremony_id, response)
@@ -562,14 +566,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn moving_a_user_drops_their_unfinished_enrolments() {
+    async fn an_address_change_drops_unfinished_enrolments_and_keeps_passkeys() {
         let f = flow();
         register(&f, "cred-a").await;
         let pending = f.start_registration(email()).await.unwrap();
 
-        f.move_user(&email(), &other_email()).await.unwrap();
+        // The account's address changes: its enrolments are dropped.
+        f.drop_ceremonies(&email().email).await.unwrap();
 
-        // The enrolment begun under the old address cannot finish there.
+        // The enrolment begun under the old address cannot finish.
         let response = reply(&pending, "cred-late");
         assert!(matches!(
             f.finish_registration(&email(), pending.ceremony_id, response)
@@ -578,8 +583,8 @@ mod tests {
                 ChallengeStoreError::ChallengeNotFound
             ))
         ));
-        assert!(f.list(&email()).await.unwrap().is_empty());
-        assert_eq!(f.list(&other_email()).await.unwrap().len(), 1);
+        // The passkey enrolled before stays with the account.
+        assert_eq!(f.list(&email().id).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -593,7 +598,7 @@ mod tests {
             .finish_authentication(ceremony.ceremony_id, response)
             .await
             .unwrap();
-        assert_eq!(who, email());
+        assert_eq!(who, email().id);
     }
 
     #[tokio::test]
@@ -693,7 +698,7 @@ mod tests {
             .finish_authentication(ceremony.ceremony_id, response)
             .await
             .unwrap();
-        assert_eq!(who, email());
+        assert_eq!(who, email().id);
     }
 
     #[tokio::test]
@@ -718,7 +723,7 @@ mod tests {
             .get_credential(&CredentialId("cred-abc".into()))
             .await
             .unwrap();
-        assert_eq!(stored.owner, email());
+        assert_eq!(stored.owner, email().id);
     }
 
     #[tokio::test]
@@ -734,7 +739,7 @@ mod tests {
 
         assert!(
             f.credential_store
-                .list_for_user(&email())
+                .list_for_user(&email().id)
                 .await
                 .unwrap()
                 .is_empty()
@@ -752,7 +757,7 @@ mod tests {
         // The other user's passkey is untouched.
         assert_eq!(
             f.credential_store
-                .list_for_user(&other_email())
+                .list_for_user(&other_email().id)
                 .await
                 .unwrap()
                 .len(),
@@ -835,7 +840,7 @@ mod tests {
     impl WebAuthnVerifier for OtherCredentialVerifier {
         fn start_registration(
             &self,
-            email: &Email,
+            email: &Subject,
             existing: &[PasskeyCredential],
         ) -> Result<tempered_core::CeremonyStart, WebAuthnError> {
             MockVerifier.start_registration(email, existing)

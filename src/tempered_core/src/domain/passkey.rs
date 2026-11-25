@@ -1,4 +1,4 @@
-use super::email::Email;
+use super::{user::Subject, user_id::UserId};
 
 /// Base64url credential id assigned by the authenticator.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -23,7 +23,9 @@ pub struct PasskeyCredential {
     pub credential_id: CredentialId,
     pub credential_data: Vec<u8>,
     pub sign_count: u32,
-    pub owner: Email,
+    /// The account the passkey logs in to (its id: the passkey stays with
+    /// the account when its address changes).
+    pub owner: UserId,
     /// What the user calls it ("work laptop"), for their list of passkeys.
     pub name: Option<String>,
 }
@@ -75,9 +77,10 @@ pub enum CeremonyKind {
 #[derive(Debug, Clone)]
 pub struct PendingCeremony {
     pub kind: CeremonyKind,
-    /// The user the ceremony was started for. Always set for registration;
-    /// `None` for a usernameless (discoverable-credential) authentication.
-    pub user: Option<Email>,
+    /// The account the ceremony was started for. Always set for
+    /// registration; `None` for a usernameless (discoverable-credential)
+    /// authentication.
+    pub user: Option<Subject>,
     pub state: CeremonyState,
 }
 

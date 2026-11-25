@@ -64,7 +64,7 @@ fn check_challenge(state: &CeremonyState, response: &Value) -> Result<(), WebAut
 impl WebAuthnVerifier for MockVerifier {
     fn start_registration(
         &self,
-        _email: &Email,
+        _user: &tempered_core::Subject,
         _existing: &[PasskeyCredential],
     ) -> Result<CeremonyStart, WebAuthnError> {
         Ok(start())

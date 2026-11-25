@@ -38,7 +38,10 @@ impl RedisChallengeStore {
 #[derive(Serialize, Deserialize)]
 struct Stored {
     kind: StoredKind,
+    /// The account's address (what ceremonies are filed by).
     user: Option<String>,
+    /// The account's id.
+    user_id: Option<tempered_core::UserId>,
     /// Base64 of the opaque state bytes.
     state: String,
 }
@@ -89,7 +92,8 @@ impl ChallengeStore for RedisChallengeStore {
             user: ceremony
                 .user
                 .as_ref()
-                .map(|e| e.as_ref().expose_secret().clone()),
+                .map(|u| u.email.as_ref().expose_secret().clone()),
+            user_id: ceremony.user.as_ref().map(|u| u.id),
             state: STANDARD.encode(&ceremony.state.0),
         })
         .map_err(unexpected)?;
@@ -99,7 +103,7 @@ impl ChallengeStore for RedisChallengeStore {
             .set_ex(ceremony_key(id.as_str()), value, self.ttl_seconds)
             .ignore();
         if let Some(user) = &ceremony.user {
-            let set = user_key(USER_CEREMONIES_PREFIX, user);
+            let set = user_key(USER_CEREMONIES_PREFIX, &user.email);
             pipe.sadd(&set, id.as_str())
                 .ignore()
                 .expire(&set, self.ttl_seconds as i64)
@@ -123,13 +127,21 @@ impl ChallengeStore for RedisChallengeStore {
             serde_json::from_str(&value.ok_or(ChallengeStoreError::ChallengeNotFound)?)
                 .map_err(unexpected)?;
 
-        let user = stored
-            .user
-            .map(|u| Email::try_from(Secret::new(u)).map_err(unexpected))
-            .transpose()?;
+        let user = match (stored.user, stored.user_id) {
+            (Some(email), Some(id)) => Some(tempered_core::Subject {
+                id,
+                email: Email::try_from(Secret::new(email)).map_err(unexpected)?,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(ChallengeStoreError::UnexpectedError(
+                    "a ceremony with half an owner".into(),
+                ));
+            }
+        };
         if let Some(user) = &user {
             let _: i64 = client
-                .srem(user_key(USER_CEREMONIES_PREFIX, user), id.as_str())
+                .srem(user_key(USER_CEREMONIES_PREFIX, &user.email), id.as_str())
                 .await
                 .map_err(unexpected)?;
         }

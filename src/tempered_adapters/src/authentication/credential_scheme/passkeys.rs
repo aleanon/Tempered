@@ -28,7 +28,8 @@ where
         &self,
         email: Email,
     ) -> Result<PasskeyCeremony, Self::PasskeyError> {
-        Ok(self.passkeys.flow.start_registration(email).await?)
+        let user = self.subject_for(&email).await?;
+        Ok(self.passkeys.flow.start_registration(user).await?)
     }
 
     #[tracing::instrument(
@@ -49,11 +50,11 @@ where
         // And the account must still be there (deleted, or moved to another
         // address): a passkey under a free address would be inherited by
         // whoever registers it next.
-        let result = match self.user_store.get_user(&email).await {
-            Ok(_) => self
+        let result = match self.subject_for(&email).await {
+            Ok(user) => self
                 .passkeys
                 .flow
-                .finish_registration(&email, ceremony_id, response)
+                .finish_registration(&user, ceremony_id, response)
                 .await
                 .map_err(CredentialError::from),
             Err(e) => Err(e.into()),
@@ -68,7 +69,20 @@ where
         &self,
         email: Option<Email>,
     ) -> Result<PasskeyCeremony, Self::PasskeyError> {
-        Ok(self.passkeys.flow.start_authentication(email).await?)
+        let user = match email {
+            None => None,
+            Some(email) => match self.subject_for(&email).await {
+                Ok(user) => Some(user),
+                // No such account: a ceremony that no credential answers,
+                // so the answer does not tell the two apart.
+                Err(UserStoreError::UserNotFound) => Some(tempered_core::Subject {
+                    id: tempered_core::UserId::new(),
+                    email,
+                }),
+                Err(e) => return Err(e.into()),
+            },
+        };
+        Ok(self.passkeys.flow.start_authentication(user).await?)
     }
 
     #[tracing::instrument(
@@ -80,11 +94,17 @@ where
         ceremony_id: CeremonyId,
         response: serde_json::Value,
     ) -> Result<LoginOutcome<Self::Token>, Self::PasskeyError> {
-        let (email, credential_id) = self
+        let (owner, credential_id) = self
             .passkeys
             .flow
             .finish_authentication_with_credential(ceremony_id, response)
             .await?;
+        // The credential names the account by id; the login is for it at
+        // whatever address it has now. A passkey outlives nothing: if the
+        // account is gone, the credential must not mint a session.
+        let user = self.user_store.get_user_by_id(&owner).await?;
+        let subject = tempered_core::Subject::from(&user);
+        let email = subject.email.clone();
         // Only the credential says whose login this is, so the login opens
         // here and the credential is confirmed again after it: removed in
         // between, it fails; removed later, the ticket catches it.
@@ -95,21 +115,18 @@ where
             .map_err(CredentialError::Token)?;
         self.passkeys
             .flow
-            .confirm_enrolled(&email, &credential_id)
+            .confirm_enrolled(&owner, &credential_id)
             .await?;
-        // A passkey outlives nothing: if the account it was enrolled for is gone
-        // (deleted since enrollment), the credential must not mint a session.
-        let user = self.user_store.get_user(&email).await?;
         if self.passkeys.requires_2fa && user.requires_2fa() {
             let attempt_id = self
                 .two_fa
-                .issue_challenge(&self.subject_for(&email).await?, ChallengePurpose::SignIn)
+                .issue_challenge(&subject, ChallengePurpose::SignIn)
                 .await?;
             return Ok(LoginOutcome::Requires2Fa { email, attempt_id });
         }
         Ok(LoginOutcome::Success(
             self.tokens
-                .issue(&self.subject_for(&email).await?, ticket)
+                .issue(&subject, ticket)
                 .await
                 .map_err(CredentialError::Token)?,
         ))
@@ -122,7 +139,12 @@ where
         Ok(self
             .passkeys
             .flow
-            .list(email)
+            .list(&match self.subject_for(email).await {
+                Ok(user) => user.id,
+                // No account, no passkeys.
+                Err(UserStoreError::UserNotFound) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            })
             .await?
             .into_iter()
             .map(|c| tempered_core::PasskeySummary {
@@ -138,7 +160,12 @@ where
         id: &tempered_core::CredentialId,
         name: Option<String>,
     ) -> Result<bool, Self::PasskeyError> {
-        Ok(self.passkeys.flow.rename(email, id, name).await?)
+        let user = match self.subject_for(email).await {
+            Ok(user) => user.id,
+            Err(UserStoreError::UserNotFound) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(self.passkeys.flow.rename(&user, id, name).await?)
     }
 
     async fn delete_passkey(
@@ -146,6 +173,11 @@ where
         email: &Email,
         id: &tempered_core::CredentialId,
     ) -> Result<bool, Self::PasskeyError> {
-        Ok(self.passkeys.flow.remove(email, id).await?)
+        let user = match self.subject_for(email).await {
+            Ok(user) => user.id,
+            Err(UserStoreError::UserNotFound) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(self.passkeys.flow.remove(&user, id).await?)
     }
 }

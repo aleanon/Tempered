@@ -183,9 +183,12 @@ pub async fn challenge_store(store: impl tempered_core::ChallengeStore) {
         CeremonyId, CeremonyKind, CeremonyState, ChallengeStoreError, PendingCeremony,
     };
 
-    let alice = email("alice@example.com");
-    let bob = email("bob@example.com");
-    let ceremony = |user: Option<&Email>, state: &[u8]| PendingCeremony {
+    let subject = |address: &str| tempered_core::Subject {
+        id: tempered_core::UserId::new(),
+        email: email(address),
+    };
+    let (alice, bob) = (subject("alice@example.com"), subject("bob@example.com"));
+    let ceremony = |user: Option<&tempered_core::Subject>, state: &[u8]| PendingCeremony {
         // A usernameless ceremony is a login; one with a user, an enrolment.
         kind: if user.is_some() {
             CeremonyKind::Registration
@@ -227,8 +230,9 @@ pub async fn challenge_store(store: impl tempered_core::ChallengeStore) {
         .store_ceremony(id("n1"), ceremony(None, b"n1"))
         .await
         .unwrap();
-    store.delete_all_for_user(&alice).await.unwrap();
-    store.delete_all_for_user(&alice).await.unwrap();
+    // Ceremonies are filed by the account's address.
+    store.delete_all_for_user(&alice.email).await.unwrap();
+    store.delete_all_for_user(&alice.email).await.unwrap();
     assert!(store.consume_ceremony(&id("a1")).await.is_err());
     assert!(store.consume_ceremony(&id("a2")).await.is_err());
     assert_eq!(
@@ -696,16 +700,19 @@ pub async fn oauth_identity_store(store: impl tempered_core::OAuthIdentityStore)
 
 /// [`PasskeyCredentialStore`]: insert-only ids, the sign-count rule, and
 /// removing one owner's credentials.
-pub async fn passkey_credential_store(store: impl tempered_core::PasskeyCredentialStore) {
+/// `users` are the ids of two accounts that exist (a store may require it).
+pub async fn passkey_credential_store(
+    store: impl tempered_core::PasskeyCredentialStore,
+    users: [tempered_core::UserId; 2],
+) {
     use tempered_core::{CredentialId, PasskeyCredential, PasskeyStoreError};
 
-    let alice = email("alice@example.com");
-    let bob = email("bob@example.com");
-    let cred = |id: &str, owner: &Email, count: u32| PasskeyCredential {
+    let [alice, bob] = users;
+    let cred = |id: &str, owner: &tempered_core::UserId, count: u32| PasskeyCredential {
         credential_id: CredentialId(id.to_string()),
         credential_data: vec![0, 1, 2, 255],
         sign_count: count,
-        owner: owner.clone(),
+        owner: *owner,
         name: None,
     };
     let id = |s: &str| CredentialId(s.to_string());
@@ -814,13 +821,6 @@ pub async fn passkey_credential_store(store: impl tempered_core::PasskeyCredenti
     assert!(!store.delete_credential(&alice, &id("b1")).await.unwrap());
     assert!(store.delete_credential(&bob, &id("b1")).await.unwrap());
     assert!(store.get_credential(&id("b1")).await.is_err());
-
-    // An email change moves the credentials.
-    store.add_credential(cred("c1", &alice, 0)).await.unwrap();
-    let moved = email("alice@new.example.com");
-    store.reassign(&alice, &moved).await.unwrap();
-    assert!(store.list_for_user(&alice).await.unwrap().is_empty());
-    assert_eq!(store.get_credential(&id("c1")).await.unwrap().owner, moved);
 }
 
 /// [`ApiKeyStore`]: lookup by prefix, per-owner listing, revocation.

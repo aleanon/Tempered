@@ -15,8 +15,8 @@ use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tempered_core::{
-    CeremonyStart, CeremonyState, CredentialId, Email, PasskeyCredential, VerifiedAssertion,
-    VerifiedRegistration, WebAuthnError, WebAuthnVerifier,
+    CeremonyStart, CeremonyState, CredentialId, PasskeyCredential, Subject, UserId,
+    VerifiedAssertion, VerifiedRegistration, WebAuthnError, WebAuthnVerifier,
 };
 use webauthn_rs::prelude::{
     DiscoverableAuthentication, Passkey, PasskeyAuthentication, PasskeyRegistration,
@@ -30,8 +30,9 @@ pub const MIN_USER_HANDLE_KEY_BYTES: usize = 32;
 ///
 /// **User handles.** WebAuthn gives each account an opaque user handle,
 /// stored on the authenticator and returned on usernameless logins. It must
-/// not reveal who the user is, so it is not the email: it is an HMAC-SHA256
-/// of the email under a secret key, cut to a UUID. Keep the key stable (load
+/// not reveal who the user is, and must not change with the address: it is
+/// an HMAC-SHA256 of the account's id under a secret key, cut to a UUID (so
+/// a passkey keeps working after an email change). Keep the key stable (load
 /// it from the environment like the JWT secret): a new key changes every
 /// handle, and passkeys enrolled under the old one stop logging in.
 #[derive(Clone)]
@@ -85,11 +86,11 @@ impl WebAuthnRsVerifier {
         }
     }
 
-    /// The user handle for `email`.
-    fn user_handle(&self, email: &Email) -> Uuid {
+    /// The user handle for the account `user`.
+    fn user_handle(&self, user: &UserId) -> Uuid {
         let mut mac = Hmac::<Sha256>::new_from_slice(self.user_handle_key.expose_secret())
             .expect("HMAC takes a key of any length");
-        mac.update(email.as_ref().expose_secret().as_bytes());
+        mac.update(user.as_uuid().as_bytes());
         let digest = mac.finalize().into_bytes();
         let mut bytes = [0u8; 16];
         bytes.copy_from_slice(&digest[..16]);
@@ -152,17 +153,17 @@ fn counter_of(passkey: &Passkey) -> u32 {
 impl WebAuthnVerifier for WebAuthnRsVerifier {
     fn start_registration(
         &self,
-        email: &Email,
+        user: &Subject,
         existing: &[PasskeyCredential],
     ) -> Result<CeremonyStart, WebAuthnError> {
         let exclude = existing
             .iter()
             .map(|c| passkey(c).map(|p| p.cred_id().clone()))
             .collect::<Result<Vec<_>, _>>()?;
-        let name = email.as_ref().expose_secret();
+        let name = user.email.as_ref().expose_secret();
         let (options, state) = self
             .webauthn
-            .start_passkey_registration(self.user_handle(email), name, name, Some(exclude))
+            .start_passkey_registration(self.user_handle(&user.id), name, name, Some(exclude))
             .map_err(refused)?;
         Ok(CeremonyStart {
             options: to_json(&options)?,
@@ -307,8 +308,12 @@ mod tests {
         (flow, credentials)
     }
 
-    fn email(s: &str) -> Email {
-        Email::try_from(Secret::new(s.to_string())).unwrap()
+    /// An account at `s`, with a fresh id.
+    fn email(s: &str) -> Subject {
+        Subject {
+            id: UserId::new(),
+            email: tempered_core::Email::try_from(Secret::new(s.to_string())).unwrap(),
+        }
     }
 
     /// A software authenticator that performs user verification.
@@ -334,7 +339,7 @@ mod tests {
         serde_json::to_value(response).unwrap()
     }
 
-    async fn enrol(flow: &Flow, device: &mut SoftPasskey, user: &Email) {
+    async fn enrol(flow: &Flow, device: &mut SoftPasskey, user: &Subject) {
         let ceremony = flow.start_registration(user.clone()).await.unwrap();
         let response = create(device, &ceremony);
         flow.finish_registration(user, ceremony.ceremony_id, response)
@@ -349,7 +354,7 @@ mod tests {
         let alice = email("alice@example.com");
         enrol(&flow, &mut device, &alice).await;
 
-        let stored = credentials.list_for_user(&alice).await.unwrap();
+        let stored = credentials.list_for_user(&alice.id).await.unwrap();
         assert_eq!(stored.len(), 1);
 
         for _ in 0..2 {
@@ -362,7 +367,7 @@ mod tests {
                 .finish_authentication(ceremony.ceremony_id, response)
                 .await
                 .unwrap();
-            assert_eq!(who, alice);
+            assert_eq!(who, alice.id);
         }
     }
 
@@ -403,7 +408,7 @@ mod tests {
         let mut device = authenticator();
         let alice = email("alice@example.com");
         enrol(&flow, &mut device, &alice).await;
-        let id = credentials.list_for_user(&alice).await.unwrap()[0]
+        let id = credentials.list_for_user(&alice.id).await.unwrap()[0]
             .credential_id
             .clone();
 
@@ -439,7 +444,7 @@ mod tests {
         let mut response = get(&mut device, &ceremony);
         // The user handle is not covered by the signature, so only this
         // adapter's check stops a swapped one.
-        let other = verifier().user_handle(&email("mallory@example.com"));
+        let other = verifier().user_handle(&email("mallory@example.com").id);
         response["response"]["userHandle"] =
             serde_json::Value::String(URL_SAFE_NO_PAD.encode(other.as_bytes()));
         let result = flow
@@ -469,11 +474,14 @@ mod tests {
     fn user_handles_are_stable_per_user_and_key() {
         let v = verifier();
         let a = email("alice@example.com");
-        assert_eq!(v.user_handle(&a), v.user_handle(&a));
-        assert_ne!(v.user_handle(&a), v.user_handle(&email("bob@example.com")));
+        assert_eq!(v.user_handle(&a.id), v.user_handle(&a.id));
+        assert_ne!(
+            v.user_handle(&a.id),
+            v.user_handle(&email("bob@example.com").id)
+        );
         let other_key =
             WebAuthnRsVerifier::new("example.com", ORIGIN, Secret::new(vec![8; 32])).unwrap();
-        assert_ne!(v.user_handle(&a), other_key.user_handle(&a));
+        assert_ne!(v.user_handle(&a.id), other_key.user_handle(&a.id));
     }
 
     #[test]

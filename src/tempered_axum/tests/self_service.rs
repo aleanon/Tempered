@@ -18,7 +18,7 @@ use tempered_adapters::persistence::{
 };
 use tempered_axum::auth_service::auth_service;
 use tempered_core::{
-    CeremonyStart, CeremonyState, Email, OAuthHttpClient, OAuthHttpError, OAuthProviderConfig,
+    CeremonyStart, CeremonyState, OAuthHttpClient, OAuthHttpError, OAuthProviderConfig,
     OAuthUserInfo, PasskeyCredential, TokenResponse, VerifiedAssertion, VerifiedRegistration,
     WebAuthnError, WebAuthnVerifier,
 };
@@ -30,7 +30,7 @@ struct NoVerifier;
 impl WebAuthnVerifier for NoVerifier {
     fn start_registration(
         &self,
-        _: &Email,
+        _: &tempered_core::Subject,
         _: &[PasskeyCredential],
     ) -> Result<CeremonyStart, WebAuthnError> {
         unreachable!()

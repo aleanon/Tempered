@@ -237,14 +237,15 @@ pub struct VerifiedAssertion {
 /// response's `id` (base64url, as browsers send it), since that is the key
 /// the flow looks credentials up by.
 pub trait WebAuthnVerifier: Send + Sync {
-    /// Start enrolling a credential for `email`.
+    /// Start enrolling a credential for `user` (its id makes the WebAuthn
+    /// user handle, its address the name the authenticator shows).
     ///
     /// `existing` are the user's current credentials, so the verifier can list
     /// them as `excludeCredentials` and stop the same authenticator being
     /// enrolled twice.
     fn start_registration(
         &self,
-        email: &Email,
+        user: &crate::Subject,
         existing: &[PasskeyCredential],
     ) -> Result<CeremonyStart, WebAuthnError>;
 

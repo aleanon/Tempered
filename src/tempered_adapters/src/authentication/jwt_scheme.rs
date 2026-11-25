@@ -424,7 +424,8 @@ mod oauth_tests {
         }
 
         async fn passkey_count(&self) -> usize {
-            self.passkeys.list_for_user(&email()).await.unwrap().len()
+            let id = self.users.get_user(&email()).await.unwrap().id;
+            self.passkeys.list_for_user(&id).await.unwrap().len()
         }
 
         async fn sessions_revoked(&self) -> bool {
@@ -1365,11 +1366,14 @@ mod passkey_tests {
                 reply_with_count(&ceremony, "cred-abc", 1),
             )
             .await;
+        // Refused: the address has no account now, so the ceremony is not
+        // one the old account's credential can answer.
         assert!(matches!(
             result,
-            Err(CredentialError::UserStoreError(
-                UserStoreError::UserNotFound
-            ))
+            Err(CredentialError::Passkey(PasskeyFlowError::WrongCredential))
+                | Err(CredentialError::UserStoreError(
+                    UserStoreError::UserNotFound
+                ))
         ));
     }
 
@@ -1562,20 +1566,17 @@ mod passkey_tests {
         }
         async fn delete_credential(
             &self,
-            _: &Email,
+            _: &tempered_core::UserId,
             _: &CredentialId,
         ) -> Result<bool, PasskeyStoreError> {
             Err(PasskeyStoreError::UnexpectedError("down".into()))
         }
         async fn rename_credential(
             &self,
-            _: &Email,
+            _: &tempered_core::UserId,
             _: &CredentialId,
             _: Option<String>,
         ) -> Result<bool, PasskeyStoreError> {
-            Err(PasskeyStoreError::UnexpectedError("down".into()))
-        }
-        async fn reassign(&self, _: &Email, _: &Email) -> Result<(), PasskeyStoreError> {
             Err(PasskeyStoreError::UnexpectedError("down".into()))
         }
         async fn get_credential(
@@ -1586,7 +1587,7 @@ mod passkey_tests {
         }
         async fn list_for_user(
             &self,
-            _: &Email,
+            _: &tempered_core::UserId,
         ) -> Result<Vec<PasskeyCredential>, PasskeyStoreError> {
             Err(PasskeyStoreError::UnexpectedError("down".into()))
         }
@@ -1598,7 +1599,10 @@ mod passkey_tests {
         ) -> Result<(), PasskeyStoreError> {
             Err(PasskeyStoreError::UnexpectedError("down".into()))
         }
-        async fn delete_all_for_user(&self, _: &Email) -> Result<(), PasskeyStoreError> {
+        async fn delete_all_for_user(
+            &self,
+            _: &tempered_core::UserId,
+        ) -> Result<(), PasskeyStoreError> {
             Err(PasskeyStoreError::UnexpectedError("down".into()))
         }
     }
@@ -2782,14 +2786,45 @@ mod email_change_tests {
         assert!(scheme.confirm_email_change(moved, confirm).await.is_err());
     }
 
+    /// A ceremony store that is down: every call fails.
+    #[derive(Clone)]
+    struct UnavailableChallengeStore;
+
+    #[async_trait::async_trait]
+    impl tempered_core::ChallengeStore for UnavailableChallengeStore {
+        async fn store_ceremony(
+            &self,
+            _: tempered_core::CeremonyId,
+            _: tempered_core::PendingCeremony,
+        ) -> Result<(), tempered_core::ChallengeStoreError> {
+            Err(tempered_core::ChallengeStoreError::UnexpectedError(
+                "down".into(),
+            ))
+        }
+        async fn consume_ceremony(
+            &self,
+            _: &tempered_core::CeremonyId,
+        ) -> Result<tempered_core::PendingCeremony, tempered_core::ChallengeStoreError> {
+            Err(tempered_core::ChallengeStoreError::UnexpectedError(
+                "down".into(),
+            ))
+        }
+        async fn delete_all_for_user(
+            &self,
+            _: &Email,
+        ) -> Result<(), tempered_core::ChallengeStoreError> {
+            Err(tempered_core::ChallengeStoreError::UnexpectedError(
+                "down".into(),
+            ))
+        }
+    }
+
     /// A step after the account moved fails: the account goes back to the
     /// old address, the new one stays free, and no session survives.
     #[tokio::test]
     async fn a_move_that_fails_part_way_is_undone() {
         use crate::passkey::PasskeyFlow;
         use crate::passkey::flow::test_support::MockVerifier;
-        use crate::persistence::HashMapChallengeStore;
-
         let outbox = Outbox::default();
         let users = HashMapUserStore::new();
         let scheme = JwtScheme::new(
@@ -2805,10 +2840,11 @@ mod email_change_tests {
             HashMapTokenEpochStore::new(),
         )
         .supports_registration()
-        // The passkey store is down, so moving the passkeys fails.
+        // The ceremony store is down, so dropping the old address's
+        // enrolments fails, after the account has moved.
         .supports_passkeys(PasskeyFlow::new(
-            super::passkey_tests::UnavailableCredentialStore,
-            HashMapChallengeStore::new(),
+            crate::persistence::HashMapPasskeyCredentialStore::new(),
+            UnavailableChallengeStore,
             MockVerifier,
         ))
         .supports_email_verification(HashMapEmailVerificationTokenStore::new(), outbox.clone())

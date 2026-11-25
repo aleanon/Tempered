@@ -259,7 +259,9 @@ where
         from: &Email,
         to: &Email,
     ) -> Result<(), CredentialError<T::Error>> {
-        self.passkeys.move_user(from, to).await?;
+        // Passkeys belong to the account id and stay; enrolments started
+        // under the old address go (they are filed by it).
+        self.passkeys.drop_ceremonies(from).await?;
         self.oauth.move_user(from, to).await?;
         if let Some(keys) = self.api_key_store() {
             keys.reassign(from, to)
@@ -278,9 +280,6 @@ where
     /// live session, which ended before the move.
     async fn roll_back_move(&self, old: &Email, new: &Email) {
         let mut failed = Vec::new();
-        if let Err(e) = self.passkeys.move_user(new, old).await {
-            failed.push(("passkeys", e.to_string()));
-        }
         if let Err(e) = self.oauth.move_user(new, old).await {
             failed.push(("provider links", e.to_string()));
         }

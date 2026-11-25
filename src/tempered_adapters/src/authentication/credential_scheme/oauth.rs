@@ -250,14 +250,15 @@ where
     ) -> Result<(), CredentialError<T::Error>> {
         let lock = self.lock_credentials(email).await?;
         let result: Result<(), CredentialError<T::Error>> = async {
-            let id = self.subject_for(email).await?.id;
+            let account = self.subject_for(email).await?;
+            let id = account.id;
             self.user_store
                 .set_new_password(email, unknowable_password())
                 .await?;
             if drop_two_fa {
                 self.user_store.set_requires_2fa(email, false).await?;
             }
-            self.passkeys.forget_user(email).await?;
+            self.passkeys.forget_user(&account).await?;
             // An authenticator app is a second factor whoever signed up
             // chose. With 2FA kept on, codes go to the address the provider
             // has just vouched for.
@@ -268,7 +269,7 @@ where
             self.revoke_all_tokens(email).await?;
             // Once more, in case the lock expired under a slow store and an
             // enrolment authorised before the revocation slipped in.
-            self.passkeys.forget_user(email).await?;
+            self.passkeys.forget_user(&account).await?;
             self.two_fa.forget_user(&id).await?;
             Ok(())
         }

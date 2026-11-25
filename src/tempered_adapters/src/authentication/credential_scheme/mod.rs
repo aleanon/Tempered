@@ -291,17 +291,18 @@ pub struct Passkeys<CS, ChS, V> {
 /// not configured) has nothing to remove.
 #[async_trait]
 trait PasskeyCleanup {
-    async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError>;
-    /// Move the user's passkeys to their new address (an email change).
-    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), PasskeyFlowError>;
+    async fn forget_user(&self, user: &tempered_core::Subject) -> Result<(), PasskeyFlowError>;
+    /// Drop enrolments started under `address` (an email change; the
+    /// passkeys belong to the account id and stay).
+    async fn drop_ceremonies(&self, address: &Email) -> Result<(), PasskeyFlowError>;
 }
 
 #[async_trait]
 impl PasskeyCleanup for () {
-    async fn forget_user(&self, _email: &Email) -> Result<(), PasskeyFlowError> {
+    async fn forget_user(&self, _: &tempered_core::Subject) -> Result<(), PasskeyFlowError> {
         Ok(())
     }
-    async fn move_user(&self, _: &Email, _: &Email) -> Result<(), PasskeyFlowError> {
+    async fn drop_ceremonies(&self, _: &Email) -> Result<(), PasskeyFlowError> {
         Ok(())
     }
 }
@@ -313,11 +314,11 @@ where
     ChS: ChallengeStore + Send + Sync,
     V: WebAuthnVerifier + Send + Sync,
 {
-    async fn forget_user(&self, email: &Email) -> Result<(), PasskeyFlowError> {
-        self.flow.forget_user(email).await
+    async fn forget_user(&self, user: &tempered_core::Subject) -> Result<(), PasskeyFlowError> {
+        self.flow.forget_user(user).await
     }
-    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), PasskeyFlowError> {
-        self.flow.move_user(old, new).await
+    async fn drop_ceremonies(&self, address: &Email) -> Result<(), PasskeyFlowError> {
+        self.flow.drop_ceremonies(address).await
     }
 }
 
@@ -1718,7 +1719,7 @@ where
             // Passkeys are a login credential for this account: remove them, so
             // they cannot outlive it or be inherited by a later account that
             // reuses the address.
-            self.passkeys.forget_user(&email).await?;
+            self.passkeys.forget_user(&account).await?;
             // So are its provider links, which also count as proof of the address.
             self.oauth.forget_user(&email).await?;
             // Proof that the address was verified belongs to this account, not to

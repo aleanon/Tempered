@@ -95,15 +95,18 @@ pub fn webauthn(json: &[u8]) {
         Secret::new(vec![7; 32]),
     )
     .expect("a valid relying party");
-    let email = tempered_core::Email::try_from(Secret::new("a@example.com".to_string()))
-        .expect("a valid address");
-    if let Ok(start) = verifier.start_registration(&email, &[]) {
+    let user = tempered_core::Subject {
+        id: tempered_core::UserId::new(),
+        email: tempered_core::Email::try_from(Secret::new("a@example.com".to_string()))
+            .expect("a valid address"),
+    };
+    if let Ok(start) = verifier.start_registration(&user, &[]) {
         let _ = verifier.finish_registration(&start.state, &response);
     }
     if let Ok(start) = verifier.start_authentication(&[]) {
         let stored = PasskeyCredential {
             credential_id: CredentialId("c".to_string()),
-            owner: email,
+            owner: user.id,
             credential_data: json.to_vec(),
             sign_count: 0,
             name: None,

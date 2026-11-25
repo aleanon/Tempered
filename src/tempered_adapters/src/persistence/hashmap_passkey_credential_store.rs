@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use tempered_core::{
-    CredentialId, Email, PasskeyCredential, PasskeyCredentialStore, PasskeyStoreError,
+    CredentialId, PasskeyCredential, PasskeyCredentialStore, PasskeyStoreError, UserId,
 };
 
 /// In-memory passkey credential store for tests and local development.
@@ -53,7 +53,7 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
 
     async fn list_for_user(
         &self,
-        owner: &Email,
+        owner: &UserId,
     ) -> Result<Vec<PasskeyCredential>, PasskeyStoreError> {
         Ok(self
             .credentials
@@ -89,7 +89,7 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
         Ok(())
     }
 
-    async fn delete_all_for_user(&self, owner: &Email) -> Result<(), PasskeyStoreError> {
+    async fn delete_all_for_user(&self, owner: &UserId) -> Result<(), PasskeyStoreError> {
         self.credentials
             .write()
             .await
@@ -99,7 +99,7 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
 
     async fn delete_credential(
         &self,
-        owner: &Email,
+        owner: &UserId,
         id: &CredentialId,
     ) -> Result<bool, PasskeyStoreError> {
         let mut credentials = self.credentials.write().await;
@@ -112,7 +112,7 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
 
     async fn rename_credential(
         &self,
-        owner: &Email,
+        owner: &UserId,
         id: &CredentialId,
         name: Option<String>,
     ) -> Result<bool, PasskeyStoreError> {
@@ -124,15 +124,6 @@ impl PasskeyCredentialStore for HashMapPasskeyCredentialStore {
             _ => Ok(false),
         }
     }
-
-    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), PasskeyStoreError> {
-        for cred in self.credentials.write().await.values_mut() {
-            if &cred.owner == old {
-                cred.owner = new.clone();
-            }
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -141,6 +132,10 @@ mod tests {
 
     #[tokio::test]
     async fn meets_the_passkey_credential_store_contract() {
-        crate::persistence::contract::passkey_credential_store(HashMapPasskeyCredentialStore::new()).await;
+        crate::persistence::contract::passkey_credential_store(
+            HashMapPasskeyCredentialStore::new(),
+            [tempered_core::UserId::new(), tempered_core::UserId::new()],
+        )
+        .await;
     }
 }

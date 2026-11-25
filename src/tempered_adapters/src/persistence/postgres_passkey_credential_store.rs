@@ -1,7 +1,6 @@
-use secrecy::{ExposeSecret, Secret};
 use sqlx::PgPool;
 use tempered_core::{
-    CredentialId, Email, PasskeyCredential, PasskeyCredentialStore, PasskeyStoreError,
+    CredentialId, PasskeyCredential, PasskeyCredentialStore, PasskeyStoreError, UserId,
 };
 
 /// PostgreSQL-backed [`PasskeyCredentialStore`] (table `passkey_credentials`,
@@ -28,14 +27,14 @@ fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> PasskeyStore
 
 fn credential(
     credential_id: String,
-    owner: String,
+    owner: uuid::Uuid,
     credential_data: Vec<u8>,
     sign_count: i64,
     name: Option<String>,
 ) -> Result<PasskeyCredential, PasskeyStoreError> {
     Ok(PasskeyCredential {
         credential_id: CredentialId(credential_id),
-        owner: Email::try_from(Secret::new(owner)).map_err(unexpected)?,
+        owner: UserId::from_uuid(owner),
         credential_data,
         sign_count: u32::try_from(sign_count).map_err(unexpected)?,
         name,
@@ -52,7 +51,7 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
                 VALUES ($1, $2, $3, $4, $5)
             "#,
             cred.credential_id.as_str(),
-            cred.owner.as_ref().expose_secret(),
+            cred.owner.as_uuid(),
             cred.credential_data,
             i64::from(cred.sign_count),
             cred.name
@@ -94,14 +93,14 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
     #[tracing::instrument(name = "List passkey credentials", skip_all)]
     async fn list_for_user(
         &self,
-        owner: &Email,
+        owner: &UserId,
     ) -> Result<Vec<PasskeyCredential>, PasskeyStoreError> {
         sqlx::query!(
             r#"
                 SELECT credential_id, owner, credential_data, sign_count, name
                 FROM passkey_credentials WHERE owner = $1
             "#,
-            owner.as_ref().expose_secret()
+            owner.as_uuid()
         )
         .fetch_all(&self.pool)
         .await
@@ -121,13 +120,13 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
 
     async fn delete_credential(
         &self,
-        owner: &Email,
+        owner: &UserId,
         id: &CredentialId,
     ) -> Result<bool, PasskeyStoreError> {
         let deleted =
             sqlx::query("DELETE FROM passkey_credentials WHERE credential_id = $1 AND owner = $2")
                 .bind(id.as_str())
-                .bind(owner.as_ref().expose_secret())
+                .bind(owner.as_uuid())
                 .execute(&self.pool)
                 .await
                 .map_err(unexpected)?;
@@ -136,7 +135,7 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
 
     async fn rename_credential(
         &self,
-        owner: &Email,
+        owner: &UserId,
         id: &CredentialId,
         name: Option<String>,
     ) -> Result<bool, PasskeyStoreError> {
@@ -144,7 +143,7 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
             "UPDATE passkey_credentials SET name = $3 WHERE credential_id = $1 AND owner = $2",
         )
         .bind(id.as_str())
-        .bind(owner.as_ref().expose_secret())
+        .bind(owner.as_uuid())
         .bind(name)
         .execute(&self.pool)
         .await
@@ -187,24 +186,14 @@ impl PasskeyCredentialStore for PostgresPasskeyCredentialStore {
     }
 
     #[tracing::instrument(name = "Delete passkey credentials", skip_all)]
-    async fn delete_all_for_user(&self, owner: &Email) -> Result<(), PasskeyStoreError> {
+    async fn delete_all_for_user(&self, owner: &UserId) -> Result<(), PasskeyStoreError> {
         sqlx::query!(
             r#"DELETE FROM passkey_credentials WHERE owner = $1"#,
-            owner.as_ref().expose_secret()
+            owner.as_uuid()
         )
         .execute(&self.pool)
         .await
         .map_err(unexpected)?;
-        Ok(())
-    }
-
-    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), PasskeyStoreError> {
-        sqlx::query("UPDATE passkey_credentials SET owner = $2 WHERE owner = $1")
-            .bind(old.as_ref().expose_secret())
-            .bind(new.as_ref().expose_secret())
-            .execute(&self.pool)
-            .await
-            .map_err(unexpected)?;
         Ok(())
     }
 }
@@ -217,19 +206,58 @@ mod tests {
     #[tokio::test]
     async fn meets_the_passkey_credential_store_contract() {
         let (_postgres, pool) = test_support::postgres::pool().await;
-        contract::passkey_credential_store(PostgresPasskeyCredentialStore::new(pool)).await;
+        let users = contract::accounts(
+            &crate::persistence::PostgresUserStore::new(pool.clone()),
+            ["alice@example.com", "bob@example.com"],
+        )
+        .await;
+        contract::passkey_credential_store(PostgresPasskeyCredentialStore::new(pool), users).await;
+    }
+
+    /// A passkey belongs to the account: deleting it deletes them.
+    #[tokio::test]
+    async fn deleting_the_account_deletes_its_passkeys() {
+        use tempered_core::UserStore;
+        let (_postgres, pool) = test_support::postgres::pool().await;
+        let users = crate::persistence::PostgresUserStore::new(pool.clone());
+        let [owner] = contract::accounts(&users, ["a@example.com"]).await;
+        let store = PostgresPasskeyCredentialStore::new(pool);
+        store
+            .add_credential(PasskeyCredential {
+                credential_id: CredentialId("c".to_string()),
+                credential_data: vec![1],
+                sign_count: 0,
+                owner,
+                name: None,
+            })
+            .await
+            .unwrap();
+        users
+            .delete_user(&contract::email("a@example.com"))
+            .await
+            .unwrap();
+        assert!(store.list_for_user(&owner).await.unwrap().is_empty());
+        assert!(matches!(
+            store.get_credential(&CredentialId("c".to_string())).await,
+            Err(PasskeyStoreError::CredentialNotFound)
+        ));
     }
 
     #[tokio::test]
     async fn of_concurrent_logins_with_the_same_counter_exactly_one_wins() {
         let (_postgres, pool) = test_support::postgres::pool().await;
+        let [owner] = contract::accounts(
+            &crate::persistence::PostgresUserStore::new(pool.clone()),
+            ["a@example.com"],
+        )
+        .await;
         let store = PostgresPasskeyCredentialStore::new(pool);
         store
             .add_credential(PasskeyCredential {
                 credential_id: CredentialId("c".to_string()),
                 credential_data: vec![1],
                 sign_count: 1,
-                owner: contract::email("a@example.com"),
+                owner,
                 name: None,
             })
             .await

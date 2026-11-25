@@ -44,7 +44,7 @@ impl ChallengeStore for HashMapChallengeStore {
         self.ceremonies
             .write()
             .await
-            .retain(|_, ceremony| ceremony.user.as_ref() != Some(user));
+            .retain(|_, ceremony| ceremony.user.as_ref().map(|u| &u.email) != Some(user));
         Ok(())
     }
 }

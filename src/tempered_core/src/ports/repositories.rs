@@ -282,7 +282,7 @@ pub trait PasskeyCredentialStore: Send + Sync {
     ) -> Result<PasskeyCredential, PasskeyStoreError>;
     async fn list_for_user(
         &self,
-        owner: &Email,
+        owner: &UserId,
     ) -> Result<Vec<PasskeyCredential>, PasskeyStoreError>;
 
     /// Record a successful authentication: set the signature counter and, when
@@ -307,13 +307,13 @@ pub trait PasskeyCredentialStore: Send + Sync {
     /// [`get_credential`](Self::get_credential) or
     /// [`list_for_user`](Self::list_for_user) — otherwise a later account
     /// created with the same email would inherit the old owner's passkeys.
-    async fn delete_all_for_user(&self, owner: &Email) -> Result<(), PasskeyStoreError>;
+    async fn delete_all_for_user(&self, owner: &UserId) -> Result<(), PasskeyStoreError>;
 
     /// Remove one of `owner`'s credentials; `false` if they have none by
     /// that id (another user's id is "none").
     async fn delete_credential(
         &self,
-        owner: &Email,
+        owner: &UserId,
         id: &CredentialId,
     ) -> Result<bool, PasskeyStoreError>;
 
@@ -321,13 +321,10 @@ pub trait PasskeyCredentialStore: Send + Sync {
     /// that id.
     async fn rename_credential(
         &self,
-        owner: &Email,
+        owner: &UserId,
         id: &CredentialId,
         name: Option<String>,
     ) -> Result<bool, PasskeyStoreError>;
-
-    /// Give every credential of `old` to `new` (an email change).
-    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), PasskeyStoreError>;
 }
 
 #[derive(Debug, Error)]
