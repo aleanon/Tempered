@@ -104,6 +104,17 @@ fn account_named_in(req: &EndpointRequest) -> Option<Email> {
     Email::try_from(secrecy::Secret::new(named.email)).ok()
 }
 
+/// The `newEmail` an email change request names, if it parses.
+fn new_email_named_in(req: &EndpointRequest) -> Option<Email> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Named {
+        new_email: String,
+    }
+    let named: Named = serde_json::from_slice(&req.body).ok()?;
+    Email::try_from(secrecy::Secret::new(named.new_email)).ok()
+}
+
 fn not_logged_in() -> EndpointResponse {
     error_response(StatusCode::UNAUTHORIZED, "Not logged in")
 }
@@ -464,10 +475,18 @@ where
     ) -> EndpointResponse {
         // Count the attempt before doing anything for it. The account is the
         // admitted user, or for public routes the address the body names.
-        if let Some(limiter) = self.rate_limiter()
-            && let Err(response) = limiter.check(spec.id, &req.parts, account).await
-        {
-            return response;
+        if let Some(limiter) = self.rate_limiter() {
+            if let Err(response) = limiter.check(spec.id, &req.parts, account).await {
+                return response;
+            }
+            // An email change mails another address: that address's mail
+            // budget counts it too.
+            if spec.id == RouteId::EmailChangeRequest
+                && let Some(to) = new_email_named_in(req)
+                && let Err(response) = limiter.check_mail_to(&to).await
+            {
+                return response;
+            }
         }
         if let Some(response) = self.handle_core(spec.id, req, who).await {
             return response;

@@ -37,8 +37,11 @@ pub enum RateLimitGroup {
     Elevate,
     /// Password reset: asking for a link and using one.
     PasswordReset,
-    /// What sends a verification mail: signup and resend.
+    /// What sends a verification mail: signup and resend. An email change
+    /// request also counts here, against the address it mails.
     VerificationMail,
+    /// Asking to change the account's address.
+    EmailChange,
 }
 
 impl RateLimitGroup {
@@ -49,9 +52,8 @@ impl RateLimitGroup {
             Verify2Fa | VerifyElevation2Fa | TotpConfirm | EmailLoginVerify => Self::SecondFactor,
             Elevate => Self::Elevate,
             PasswordResetInitiate | PasswordResetComplete => Self::PasswordReset,
-            Signup | ResendVerification | EmailLoginStart | EmailChangeRequest => {
-                Self::VerificationMail
-            }
+            Signup | ResendVerification | EmailLoginStart => Self::VerificationMail,
+            EmailChangeRequest => Self::EmailChange,
             _ => return None,
         })
     }
@@ -63,6 +65,7 @@ impl RateLimitGroup {
             Self::Elevate => "elevate",
             Self::PasswordReset => "password_reset",
             Self::VerificationMail => "verification_mail",
+            Self::EmailChange => "email_change",
         }
     }
 }
@@ -104,6 +107,11 @@ const HOUR: u64 = 60 * MINUTE;
 /// | elevate | 10 / 15 min | 100 / 15 min |
 /// | password reset | 5 / hour | 30 / hour |
 /// | verification mail | 5 / hour | 30 / hour |
+/// | email change | 5 / hour | 30 / hour |
+///
+/// An email change request also counts against the verification-mail
+/// limit of the address it mails, so no address gets more mail from them
+/// however many accounts ask.
 ///
 /// Client limits are per IP address (per /64 for IPv6, which one host
 /// usually holds whole). Many users behind one NAT share one.
@@ -124,6 +132,7 @@ impl Default for RateLimits {
             (Elevate, short),
             (PasswordReset, mail),
             (VerificationMail, mail),
+            (EmailChange, mail),
         ];
         Self {
             per_account: all.iter().map(|(g, (a, _))| (*g, *a)).collect(),
@@ -234,6 +243,18 @@ impl RateLimiter {
         Ok(())
     }
 
+    /// Count a mail to `to` against its verification-mail limit (an email
+    /// change request, which mails an address that is not the requester's).
+    #[allow(clippy::result_large_err)]
+    pub(crate) async fn check_mail_to(&self, to: &Email) -> Result<(), EndpointResponse> {
+        let group = RateLimitGroup::VerificationMail;
+        if let Some(limit) = self.limits.per_account.get(&group) {
+            let key = format!("{}:account:{}", group.key(), to.as_ref().expose_secret());
+            self.count(group, &key, *limit).await?;
+        }
+        Ok(())
+    }
+
     #[allow(clippy::result_large_err)]
     async fn count(
         &self,
@@ -306,6 +327,48 @@ mod tests {
 
     fn limiter(limits: RateLimits) -> RateLimiter {
         RateLimiter::new(HashMapRateLimitStore::new()).limits(limits)
+    }
+
+    #[tokio::test]
+    async fn email_change_has_its_own_budget_and_counts_against_the_target() {
+        let limiter = limiter(
+            RateLimits::none()
+                .per_account(RateLimitGroup::VerificationMail, Some(Limit::new(1, 60)))
+                .per_account(RateLimitGroup::EmailChange, Some(Limit::new(1, 60))),
+        );
+        let (alice, mallory) = (email("alice@example.com"), email("mallory@example.com"));
+        let parts = parts_from(None);
+        // Changing the address does not use up signup and resend.
+        assert!(
+            limiter
+                .check(RouteId::EmailChangeRequest, &parts, Some(&alice))
+                .await
+                .is_ok()
+        );
+        assert!(
+            limiter
+                .check(RouteId::ResendVerification, &parts, Some(&alice))
+                .await
+                .is_ok()
+        );
+        assert!(
+            limiter
+                .check(RouteId::EmailChangeRequest, &parts, Some(&alice))
+                .await
+                .is_err()
+        );
+
+        // A target address gets one mail per window, from however many
+        // accounts.
+        let victim = email("victim@example.com");
+        assert!(limiter.check_mail_to(&victim).await.is_ok());
+        assert!(
+            limiter
+                .check(RouteId::EmailChangeRequest, &parts, Some(&mallory))
+                .await
+                .is_ok()
+        );
+        assert!(limiter.check_mail_to(&victim).await.is_err());
     }
 
     #[tokio::test]
