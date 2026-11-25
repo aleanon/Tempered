@@ -666,7 +666,7 @@ OAuth slot instead.
   Clone, compares by message, `downcast_ref`) in every store error's
   `UnexpectedError(#[source] Failure)`; the stores' helpers keep the
   sqlx/redis error. `From<String>`/`From<&str>` for message-only causes.
-- **9.5 Stable user id.** Every store keys on `Email`. A UUID with the
+- **9.5 Stable user id.** ✅ DONE 2026-11-26. Every store keyed on `Email`. A UUID with the
   (case-folded) email as a lookup index makes email change possible and
   simplifies cleanup. This touches every port (L).
   No longer blocks 8.9 (built by moving the address-keyed records). What
@@ -681,9 +681,15 @@ OAuth slot instead.
     (`TokenStrategy::issue` takes a `Subject { id, email }`, looked up
     once per issue; refresh records keep the id.)
   - C. The durable credential stores key on it: TOTP, passkeys, OAuth
-    identities, API keys (migrations, `ON DELETE CASCADE`). Their
-    `reassign` methods go; email change is the account update plus
-    revocation.
+    identities, API keys (migrations, `ON DELETE CASCADE` except API
+    keys, whose owner may be a service). Their `reassign` methods go;
+    email change is the account update plus revocation. ✅
+    Found on the way: a passkey's WebAuthn user handle was made from the
+    address, so usernameless login broke after an email change (now from
+    the id); the in-memory user store gave an account a new id on a
+    password change; a passkey login racing an email change could mint a
+    token for the old address (re-checked after the ticket).
+  9.5 ✅ DONE 2026-11-26.
   - Not rekeyed: the ephemeral stores (sessions, codes, mailed tokens,
     epochs, rate limits, challenges). An email change ends them all, so
     keying them by address costs nothing.

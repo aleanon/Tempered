@@ -46,6 +46,11 @@ The first release. Everything below is new.
 
 ### Stores and integration
 
+- Every account has a stable id (`UserId`), carried by tokens (`uid`,
+  `IdentityClaims::user_id`). Passkeys, provider links, authenticator
+  apps and API keys belong to it, so an email change moves nothing; key
+  your own tables on it.
+
 - Postgres and Redis backends for every port, in-memory ones for tests.
 - Public store contract tests (`testing` feature) for stores of your own.
 - Typed mail (`Mail`, `EmailClient::send_mail`), audit events

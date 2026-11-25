@@ -2885,36 +2885,48 @@ mod email_change_tests {
         assert!(scheme.confirm_email_change(moved, confirm).await.is_err());
     }
 
-    /// A ceremony store that is down: every call fails.
-    #[derive(Clone)]
-    struct UnavailableChallengeStore;
+    /// A verification store that cannot mark one address verified: the
+    /// step of an email change that comes after the account has moved.
+    #[derive(Clone, Default)]
+    struct RefusesToMark(HashMapEmailVerificationTokenStore);
 
     #[async_trait::async_trait]
-    impl tempered_core::ChallengeStore for UnavailableChallengeStore {
-        async fn store_ceremony(
+    impl tempered_core::EmailVerificationTokenStore for RefusesToMark {
+        async fn store_pending_verification(
             &self,
-            _: tempered_core::CeremonyId,
-            _: tempered_core::PendingCeremony,
-        ) -> Result<(), tempered_core::ChallengeStoreError> {
-            Err(tempered_core::ChallengeStoreError::UnexpectedError(
-                "down".into(),
-            ))
+            token: tempered_core::EmailVerificationToken,
+            email: Email,
+        ) -> Result<(), tempered_core::EmailVerificationStoreError> {
+            self.0.store_pending_verification(token, email).await
         }
-        async fn consume_ceremony(
+        async fn consume_token(
             &self,
-            _: &tempered_core::CeremonyId,
-        ) -> Result<tempered_core::PendingCeremony, tempered_core::ChallengeStoreError> {
-            Err(tempered_core::ChallengeStoreError::UnexpectedError(
-                "down".into(),
-            ))
+            token: &tempered_core::EmailVerificationToken,
+        ) -> Result<Email, tempered_core::EmailVerificationStoreError> {
+            self.0.consume_token(token).await
         }
-        async fn delete_all_for_user(
+        async fn mark_verified(
             &self,
-            _: &Email,
-        ) -> Result<(), tempered_core::ChallengeStoreError> {
-            Err(tempered_core::ChallengeStoreError::UnexpectedError(
-                "down".into(),
-            ))
+            email: &Email,
+        ) -> Result<(), tempered_core::EmailVerificationStoreError> {
+            if email.as_ref().expose_secret() == "alice@new.example.com" {
+                return Err(tempered_core::EmailVerificationStoreError::UnexpectedError(
+                    "down".into(),
+                ));
+            }
+            self.0.mark_verified(email).await
+        }
+        async fn is_verified(
+            &self,
+            email: &Email,
+        ) -> Result<bool, tempered_core::EmailVerificationStoreError> {
+            self.0.is_verified(email).await
+        }
+        async fn forget_email(
+            &self,
+            email: &Email,
+        ) -> Result<(), tempered_core::EmailVerificationStoreError> {
+            self.0.forget_email(email).await
         }
     }
 
@@ -2922,8 +2934,6 @@ mod email_change_tests {
     /// old address, the new one stays free, and no session survives.
     #[tokio::test]
     async fn a_move_that_fails_part_way_is_undone() {
-        use crate::passkey::PasskeyFlow;
-        use crate::passkey::flow::test_support::MockVerifier;
         let outbox = Outbox::default();
         let users = HashMapUserStore::new();
         let scheme = JwtScheme::new(
@@ -2939,14 +2949,8 @@ mod email_change_tests {
             HashMapTokenEpochStore::new(),
         )
         .supports_registration()
-        // The ceremony store is down, so dropping the old address's
-        // enrolments fails, after the account has moved.
-        .supports_passkeys(PasskeyFlow::new(
-            crate::persistence::HashMapPasskeyCredentialStore::new(),
-            UnavailableChallengeStore,
-            MockVerifier,
-        ))
-        .supports_email_verification(HashMapEmailVerificationTokenStore::new(), outbox.clone())
+        // Marking the new address verified fails, after the account moved.
+        .supports_email_verification(RefusesToMark::default(), outbox.clone())
         .supports_email_change(HashMapEmailChangeStore::new());
 
         let alice = email("alice@example.com");

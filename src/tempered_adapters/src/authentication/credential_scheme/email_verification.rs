@@ -234,16 +234,19 @@ where
         // Spent here, under the lock: of two concurrent confirms one moves.
         store.consume(hash).await.map_err(not_found)?;
         // Every session and token names the old address, so they end first,
-        // with pending codes and reset links: if anything below fails, the
-        // old address holds no live session.
+        // with pending codes, reset links and passkey enrolments (all filed
+        // by address): if anything below fails, the old address holds no
+        // live session and nothing that could finish into the account.
         self.two_fa.cancel_pending(old).await?;
         self.revoke_all_tokens(old).await?;
-        // Atomic with the check that `new` is free. Until this succeeds
-        // nothing has moved.
+        self.passkeys.drop_ceremonies(old).await?;
+        // Atomic with the check that `new` is free. The account's
+        // credentials (passkeys, provider links, authenticator app, API
+        // keys) belong to its id, so they need no moving.
         self.user_store.change_email(old, new).await?;
-        if let Err(e) = self.move_credentials(old, new).await {
-            // Put the account back where its credentials are, so neither
-            // address is left with credentials and no account.
+        if let Err(e) = self.move_proof(old, new).await {
+            // A freed address must not stay marked verified for whoever
+            // registers it next: put the account back.
             tracing::error!(error = %e, "email change failed part-way; moving the account back");
             self.roll_back_move(old, new).await;
             return Err(e);
@@ -251,27 +254,18 @@ where
         Ok(())
     }
 
-    /// Move everything durable keyed by the address, and the proof of it.
-    /// Each step moves whatever is still at `from`, so running it again (or
-    /// the other way) finishes or undoes a partial move.
-    async fn move_credentials(
-        &self,
-        from: &Email,
-        to: &Email,
-    ) -> Result<(), CredentialError<T::Error>> {
-        // Passkeys belong to the account id and stay; enrolments started
-        // under the old address go (they are filed by it).
-        self.passkeys.drop_ceremonies(from).await?;
-        // The new address just proved itself; the old one's mark goes.
+    /// The proof of address moves with the account: the new address just
+    /// proved itself, and the old one's mark goes.
+    async fn move_proof(&self, from: &Email, to: &Email) -> Result<(), CredentialError<T::Error>> {
         self.email_verify.mark_verified(to).await?;
         self.email_verify.forget(from).await?;
         Ok(())
     }
 
-    /// Undo a partial move, best effort: each credential store back to
-    /// `old` (every one is tried, whichever fail), then the account. What
-    /// cannot be undone is logged for repair; nothing it leaves behind has a
-    /// live session, which ended before the move.
+    /// Undo a partial move, best effort, every step tried whichever fail:
+    /// the proof back to `old`, then the account. What cannot be undone is
+    /// logged for repair; nothing left behind has a live session, which
+    /// ended before the move.
     async fn roll_back_move(&self, old: &Email, new: &Email) {
         let mut failed = Vec::new();
         // The old address was proven before the change; the new one was not.
@@ -291,7 +285,7 @@ where
             tracing::error!(
                 what,
                 error,
-                "email change rollback incomplete: repair by moving these records to the account's address"
+                "email change rollback incomplete: repair by hand"
             );
         }
     }

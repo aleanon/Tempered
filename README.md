@@ -239,12 +239,12 @@ goes to the new address (`Mail::ConfirmEmailChange`) and a notice to the
 old one (`Mail::EmailChangeRequested`). A taken address gets
 `Mail::AlreadyRegistered` instead. `POST /email/change/confirm { token }`,
 logged in as the same account, moves it. Its passkeys, provider links,
-authenticator app and API keys go with it, the new address counts as
-verified, and every session ends. `store` is `RedisEmailChangeStore` (or
+authenticator app and API keys belong to the account's id (`UserId`), so
+they stay with it; the new address counts as verified, and every session
+ends. `store` is `RedisEmailChangeStore` (or
 `HashMapEmailChangeStore` in tests); a token lives an hour, and a newer
-request replaces an older one. Your own tables keyed by the address need
-moving too: listen for the change in your app, or key them on something
-else.
+request replaces an older one. Key your own tables on the account id
+(`claims.uid`) and they need nothing either.
 
 ### Account self-service
 
