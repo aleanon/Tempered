@@ -261,7 +261,6 @@ where
     ) -> Result<(), CredentialError<T::Error>> {
         self.passkeys.move_user(from, to).await?;
         self.oauth.move_user(from, to).await?;
-        self.two_fa.move_user(from, to).await?;
         if let Some(keys) = self.api_key_store() {
             keys.reassign(from, to)
                 .await
@@ -284,9 +283,6 @@ where
         }
         if let Err(e) = self.oauth.move_user(new, old).await {
             failed.push(("provider links", e.to_string()));
-        }
-        if let Err(e) = self.two_fa.move_user(new, old).await {
-            failed.push(("authenticator app", e.to_string()));
         }
         if let Some(keys) = self.api_key_store()
             && let Err(e) = keys.reassign(new, old).await

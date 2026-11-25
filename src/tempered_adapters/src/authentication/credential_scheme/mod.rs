@@ -514,7 +514,7 @@ impl ChallengePurpose {
 trait TwoFaChallenge {
     async fn issue_challenge(
         &self,
-        email: &Email,
+        user: &tempered_core::Subject,
         purpose: ChallengePurpose,
     ) -> Result<TwoFaAttemptId, TwoFaChallengeError>;
 
@@ -527,7 +527,7 @@ trait TwoFaChallenge {
     /// Redeem a code issued by [`issue_challenge`](Self::issue_challenge).
     async fn redeem(
         &self,
-        email: &Email,
+        user: &tempered_core::Subject,
         attempt_id: &TwoFaAttemptId,
         code: &TwoFaCode,
     ) -> Result<(), TwoFaChallengeError>;
@@ -535,13 +535,7 @@ trait TwoFaChallenge {
     /// Forget the user's second-factor data (account deletion). Unlike
     /// [`cancel_pending`](Self::cancel_pending) this removes enrolled
     /// authenticator apps, which a password change must keep.
-    async fn forget_user(&self, _email: &Email) -> Result<(), TwoFaChallengeError> {
-        Ok(())
-    }
-
-    /// Move the user's second-factor data to their new address. Pending
-    /// challenges are not moved (an email change cancels them).
-    async fn move_user(&self, _old: &Email, _new: &Email) -> Result<(), TwoFaChallengeError> {
+    async fn forget_user(&self, _user: &tempered_core::UserId) -> Result<(), TwoFaChallengeError> {
         Ok(())
     }
 }
@@ -550,7 +544,7 @@ trait TwoFaChallenge {
 impl TwoFaChallenge for () {
     async fn issue_challenge(
         &self,
-        _email: &Email,
+        _user: &tempered_core::Subject,
         _purpose: ChallengePurpose,
     ) -> Result<TwoFaAttemptId, TwoFaChallengeError> {
         Err(TwoFaChallengeError::NotConfigured)
@@ -562,7 +556,7 @@ impl TwoFaChallenge for () {
 
     async fn redeem(
         &self,
-        _email: &Email,
+        _user: &tempered_core::Subject,
         _attempt_id: &TwoFaAttemptId,
         _code: &TwoFaCode,
     ) -> Result<(), TwoFaChallengeError> {
@@ -579,9 +573,10 @@ where
 {
     async fn issue_challenge(
         &self,
-        email: &Email,
+        user: &tempered_core::Subject,
         purpose: ChallengePurpose,
     ) -> Result<TwoFaAttemptId, TwoFaChallengeError> {
+        let email = &user.email;
         let attempt_id = TwoFaAttemptId::new();
         let code = TwoFaCode::new();
 
@@ -593,7 +588,7 @@ where
 
         // An account with an authenticator app answers from the app; the
         // stored code is never sent, so only the app's code can match.
-        if self.totp.uses_totp(email).await? {
+        if self.totp.uses_totp(&user.id).await? {
             return Ok(attempt_id);
         }
 
@@ -623,11 +618,12 @@ where
 
     async fn redeem(
         &self,
-        email: &Email,
+        user: &tempered_core::Subject,
         attempt_id: &TwoFaAttemptId,
         code: &TwoFaCode,
     ) -> Result<(), TwoFaChallengeError> {
-        if !self.totp.uses_totp(email).await? {
+        let email = &user.email;
+        if !self.totp.uses_totp(&user.id).await? {
             return Ok(self.store.redeem_code(email, attempt_id, code).await?);
         }
         // App code or recovery code. The code store still decides: it checks
@@ -639,7 +635,7 @@ where
             .store
             .get_login_attempt_id_and_two_fa_code(email)
             .await?;
-        let presented = if self.totp.accept(email, code).await? {
+        let presented = if self.totp.accept(&user.id, code).await? {
             stored
         } else {
             never_matching(&stored)
@@ -650,12 +646,8 @@ where
             .await?)
     }
 
-    async fn forget_user(&self, email: &Email) -> Result<(), TwoFaChallengeError> {
-        Ok(self.totp.forget(email).await?)
-    }
-
-    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), TwoFaChallengeError> {
-        Ok(self.totp.move_user(old, new).await?)
+    async fn forget_user(&self, user: &tempered_core::UserId) -> Result<(), TwoFaChallengeError> {
+        Ok(self.totp.forget(user).await?)
     }
 }
 
@@ -1592,7 +1584,7 @@ where
                 // errors if the scheme was built without `supports_2fa`.
                 let attempt_id = self
                     .two_fa
-                    .issue_challenge(&email, ChallengePurpose::SignIn)
+                    .issue_challenge(&self.subject_for(&email).await?, ChallengePurpose::SignIn)
                     .await?;
                 Ok(LoginOutcome::Requires2Fa { email, attempt_id })
             }
@@ -1717,6 +1709,8 @@ where
         // enrolled for this user until the account is gone.
         let lock = self.lock_credentials(&email).await?;
         let result: Result<(), Self::AccountDeletionError> = async {
+            // The account whose credentials go (its id keys some of them).
+            let account = self.subject_for(&email).await?;
             // Order matters: everything that can log in as this user goes first,
             // the account last. If a step fails, what remains is an account with
             // fewer credentials — never credentials or sessions without an account.
@@ -1732,7 +1726,7 @@ where
             self.email_verify.forget(&email).await?;
             // An authenticator app enrolled for this account must not work
             // for a later account at the same address.
-            self.two_fa.forget_user(&email).await?;
+            self.two_fa.forget_user(&account.id).await?;
             // Nor may its API keys.
             self.forget_api_keys(&email).await?;
             // A deleted user's token would otherwise keep validating until it

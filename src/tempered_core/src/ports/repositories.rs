@@ -769,11 +769,11 @@ pub trait TotpStore: Send + Sync {
     /// Keep `secret` as the user's pending secret, replacing any pending one.
     async fn set_pending(
         &self,
-        email: &Email,
+        user: &UserId,
         secret: Secret<Vec<u8>>,
     ) -> Result<(), TotpStoreError>;
 
-    async fn pending(&self, email: &Email) -> Result<Option<Secret<Vec<u8>>>, TotpStoreError>;
+    async fn pending(&self, user: &UserId) -> Result<Option<Secret<Vec<u8>>>, TotpStoreError>;
 
     /// In one atomic step: make the pending secret active (dropping the old
     /// active one), record `used_step` as its last used time step, and
@@ -781,22 +781,22 @@ pub trait TotpStore: Send + Sync {
     /// nothing, if there is no pending secret.
     async fn activate(
         &self,
-        email: &Email,
+        user: &UserId,
         used_step: u64,
         recovery_codes: Vec<RecoveryCodeHash>,
     ) -> Result<bool, TotpStoreError>;
 
-    async fn active(&self, email: &Email) -> Result<Option<Secret<Vec<u8>>>, TotpStoreError>;
+    async fn active(&self, user: &UserId) -> Result<Option<Secret<Vec<u8>>>, TotpStoreError>;
 
     /// Record `step` as used if it is later than the last one used, in one
     /// atomic step; `false` if it is not (a replayed code, or one from an
     /// earlier step than a code already accepted).
-    async fn use_step(&self, email: &Email, step: u64) -> Result<bool, TotpStoreError>;
+    async fn use_step(&self, user: &UserId, step: u64) -> Result<bool, TotpStoreError>;
 
     /// Replace the user's recovery codes.
     async fn replace_recovery_codes(
         &self,
-        email: &Email,
+        user: &UserId,
         recovery_codes: Vec<RecoveryCodeHash>,
     ) -> Result<(), TotpStoreError>;
 
@@ -804,16 +804,13 @@ pub trait TotpStore: Send + Sync {
     /// `false` if it is not one of them. Each code works once.
     async fn use_recovery_code(
         &self,
-        email: &Email,
+        user: &UserId,
         code: &RecoveryCodeHash,
     ) -> Result<bool, TotpStoreError>;
 
     /// Forget the user's secrets and recovery codes. Succeeds when there are
     /// none.
-    async fn delete_all_for_user(&self, email: &Email) -> Result<(), TotpStoreError>;
-
-    /// Move `old`'s secrets and recovery codes to `new` (an email change).
-    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), TotpStoreError>;
+    async fn delete_all_for_user(&self, user: &UserId) -> Result<(), TotpStoreError>;
 }
 
 // ============================================================================

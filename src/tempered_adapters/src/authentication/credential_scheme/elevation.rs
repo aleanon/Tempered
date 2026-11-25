@@ -43,7 +43,10 @@ where
             ValidatedUser::Requires2Fa(email) => {
                 let attempt_id = self
                     .two_fa
-                    .issue_challenge(&email, ChallengePurpose::Elevation)
+                    .issue_challenge(
+                        &self.subject_for(&email).await?,
+                        ChallengePurpose::Elevation,
+                    )
                     .await?;
                 Ok(LoginOutcome::Requires2Fa { email, attempt_id })
             }
@@ -70,9 +73,9 @@ where
             .begin(&email)
             .await
             .map_err(CredentialError::Token)?;
-        self.two_fa.redeem(&email, &attempt_id, &code).await?;
         // The account may have been deleted since the first factor.
         let subject = self.subject_for(&email).await?;
+        self.two_fa.redeem(&subject, &attempt_id, &code).await?;
         Ok(self
             .elevation
             .tokens

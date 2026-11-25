@@ -15,7 +15,7 @@ use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, Secret};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
-use tempered_core::{Email, RecoveryCodeHash, TotpStore, TotpStoreError, TwoFaCode};
+use tempered_core::{Email, RecoveryCodeHash, TotpStore, TotpStoreError, TwoFaCode, UserId};
 
 /// Seconds per TOTP step.
 const STEP_SECONDS: u64 = 30;
@@ -44,63 +44,54 @@ impl<TS> Totp<TS> {
 /// What the 2FA slot asks of its TOTP part. `()` is "no TOTP".
 #[async_trait]
 pub(crate) trait TotpFactor: Send + Sync {
-    /// Whether `email` answers 2FA with an app (has an active secret).
-    async fn uses_totp(&self, email: &Email) -> Result<bool, TotpStoreError>;
+    /// Whether the user answers 2FA with an app (has an active secret).
+    async fn uses_totp(&self, user: &UserId) -> Result<bool, TotpStoreError>;
 
     /// Whether `code` is a valid app code or unused recovery code for
-    /// `email`. Consumes it when it is.
-    async fn accept(&self, email: &Email, code: &TwoFaCode) -> Result<bool, TotpStoreError>;
+    /// the user. Consumes it when it is.
+    async fn accept(&self, user: &UserId, code: &TwoFaCode) -> Result<bool, TotpStoreError>;
 
     /// Forget the user's TOTP data (account deletion).
-    async fn forget(&self, email: &Email) -> Result<(), TotpStoreError>;
-
-    /// Move the user's TOTP data to their new address.
-    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), TotpStoreError>;
+    async fn forget(&self, user: &UserId) -> Result<(), TotpStoreError>;
 }
 
 #[async_trait]
 impl TotpFactor for () {
-    async fn uses_totp(&self, _: &Email) -> Result<bool, TotpStoreError> {
+    async fn uses_totp(&self, _: &UserId) -> Result<bool, TotpStoreError> {
         Ok(false)
     }
-    async fn accept(&self, _: &Email, _: &TwoFaCode) -> Result<bool, TotpStoreError> {
+    async fn accept(&self, _: &UserId, _: &TwoFaCode) -> Result<bool, TotpStoreError> {
         Ok(false)
     }
-    async fn forget(&self, _: &Email) -> Result<(), TotpStoreError> {
-        Ok(())
-    }
-    async fn move_user(&self, _: &Email, _: &Email) -> Result<(), TotpStoreError> {
+    async fn forget(&self, _: &UserId) -> Result<(), TotpStoreError> {
         Ok(())
     }
 }
 
 #[async_trait]
 impl<TS: TotpStore> TotpFactor for Totp<TS> {
-    async fn uses_totp(&self, email: &Email) -> Result<bool, TotpStoreError> {
-        Ok(self.store.active(email).await?.is_some())
+    async fn uses_totp(&self, user: &UserId) -> Result<bool, TotpStoreError> {
+        Ok(self.store.active(user).await?.is_some())
     }
 
-    async fn accept(&self, email: &Email, code: &TwoFaCode) -> Result<bool, TotpStoreError> {
+    async fn accept(&self, user: &UserId, code: &TwoFaCode) -> Result<bool, TotpStoreError> {
         if code.is_recovery_code() {
             return self
                 .store
-                .use_recovery_code(email, &hash_recovery_code(code))
+                .use_recovery_code(user, &hash_recovery_code(code))
                 .await;
         }
-        let Some(secret) = self.store.active(email).await? else {
+        let Some(secret) = self.store.active(user).await? else {
             return Ok(false);
         };
         match matching_step(secret.expose_secret(), code, unix_now()) {
-            Some(step) => self.store.use_step(email, step).await,
+            Some(step) => self.store.use_step(user, step).await,
             None => Ok(false),
         }
     }
 
-    async fn forget(&self, email: &Email) -> Result<(), TotpStoreError> {
-        self.store.delete_all_for_user(email).await
-    }
-    async fn move_user(&self, old: &Email, new: &Email) -> Result<(), TotpStoreError> {
-        self.store.reassign(old, new).await
+    async fn forget(&self, user: &UserId) -> Result<(), TotpStoreError> {
+        self.store.delete_all_for_user(user).await
     }
 }
 

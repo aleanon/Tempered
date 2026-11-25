@@ -103,7 +103,7 @@ where
         if self.passkeys.requires_2fa && user.requires_2fa() {
             let attempt_id = self
                 .two_fa
-                .issue_challenge(&email, ChallengePurpose::SignIn)
+                .issue_challenge(&self.subject_for(&email).await?, ChallengePurpose::SignIn)
                 .await?;
             return Ok(LoginOutcome::Requires2Fa { email, attempt_id });
         }

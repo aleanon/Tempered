@@ -20,6 +20,24 @@
 use secrecy::Secret;
 use tempered_core::{Email, SessionId, SessionRecord, SessionStore, SessionStoreError};
 
+/// Add accounts at `addresses` to `store`, for a contract that needs real
+/// accounts, and return their ids.
+pub async fn accounts<const N: usize>(
+    store: &impl tempered_core::UserStore,
+    addresses: [&str; N],
+) -> [tempered_core::UserId; N] {
+    let mut ids = [tempered_core::UserId::new(); N];
+    for (id, address) in ids.iter_mut().zip(addresses) {
+        let password =
+            tempered_core::Password::try_from(Secret::new("a-contract-password".to_string()))
+                .unwrap();
+        let user = tempered_core::User::new(email(address), password, false);
+        *id = user.id;
+        store.add_user(user).await.unwrap();
+    }
+    ids
+}
+
 /// A test address.
 pub fn email(address: &str) -> Email {
     Email::try_from(Secret::new(address.to_string())).unwrap()
@@ -929,10 +947,11 @@ pub async fn rate_limit_store(store: impl tempered_core::RateLimitStore) {
 }
 
 /// Pending and active secrets, single-use steps and recovery codes.
-pub async fn totp_store(store: impl tempered_core::TotpStore) {
+/// `users` are the ids of two accounts that exist (a store may require it,
+/// as the Postgres one does with a foreign key).
+pub async fn totp_store(store: impl tempered_core::TotpStore, users: [tempered_core::UserId; 2]) {
     use secrecy::{ExposeSecret, Secret};
-    let alice = email("alice@example.com");
-    let bob = email("bob@example.com");
+    let [alice, bob] = users;
     let secret = |b: u8| Secret::new(vec![b; 20]);
     let code = |b: u8| [b; 32];
 
@@ -1005,12 +1024,6 @@ pub async fn totp_store(store: impl tempered_core::TotpStore) {
         store.pending(&bob).await.unwrap().is_some(),
         "other users untouched"
     );
-
-    // An email change moves the secrets.
-    let moved = email("bob@new.example.com");
-    store.reassign(&bob, &moved).await.unwrap();
-    assert!(store.pending(&bob).await.unwrap().is_none());
-    assert!(store.pending(&moved).await.unwrap().is_some());
 }
 
 /// Single use, reuse revoking the family, logout and revoke-all, expiry.

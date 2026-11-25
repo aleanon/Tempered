@@ -37,9 +37,9 @@ where
             .map_err(CredentialError::Token)?;
         // Checks and consumes the code in one step: two concurrent requests
         // with the right code cannot both get past it.
-        self.two_fa.redeem(&email, &attempt_id, &code).await?;
         // The account may have been deleted since the first factor.
         let subject = self.subject_for(&email).await?;
+        self.two_fa.redeem(&subject, &attempt_id, &code).await?;
         Ok(self
             .tokens
             .issue(&subject, ticket)
@@ -158,7 +158,7 @@ where
             let has_app = self
                 .two_fa
                 .totp
-                .uses_totp(&email)
+                .uses_totp(&user.id)
                 .await
                 .map_err(TwoFaChallengeError::from)?;
             if !has_app {
@@ -166,13 +166,16 @@ where
             }
             let attempt_id = self
                 .two_fa
-                .issue_challenge(&email, ChallengePurpose::SignIn)
+                .issue_challenge(
+                    &tempered_core::Subject::from(&user),
+                    ChallengePurpose::SignIn,
+                )
                 .await?;
             return Ok(LoginOutcome::Requires2Fa { email, attempt_id });
         }
         Ok(LoginOutcome::Success(
             self.tokens
-                .issue(&self.subject_for(&email).await?, ticket)
+                .issue(&tempered_core::Subject::from(&user), ticket)
                 .await
                 .map_err(CredentialError::Token)?,
         ))
@@ -314,7 +317,8 @@ where
                 secret.expose_secret(),
             )),
         };
-        totp.store.set_pending(&email, secret).await?;
+        let id = self.subject_for(&email).await?.id;
+        totp.store.set_pending(&id, secret).await?;
         Ok(enrollment)
     }
 
@@ -324,7 +328,8 @@ where
         code: TwoFaCode,
     ) -> Result<Vec<String>, CredentialError<T::Error>> {
         let store = &self.two_fa.totp.store;
-        let Some(pending) = store.pending(&email).await? else {
+        let id = self.subject_for(&email).await?.id;
+        let Some(pending) = store.pending(&id).await? else {
             return Err(CredentialError::TotpNotEnrolled(
                 "Start adding an authenticator app first",
             ));
@@ -334,7 +339,7 @@ where
             return Err(TwoFaCodeStoreError::Invalid2FACode.into());
         };
         let (shown, hashes) = totp::new_recovery_codes();
-        if !store.activate(&email, step, hashes).await? {
+        if !store.activate(&id, step, hashes).await? {
             return Err(CredentialError::TotpNotEnrolled(
                 "Start adding an authenticator app first",
             ));
@@ -345,7 +350,8 @@ where
     }
 
     async fn disable_totp_unlocked(&self, email: Email) -> Result<(), CredentialError<T::Error>> {
-        Ok(self.two_fa.totp.store.delete_all_for_user(&email).await?)
+        let id = self.subject_for(&email).await?.id;
+        Ok(self.two_fa.totp.store.delete_all_for_user(&id).await?)
     }
 
     async fn regenerate_recovery_codes_unlocked(
@@ -353,13 +359,14 @@ where
         email: Email,
     ) -> Result<Vec<String>, CredentialError<T::Error>> {
         let store = &self.two_fa.totp.store;
-        if store.active(&email).await?.is_none() {
+        let id = self.subject_for(&email).await?.id;
+        if store.active(&id).await?.is_none() {
             return Err(CredentialError::TotpNotEnrolled(
                 "No authenticator app is enabled",
             ));
         }
         let (shown, hashes) = totp::new_recovery_codes();
-        store.replace_recovery_codes(&email, hashes).await?;
+        store.replace_recovery_codes(&id, hashes).await?;
         Ok(shown)
     }
 }

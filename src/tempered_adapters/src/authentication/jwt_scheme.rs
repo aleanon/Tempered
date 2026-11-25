@@ -868,12 +868,13 @@ mod oauth_tests {
 
         let users = HashMapUserStore::new();
         add_account(&users, SIGNUP_PASSWORD, false).await;
+        let id = users.get_user(&email()).await.unwrap().id;
         let totp = HashMapTotpStore::new();
         // The squatter's app, already active.
-        totp.set_pending(&email(), Secret::new(vec![1; 20]))
+        totp.set_pending(&id, Secret::new(vec![1; 20]))
             .await
             .unwrap();
-        assert!(totp.activate(&email(), 1, vec![[7; 32]]).await.unwrap());
+        assert!(totp.activate(&id, 1, vec![[7; 32]]).await.unwrap());
 
         let scheme = JwtScheme::new(
             users,
@@ -895,12 +896,9 @@ mod oauth_tests {
         .supports_oauth(flow());
 
         oauth_login(&scheme).await.unwrap();
+        assert!(totp.active(&id).await.unwrap().is_none(), "the app is gone");
         assert!(
-            totp.active(&email()).await.unwrap().is_none(),
-            "the app is gone"
-        );
-        assert!(
-            !totp.use_recovery_code(&email(), &[7; 32]).await.unwrap(),
+            !totp.use_recovery_code(&id, &[7; 32]).await.unwrap(),
             "and its codes"
         );
     }
@@ -2105,17 +2103,14 @@ mod totp_tests {
     -> Setup<impl SupportsTotp<Credentials = PasswordCredentials> + SupportsAccountDeletion + Clone>
     {
         let users = HashMapUserStore::new();
-        users
-            .add_user(
-                User::parse(
-                    email().as_ref().clone(),
-                    Secret::new("passwordpassword".into()),
-                    false,
-                )
-                .unwrap(),
-            )
-            .await
-            .unwrap();
+        let mut user = User::parse(
+            email().as_ref().clone(),
+            Secret::new("passwordpassword".into()),
+            false,
+        )
+        .unwrap();
+        user.id = uid();
+        users.add_user(user).await.unwrap();
         let outbox = Outbox::default();
         let totp = HashMapTotpStore::new();
         let epochs = HashMapTokenEpochStore::new();
@@ -2139,6 +2134,11 @@ mod totp_tests {
             users,
             epochs,
         }
+    }
+
+    /// The test account's id (fixed, so the TOTP store can be read by it).
+    fn uid() -> tempered_core::UserId {
+        tempered_core::UserId::from_uuid(uuid::Uuid::from_u128(7))
     }
 
     fn credentials() -> PasswordCredentials {
@@ -2169,7 +2169,7 @@ mod totp_tests {
                 .starts_with("otpauth://totp/Test%20App%3A")
         );
         let secret = totp
-            .pending(&email())
+            .pending(&uid())
             .await
             .unwrap()
             .unwrap()
@@ -2258,9 +2258,9 @@ mod totp_tests {
         let wrong = TwoFaCode::parse("123456".to_string()).unwrap();
         // (One in a million: the wrong code is right. Then this test proves less.)
         let _ = s.scheme.confirm_totp(email(), wrong).await;
-        if s.totp.active(&email()).await.unwrap().is_none() {
+        if s.totp.active(&uid()).await.unwrap().is_none() {
             assert!(
-                s.totp.pending(&email()).await.unwrap().is_some(),
+                s.totp.pending(&uid()).await.unwrap().is_some(),
                 "still pending"
             );
             assert!(!s.users.get_user(&email()).await.unwrap().requires_2fa());
@@ -2319,7 +2319,7 @@ mod totp_tests {
         s.scheme.start_totp(email()).await.ok().unwrap();
         let secret = s
             .totp
-            .pending(&email())
+            .pending(&uid())
             .await
             .unwrap()
             .unwrap()
@@ -2334,7 +2334,7 @@ mod totp_tests {
 
         let result = s.scheme.confirm_totp(email(), code_for(&secret, 0)).await;
         assert!(result.is_err());
-        assert!(s.totp.active(&email()).await.unwrap().is_none());
+        assert!(s.totp.active(&uid()).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -2342,7 +2342,7 @@ mod totp_tests {
         let s = setup().await;
         enrol(&s.scheme, &s.totp).await;
         s.scheme.delete_account(email()).await.ok().unwrap();
-        assert!(s.totp.active(&email()).await.unwrap().is_none());
+        assert!(s.totp.active(&uid()).await.unwrap().is_none());
     }
 }
 

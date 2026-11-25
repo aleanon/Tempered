@@ -90,7 +90,7 @@ where
             // challenge, or error if the scheme was built without 2FA.
             let attempt_id = self
                 .two_fa
-                .issue_challenge(&email, ChallengePurpose::SignIn)
+                .issue_challenge(&self.subject_for(&email).await?, ChallengePurpose::SignIn)
                 .await?;
             return Ok(LoginOutcome::Requires2Fa { email, attempt_id });
         }
@@ -250,6 +250,7 @@ where
     ) -> Result<(), CredentialError<T::Error>> {
         let lock = self.lock_credentials(email).await?;
         let result: Result<(), CredentialError<T::Error>> = async {
+            let id = self.subject_for(email).await?.id;
             self.user_store
                 .set_new_password(email, unknowable_password())
                 .await?;
@@ -260,7 +261,7 @@ where
             // An authenticator app is a second factor whoever signed up
             // chose. With 2FA kept on, codes go to the address the provider
             // has just vouched for.
-            self.two_fa.forget_user(email).await?;
+            self.two_fa.forget_user(&id).await?;
             // So are API keys whoever signed up issued themselves.
             self.forget_api_keys(email).await?;
             self.two_fa.cancel_pending(email).await?;
@@ -268,7 +269,7 @@ where
             // Once more, in case the lock expired under a slow store and an
             // enrolment authorised before the revocation slipped in.
             self.passkeys.forget_user(email).await?;
-            self.two_fa.forget_user(email).await?;
+            self.two_fa.forget_user(&id).await?;
             Ok(())
         }
         .await;
