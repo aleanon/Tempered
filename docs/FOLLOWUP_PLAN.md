@@ -592,8 +592,13 @@ Should-have:
   `last_used_at` (migration, `.sqlx`), `ApiKeyStore::record_use`
   (validator writes at most once a minute), `issue_api_key_until`;
   `tempered_axum::middleware::require_scope`.
-- **8.13 Observability.** `#[instrument]` spans on the flows, plus metrics
+- **8.13 Observability.** ✅ DONE 2026-11-25. `#[instrument]` spans on the flows, plus metrics
   counters behind a feature.
+  As built: `Endpoints::handle` wraps every route in a `tempered.route`
+  span (route, status) and, with feature `metrics`, counts
+  `tempered_requests_total{route,status}`; rate limits count
+  `tempered_rate_limited_total{group}`; spans on the OAuth and passkey
+  flows. A local-recorder test checks the counter.
 
 Nice-to-have: roles and organisations, admin APIs (ban, force reset,
 impersonate), SMS OTP once 8.3 exists, risk signals, CAPTCHA hook.

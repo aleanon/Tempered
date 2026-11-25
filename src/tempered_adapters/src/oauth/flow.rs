@@ -160,6 +160,7 @@ where
     /// The returned [`AuthorizationRequest::state`] must be bound to the
     /// initiating browser (see that type's docs) and presented back to
     /// [`complete`](Self::complete).
+    #[tracing::instrument(name = "OAuthFlow::begin", skip(self))]
     pub async fn begin(&self, provider: &str) -> Result<AuthorizationRequest, OAuthFlowError> {
         self.begin_inner(provider, None).await
     }
@@ -272,6 +273,7 @@ where
         Ok((pending.link_to, info))
     }
 
+    #[tracing::instrument(name = "OAuthFlow::complete", skip_all, fields(provider = provider))]
     pub async fn complete(
         &self,
         provider: &str,
@@ -368,6 +370,7 @@ where
     /// the link was begun for (whatever address the provider reports). A
     /// login request does not finish here, and an identity linked to another
     /// account is refused.
+    #[tracing::instrument(name = "OAuthFlow::complete_link", skip_all, fields(provider = provider))]
     pub async fn complete_link(
         &self,
         provider: &str,

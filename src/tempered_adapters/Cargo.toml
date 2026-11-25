@@ -16,6 +16,9 @@ redis = ["dep:redis"]
 oauth-client = ["dep:reqwest"]
 # PostmarkEmailClient (MockEmailClient is always available).
 postmark-email = ["dep:reqwest"]
+# Counters through the `metrics` facade (install an exporter in the app):
+# `tempered_requests_total{route, status}`, `tempered_rate_limited_total{group}`.
+metrics = ["dep:metrics"]
 # BreachedPasswordCheck (Have I Been Pwned range API).
 breached-passwords = ["dep:reqwest"]
 # WebAuthnRsVerifier, the production passkey verifier. Off by default even
@@ -66,6 +69,9 @@ tracing.workspace = true
 
 # HTTP client (feature-gated)
 reqwest = { workspace = true, optional = true }
+
+# Metrics (feature-gated)
+metrics = { workspace = true, optional = true }
 
 # WebAuthn (feature-gated). State serialisation lets the ceremony state
 # live in a ChallengeStore between start and finish; conditional-ui allows

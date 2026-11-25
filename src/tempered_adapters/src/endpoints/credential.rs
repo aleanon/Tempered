@@ -369,6 +369,54 @@ where
     }
 
     async fn handle(&self, spec: &RouteSpec, req: EndpointRequest) -> EndpointResponse {
+        // One span per library request: the route and, at the end, the
+        // status. No addresses, codes or tokens.
+        let span =
+            tracing::info_span!("tempered.route", route = ?spec.id, status = tracing::field::Empty);
+        let response = tracing::Instrument::instrument(self.serve(spec, req), span.clone()).await;
+        span.record("status", response.status().as_u16());
+        #[cfg(feature = "metrics")]
+        metrics::counter!(
+            "tempered_requests_total",
+            "route" => format!("{:?}", spec.id),
+            "status" => response.status().as_str().to_string(),
+        )
+        .increment(1);
+        response
+    }
+
+    async fn check_verified(&self, email: &Email) -> Result<(), EndpointResponse> {
+        self.slots().3.check_verified(self, email).await
+    }
+}
+
+#[allow(private_bounds)]
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    Self: HttpAuthenticationScheme<LogoutOutput = String, Token = T::Token>
+        + SupportsRegistration
+        + SupportsPasswordChange
+        + SupportsAccountDeletion
+        + Send
+        + Sync,
+    <Self as AuthenticationScheme>::AuthError: ClassifyError,
+    <Self as SupportsRegistration>::RegistrationError: ClassifyError,
+    <Self as SupportsPasswordChange>::PasswordChangeError: ClassifyError,
+    <Self as SupportsAccountDeletion>::AccountDeletionError: ClassifyError,
+    <Self as AuthenticationScheme>::Validator: AuthValidator<RequestParts = Parts>,
+    <<Self as AuthenticationScheme>::Validator as AuthValidator>::Error: ClassifyError,
+    LoginClaims<Self>: IdentityClaims,
+    T: TokenStrategy,
+    F: SlotEndpoints<Self>,
+    L: SlotEndpoints<Self> + ElevationRevoke + ElevatedCookieName,
+    R: SlotEndpoints<Self>,
+    M: SlotEndpoints<Self>,
+    O: SlotEndpoints<Self>,
+    K: SlotEndpoints<Self>,
+    U: tempered_core::UserStore,
+{
+    /// The route, behind the span and counter `handle` adds.
+    async fn serve(&self, spec: &RouteSpec, req: EndpointRequest) -> EndpointResponse {
         // Before anything else: a page on another site does not get to log
         // the visitor in, sign them up or change their account. Reads (the
         // OAuth start and callback, which a provider redirect makes
@@ -415,10 +463,6 @@ where
             return response;
         }
         error_response(StatusCode::NOT_FOUND, "Not found")
-    }
-
-    async fn check_verified(&self, email: &Email) -> Result<(), EndpointResponse> {
-        self.slots().3.check_verified(self, email).await
     }
 }
 

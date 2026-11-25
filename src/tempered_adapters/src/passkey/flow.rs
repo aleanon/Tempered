@@ -66,6 +66,7 @@ where
     /// `email` is the authenticated user finishing the ceremony. It must be the
     /// same user who started it: a ceremony begun in one account's session can
     /// not be completed from another's.
+    #[tracing::instrument(name = "PasskeyFlow::finish_registration", skip_all)]
     pub async fn finish_registration(
         &self,
         email: &Email,
@@ -135,6 +136,7 @@ where
     /// [`finish_authentication`](Self::finish_authentication), also returning
     /// which credential answered, so the caller can
     /// [`confirm_enrolled`](Self::confirm_enrolled) it later.
+    #[tracing::instrument(name = "PasskeyFlow::finish_authentication", skip_all)]
     pub async fn finish_authentication_with_credential(
         &self,
         ceremony_id: CeremonyId,

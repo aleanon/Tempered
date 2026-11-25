@@ -490,3 +490,75 @@ async fn a_cross_site_post_is_refused_before_anything_else() {
     let allowed = scheme.handle(login, post("same-origin")).await;
     assert_eq!(allowed.status(), http::StatusCode::UNAUTHORIZED);
 }
+
+/// Every library request is counted by route and status.
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn requests_are_counted_by_route_and_status() {
+    use std::sync::{Arc, Mutex};
+
+    use metrics::{
+        Counter, CounterFn, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
+    };
+
+    #[derive(Clone, Default)]
+    struct Seen(Arc<Mutex<Vec<String>>>);
+    struct Tick(String, Arc<Mutex<Vec<String>>>);
+    impl CounterFn for Tick {
+        fn increment(&self, _: u64) {
+            self.1.lock().unwrap().push(self.0.clone());
+        }
+        fn absolute(&self, _: u64) {}
+    }
+    impl Recorder for Seen {
+        fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
+            let labels: Vec<String> = key
+                .labels()
+                .map(|l| format!("{}={}", l.key(), l.value()))
+                .collect();
+            Counter::from_arc(Arc::new(Tick(
+                format!("{} {}", key.name(), labels.join(",")),
+                self.0.clone(),
+            )))
+        }
+        fn register_gauge(&self, _: &Key, _: &Metadata<'_>) -> Gauge {
+            Gauge::noop()
+        }
+        fn register_histogram(&self, _: &Key, _: &Metadata<'_>) -> Histogram {
+            Histogram::noop()
+        }
+    }
+
+    let seen = Seen::default();
+    let scheme = minimal();
+    let spec = scheme
+        .routes(&PathOverrides::default())
+        .into_iter()
+        .find(|r| r.id == RouteId::Login)
+        .unwrap();
+    let request = super::EndpointRequest::new(
+        http::Request::post("/login")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0,
+        bytes::Bytes::new(),
+        Vec::new(),
+    );
+    // The recorder is installed for this thread only, around the call.
+    let response = {
+        let _guard = metrics::set_default_local_recorder(&seen);
+        scheme.handle(&spec, request).await
+    };
+    let status = response.status().as_u16();
+    let lines = seen.0.lock().unwrap().clone();
+    assert_eq!(
+        lines,
+        [format!(
+            "tempered_requests_total route=Login,status={status}"
+        )]
+    );
+}

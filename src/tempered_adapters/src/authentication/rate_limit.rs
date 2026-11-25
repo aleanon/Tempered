@@ -221,21 +221,32 @@ impl RateLimiter {
             && let Some(addr) = (self.client)(parts)
         {
             let key = format!("{}:client:{}", group.key(), client_key(addr));
-            self.count(&key, *limit).await?;
+            self.count(group, &key, *limit).await?;
         }
         if let Some(limit) = self.limits.per_account.get(&group)
             && let Some(email) = account
         {
             let key = format!("{}:account:{}", group.key(), email.as_ref().expose_secret());
-            self.count(&key, *limit).await?;
+            self.count(group, &key, *limit).await?;
         }
         Ok(())
     }
 
     #[allow(clippy::result_large_err)]
-    async fn count(&self, key: &str, limit: Limit) -> Result<(), EndpointResponse> {
+    async fn count(
+        &self,
+        group: RateLimitGroup,
+        key: &str,
+        limit: Limit,
+    ) -> Result<(), EndpointResponse> {
         match self.store.hit(key, limit.window_seconds).await {
-            Ok(window) if window.count > limit.max => Err(too_many(window.resets_in_seconds)),
+            Ok(window) if window.count > limit.max => {
+                tracing::info!(group = group.key(), "rate limited");
+                #[cfg(feature = "metrics")]
+                metrics::counter!("tempered_rate_limited_total", "group" => group.key())
+                    .increment(1);
+                Err(too_many(window.resets_in_seconds))
+            }
             Ok(_) => Ok(()),
             Err(e) => {
                 tracing::error!(error = %e, "rate limit store failed; letting the attempt through");

@@ -350,6 +350,16 @@ pass `.client_address(|parts| ...)` reading the header your proxy sets
 If the counter store is down, attempts are let through and the error is
 logged.
 
+### Observability
+
+Every library request runs in a `tracing` span, `tempered.route`, with the
+route and (when it ends) the status; the OAuth and passkey flows have spans
+of their own. Nothing secret or identifying goes into them: no addresses,
+codes or tokens. With the `metrics` feature, the library also counts
+through the [`metrics`](https://docs.rs/metrics) facade (install the
+exporter you use, Prometheus or otherwise): `tempered_requests_total`
+with `route` and `status`, and `tempered_rate_limited_total` with `group`.
+
 ### Mail sent after the response
 
 Signup and password-reset initiation answer the same whether or not the
