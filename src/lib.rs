@@ -182,6 +182,12 @@ pub mod endpoints {
 // Re-export common external dependencies
 // ============================================================================
 
+/// The scheme traits: what a scheme can do (each `supports_*` builder adds one).
+pub use tempered_core::{
+    AuthenticationScheme, SupportsAccountDeletion, SupportsElevation, SupportsPasswordChange,
+    SupportsPasswordReset, SupportsRegistration, SupportsTokenRevocation, SupportsTwoFactor,
+};
+
 /// Re-export async-trait for implementing repository traits
 pub use async_trait::async_trait;
 

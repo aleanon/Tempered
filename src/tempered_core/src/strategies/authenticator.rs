@@ -112,6 +112,11 @@ pub trait SupportsRegistration: AuthenticationScheme {
 ///
 /// Schemes that implement this can require users to provide a second factor
 /// (TOTP code, SMS code, etc.) after initial credential verification.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no two-factor authentication",
+    label = "this scheme is missing the capability",
+    note = "call `.supports_2fa(code_store, email_client)` on the scheme"
+)]
 #[async_trait]
 pub trait SupportsTwoFactor: AuthenticationScheme {
     /// Errors that can occur during 2FA verification
@@ -135,6 +140,11 @@ pub trait SupportsTwoFactor: AuthenticationScheme {
 /// attempt id at once, and the code is stored and sent afterwards, only for
 /// an account that exists. An account that requires 2FA is still asked for
 /// its second factor.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no passwordless email login",
+    label = "this scheme is missing the capability",
+    note = "call `.supports_email_login(EmailLogin::code(store))` on a scheme with 2FA"
+)]
 #[async_trait]
 pub trait SupportsEmailLogin: AuthenticationScheme {
     type EmailLoginError: std::error::Error + Send + Sync + 'static;
@@ -167,6 +177,11 @@ pub struct TotpEnrollment {
 ///
 /// An enrolled user's 2FA step takes a code from their app, or one of their
 /// recovery codes, in place of a mailed code.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no authenticator-app (TOTP) support",
+    label = "this scheme is missing the capability",
+    note = "call `.supports_totp(store, issuer)` after `.supports_2fa(..)` and `.supports_elevation(..)`"
+)]
 #[async_trait]
 pub trait SupportsTotp: SupportsTwoFactor {
     type TotpError: std::error::Error + Send + Sync + 'static;
@@ -228,6 +243,11 @@ pub struct AuthorizationRequest {
 /// On success the scheme issues its **own primary
 /// [`Token`](AuthenticationScheme::Token)**, so a completed OAuth login is
 /// indistinguishable from any other.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no OAuth login",
+    label = "this scheme is missing the capability",
+    note = "call `.supports_oauth(OAuthFlow::new(..).with_provider(..))` on the scheme"
+)]
 #[async_trait]
 pub trait SupportsOAuth2: AuthenticationScheme {
     /// Errors that can occur during the OAuth flow.
@@ -307,6 +327,11 @@ pub trait SupportsOAuth2: AuthenticationScheme {
 ///
 /// The `serde_json::Value` options/response payloads are passed through verbatim
 /// to the underlying WebAuthn verifier; this trait does not interpret them.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no passkey login",
+    label = "this scheme is missing the capability",
+    note = "call `.supports_passkeys(PasskeyFlow::new(..))` on the scheme"
+)]
 #[async_trait]
 pub trait SupportsPasskeys: AuthenticationScheme {
     /// Errors that can occur during a passkey ceremony.
@@ -401,6 +426,11 @@ pub trait SupportsTokenRevocation: AuthenticationScheme {
 /// Optional trait for authentication schemes that support password reset flows.
 ///
 /// Only applicable to schemes that use passwords.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no password reset",
+    label = "this scheme is missing the capability",
+    note = "call `.supports_password_reset(token_store, email_client)` on the scheme"
+)]
 #[async_trait]
 pub trait SupportsPasswordReset: AuthenticationScheme {
     /// Errors that can occur during password reset
@@ -436,6 +466,11 @@ pub trait SupportsPasswordReset: AuthenticationScheme {
 /// session token.
 ///
 /// This implements the "sudo" pattern common in security-sensitive applications.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no elevated (sudo) tokens",
+    label = "this scheme is missing the capability",
+    note = "call `.supports_elevation(..)` on the scheme (a second config or store for the elevated tokens)"
+)]
 #[async_trait]
 pub trait SupportsElevation: AuthenticationScheme {
     /// The type of elevated token (may be same as Token or different)
@@ -539,6 +574,11 @@ pub trait SupportsPasswordChange: AuthenticationScheme {
 /// validate verification tokens submitted by the user.  Whether login is blocked
 /// for unverified users is the application's responsibility — this trait only
 /// exposes the verification flow itself.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no email verification",
+    label = "this scheme is missing the capability",
+    note = "call `.supports_email_verification(store, email_client)` on the scheme"
+)]
 #[async_trait]
 pub trait RequiresEmailVerification: AuthenticationScheme {
     /// Errors that can occur during email verification
@@ -580,6 +620,11 @@ pub trait RequiresEmailVerification: AuthenticationScheme {
 /// then presented on each request via a header and checked by the scheme's
 /// validator. Issuance/revocation are management operations that a delivery
 /// layer typically exposes behind an authenticated (or elevated) route.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot issue API keys",
+    label = "this scheme is missing the capability",
+    note = "build the API-key scheme with `.supports_issuance()`"
+)]
 #[async_trait]
 pub trait SupportsApiKeyIssuance: AuthenticationScheme {
     /// Errors that can occur during issuance/revocation/listing.

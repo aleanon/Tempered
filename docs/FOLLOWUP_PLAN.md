@@ -609,8 +609,14 @@ OAuth slot instead.
 
 ## Phase 9 — Extensibility and modularity
 
-- **9.1 Readable errors for missing capabilities.** Add
+- **9.1 Readable errors for missing capabilities.** ✅ DONE 2026-11-25. Add
   `#[diagnostic::on_unimplemented]` on the `Wire*` and `Supports*` traits.
+  As built: on every optional capability trait (the `Wire*` traits are
+  gone with the route table). A scheme without 2FA passed where one is
+  needed now reads "`CredentialScheme<..>` has no two-factor
+  authentication ... note: call `.supports_2fa(code_store,
+  email_client)`". The scheme traits are also exported at the facade
+  root.
 - **9.2 Customisation ports.**
   - `EmailComposer`: typed messages, HTML, links rather than raw tokens,
     locale.
