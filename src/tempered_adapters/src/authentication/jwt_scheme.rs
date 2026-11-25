@@ -2618,6 +2618,23 @@ mod email_change_tests {
         scheme.validator().validate(&parts).await.is_ok()
     }
 
+    /// The account id a valid token carries.
+    async fn user_id_in<S>(scheme: &S, token: &JwtToken) -> tempered_core::UserId
+    where
+        S: AuthenticationScheme,
+        S::Validator: AuthValidator<RequestParts = http::request::Parts>,
+        <S::Validator as AuthValidator>::Claims: tempered_core::IdentityClaims,
+    {
+        use tempered_core::IdentityClaims;
+        let parts = http::Request::builder()
+            .header("cookie", format!("jwt={}", token.as_str()))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        scheme.validator().validate(&parts).await.unwrap().user_id()
+    }
+
     #[tokio::test]
     async fn a_confirmed_change_moves_the_account_and_ends_its_sessions() {
         let outbox = Outbox::default();
@@ -2740,6 +2757,8 @@ mod email_change_tests {
             tokens.pop().expect("a second confirmation")
         };
         assert!(validates(&scheme, &token).await);
+        let original_id = user_id_in(&scheme, &token).await;
+        assert_eq!(original_id, users.get_user(&alice).await.unwrap().id);
         let moved = scheme
             .confirm_email_change(alice.clone(), confirm.clone())
             .await
@@ -2750,10 +2769,12 @@ mod email_change_tests {
         // logs in at the new one, already verified.
         assert!(!validates(&scheme, &token).await);
         assert!(login("alice@example.com").await.is_err());
-        assert!(matches!(
-            login("alice@new.example.com").await,
-            Ok(LoginOutcome::Success(_))
-        ));
+        let Ok(LoginOutcome::Success(after)) = login("alice@new.example.com").await else {
+            panic!("the account logs in at its new address");
+        };
+        // The tokens name the same account, by its id, before and after.
+        assert_eq!(user_id_in(&scheme, &after).await, original_id);
+        assert_eq!(users.get_user(&moved).await.unwrap().id, original_id);
         assert!(scheme.is_email_verified(&moved).await.unwrap());
         assert!(!scheme.is_email_verified(&alice).await.unwrap());
 

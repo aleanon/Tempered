@@ -558,6 +558,8 @@ pub enum SessionStoreError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
     pub email: Email,
+    /// The account's stable id.
+    pub user_id: UserId,
     pub created_at: u64,
     pub scope: String,
     /// When the session was last used (Unix seconds), for the user's device
@@ -841,6 +843,8 @@ pub type RefreshTokenHash = [u8; 32];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshRecord {
     pub email: Email,
+    /// The account's stable id, carried into the tokens it is refreshed for.
+    pub user_id: UserId,
     /// All tokens rotated from one login share a family; reusing any of
     /// them revokes it.
     pub family: String,

@@ -50,7 +50,7 @@ where
             ValidatedUser::No2Fa(email) => Ok(LoginOutcome::Success(
                 self.elevation
                     .tokens
-                    .issue(&email, ticket)
+                    .issue(&self.subject_for(&email).await?, ticket)
                     .await
                     .map_err(CredentialError::Token)?,
             )),
@@ -72,11 +72,11 @@ where
             .map_err(CredentialError::Token)?;
         self.two_fa.redeem(&email, &attempt_id, &code).await?;
         // The account may have been deleted since the first factor.
-        self.user_store.get_user(&email).await?;
+        let subject = self.subject_for(&email).await?;
         Ok(self
             .elevation
             .tokens
-            .issue(&email, ticket)
+            .issue(&subject, ticket)
             .await
             .map_err(CredentialError::Token)?)
     }

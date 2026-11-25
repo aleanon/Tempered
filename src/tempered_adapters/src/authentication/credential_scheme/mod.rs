@@ -1331,6 +1331,18 @@ where
     }
 }
 
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore,
+{
+    /// Who a token for `email` is issued to: the account's id and address.
+    /// Fails if the account is gone.
+    async fn subject_for(&self, email: &Email) -> Result<tempered_core::Subject, UserStoreError> {
+        let user = self.user_store.get_user(email).await?;
+        Ok(tempered_core::Subject::from(&user))
+    }
+}
+
 // Private helper: the slot trait in the bound is internal by design.
 #[allow(private_bounds)]
 impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
@@ -1587,7 +1599,7 @@ where
             ValidatedUser::No2Fa(email) => {
                 let token = self
                     .tokens
-                    .issue(&email, ticket)
+                    .issue(&self.subject_for(&email).await?, ticket)
                     .await
                     .map_err(CredentialError::Token)?;
                 Ok(LoginOutcome::Success(token))

@@ -115,6 +115,7 @@ fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> SessionStore
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Stored {
     email: String,
+    user_id: tempered_core::UserId,
     created_at: u64,
     scope: String,
     #[serde(default)]
@@ -126,6 +127,7 @@ struct Stored {
 fn encode(record: &SessionRecord) -> String {
     serde_json::to_string(&Stored {
         email: record.email.as_ref().expose_secret().clone(),
+        user_id: record.user_id,
         created_at: record.created_at,
         scope: record.scope.clone(),
         last_seen: record.last_seen,
@@ -147,6 +149,7 @@ fn decode(value: Option<String>) -> Result<SessionRecord, SessionStoreError> {
         .map_err(|e| SessionStoreError::UnexpectedError(e.to_string().into()))?;
     Ok(SessionRecord {
         email,
+        user_id: stored.user_id,
         created_at: stored.created_at,
         scope: stored.scope,
         last_seen: stored.last_seen,
@@ -325,6 +328,7 @@ mod tests {
                 id.clone(),
                 SessionRecord {
                     email: contract::email("a@example.com"),
+                    user_id: tempered_core::UserId::new(),
                     created_at: 1,
                     scope: "s".to_string(),
                     last_seen: None,
@@ -365,6 +369,7 @@ mod tests {
         let alice = contract::email("a@example.com");
         let record = |scope: &str| SessionRecord {
             email: alice.clone(),
+            user_id: tempered_core::UserId::new(),
             created_at: 1,
             scope: scope.to_string(),
             last_seen: None,

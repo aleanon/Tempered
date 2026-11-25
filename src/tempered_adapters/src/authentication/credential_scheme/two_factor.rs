@@ -39,10 +39,10 @@ where
         // with the right code cannot both get past it.
         self.two_fa.redeem(&email, &attempt_id, &code).await?;
         // The account may have been deleted since the first factor.
-        self.user_store.get_user(&email).await?;
+        let subject = self.subject_for(&email).await?;
         Ok(self
             .tokens
-            .issue(&email, ticket)
+            .issue(&subject, ticket)
             .await
             .map_err(CredentialError::Token)?)
     }
@@ -172,7 +172,7 @@ where
         }
         Ok(LoginOutcome::Success(
             self.tokens
-                .issue(&email, ticket)
+                .issue(&self.subject_for(&email).await?, ticket)
                 .await
                 .map_err(CredentialError::Token)?,
         ))

@@ -110,7 +110,10 @@ acceptable for your app.
 
 Handlers in those routers read the authenticated identity via
 `Extension<Claims>`. The middleware inserts it after validating the token, so the
-scheme's generics stay fully inferred and never leak into your route code.
+scheme's generics stay fully inferred and never leak into your route code. `claims.uid` is the account's stable id (`UserId`), and
+`claims.sub` is its address now. Key your own tables on `uid`, which stays the same
+when the user changes their address (`IdentityClaims::user_id()` gives it for any
+scheme, sessions included).
 
 ## Capabilities
 

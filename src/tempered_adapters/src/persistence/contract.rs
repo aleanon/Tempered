@@ -34,8 +34,11 @@ pub async fn session_store(store: impl SessionStore) {
     let a1 = SessionId::new();
     let a2 = SessionId::new();
     let b1 = SessionId::new();
+    let ids = [tempered_core::UserId::new(), tempered_core::UserId::new()];
     let record = |email: &Email, created_at| SessionRecord {
         email: email.clone(),
+        // The same id for the same address, so records compare equal.
+        user_id: ids[usize::from(email != &alice)],
         created_at,
         scope: "__Host-session".to_string(),
         last_seen: None,
@@ -1019,8 +1022,10 @@ pub async fn refresh_token_store(store: impl tempered_core::RefreshTokenStore) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
+    let ids = [tempered_core::UserId::new(), tempered_core::UserId::new()];
     let record = |who: &Email, family: &str| RefreshRecord {
         email: who.clone(),
+        user_id: ids[usize::from(who != &alice)],
         family: family.to_string(),
         expires_at: now + 600,
     };

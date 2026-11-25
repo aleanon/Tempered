@@ -66,4 +66,8 @@ pub trait AuthValidator: Clone + Send + Sync + 'static {
 pub trait IdentityClaims {
     /// The authenticated user's email, as carried by the validated token.
     fn subject(&self) -> &Secret<String>;
+
+    /// The authenticated account's stable id: what an app's own tables
+    /// should key on (it stays when the address changes).
+    fn user_id(&self) -> crate::UserId;
 }

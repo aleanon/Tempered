@@ -109,7 +109,7 @@ where
         }
         Ok(LoginOutcome::Success(
             self.tokens
-                .issue(&email, ticket)
+                .issue(&self.subject_for(&email).await?, ticket)
                 .await
                 .map_err(CredentialError::Token)?,
         ))

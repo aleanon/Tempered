@@ -71,6 +71,22 @@ impl PartialEq for User {
     }
 }
 
+/// Who a token is issued for: the account's stable id and its address now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subject {
+    pub id: UserId,
+    pub email: Email,
+}
+
+impl From<&User> for Subject {
+    fn from(user: &User) -> Self {
+        Subject {
+            id: user.id,
+            email: user.email.clone(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ValidatedUser {
     Requires2Fa(Email),

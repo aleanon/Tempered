@@ -164,12 +164,14 @@ where
 
     async fn issue(
         &self,
-        email: &Email,
+        subject: &tempered_core::Subject,
         ticket: SessionTicket,
     ) -> Result<SessionToken, SessionError> {
+        let email = &subject.email;
         let id = SessionId::new();
         let record = SessionRecord {
             email: email.clone(),
+            user_id: subject.id,
             created_at: unix_now(),
             scope: self.config.cookie_name.clone(),
             last_seen: None,
@@ -363,15 +365,21 @@ where
 // Validator
 // ============================================================================
 
-/// Claims extracted from a valid session (currently just the user's email).
+/// Claims extracted from a valid session: whose it is.
 #[derive(Clone, Debug)]
 pub struct SessionClaims {
     pub email: Email,
+    /// The account's stable id: key an app's own tables on this.
+    pub user_id: tempered_core::UserId,
 }
 
 impl tempered_core::IdentityClaims for SessionClaims {
     fn subject(&self) -> &secrecy::Secret<String> {
         self.email.as_ref()
+    }
+
+    fn user_id(&self) -> tempered_core::UserId {
+        self.user_id
     }
 }
 
@@ -438,6 +446,7 @@ where
 
         Ok(SessionClaims {
             email: record.email,
+            user_id: record.user_id,
         })
     }
 }
@@ -539,12 +548,29 @@ mod tests {
         // revocation lands in that gap: whatever was checked may be gone.
         let ticket = tokens.begin(&email).await.unwrap();
         tokens.revoke_all_for_user(&email).await.unwrap();
-        let result = tokens.issue(&email, ticket).await;
+        let result = tokens
+            .issue(
+                &tempered_core::Subject {
+                    id: tempered_core::UserId::new(),
+                    email: email.clone(),
+                },
+                ticket,
+            )
+            .await;
         assert!(matches!(result, Err(SessionError::Superseded)));
 
         // A login that begins afterwards gets a session, and it is the only one.
         let ticket = tokens.begin(&email).await.unwrap();
-        let token = tokens.issue(&email, ticket).await.unwrap();
+        let token = tokens
+            .issue(
+                &tempered_core::Subject {
+                    id: tempered_core::UserId::new(),
+                    email: email.clone(),
+                },
+                ticket,
+            )
+            .await
+            .unwrap();
         assert_eq!(store.get_session(&token.0).await.unwrap().email, email);
         tokens.revoke_all_for_user(&email).await.unwrap();
         assert!(store.get_session(&token.0).await.is_err());
@@ -567,7 +593,18 @@ mod tests {
 
         tokens.unlock_user(&email, lock).await.unwrap();
         let ticket = tokens.begin(&email).await.unwrap();
-        assert!(tokens.issue(&email, ticket).await.is_ok());
+        assert!(
+            tokens
+                .issue(
+                    &tempered_core::Subject {
+                        id: tempered_core::UserId::new(),
+                        email: email.clone()
+                    },
+                    ticket
+                )
+                .await
+                .is_ok()
+        );
     }
 
     async fn scheme_with_user(
@@ -618,6 +655,7 @@ mod tests {
             let id = SessionId::new();
             let record = SessionRecord {
                 email: email.clone(),
+                user_id: tempered_core::UserId::new(),
                 created_at: unix_now() - age,
                 scope: "session".to_string(),
                 last_seen: None,

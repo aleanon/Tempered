@@ -7,7 +7,8 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Validation, decode, encode};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
 use tempered_core::{
-    AuthValidator, BannedTokenStore, ClassifyError, Email, ErrorCategory, TokenEpochStore,
+    AuthValidator, BannedTokenStore, ClassifyError, Email, ErrorCategory, Subject, TokenEpochStore,
+    UserId,
 };
 use thiserror::Error;
 
@@ -152,10 +153,10 @@ pub fn extract_token(
 
 // Create cookie with a new JWT auth token
 pub fn generate_auth_cookie<'a>(
-    email: &Email,
+    subject: &Subject,
     config: &'a JwtAuthConfig,
 ) -> Result<Cookie<'a>, TokenAuthError> {
-    let token = generate_auth_token(email, config)?;
+    let token = generate_auth_token(subject, config)?;
     let max_age = time::Duration::seconds(config.token_ttl_in_seconds as i64);
     Ok(create_auth_cookie(
         token,
@@ -191,10 +192,10 @@ pub fn create_auth_cookie(
 
 // Create JWT auth token, issued now.
 pub fn generate_auth_token(
-    email: &Email,
+    subject: &Subject,
     config: &JwtAuthConfig,
 ) -> Result<String, TokenAuthError> {
-    generate_auth_token_issued_at(email, config, Utc::now().timestamp(), None)
+    generate_auth_token_issued_at(subject, config, Utc::now().timestamp(), None)
 }
 
 /// Create a JWT auth token with an explicit issued-at (unix seconds).
@@ -210,17 +211,17 @@ pub fn generate_auth_token(
 /// `family` names the refresh-token family the token is issued with (the
 /// `fam` claim), when refresh tokens are on.
 pub fn generate_auth_token_issued_at(
-    email: &Email,
+    subject: &Subject,
     config: &JwtAuthConfig,
     iat: i64,
     family: Option<&str>,
 ) -> Result<String, TokenAuthError> {
-    generate_auth_token_with(email, config, iat, family, None)
+    generate_auth_token_with(subject, config, iat, family, None)
 }
 
 /// [`generate_auth_token_issued_at`] with the app's own claims (`ext`).
 pub fn generate_auth_token_with(
-    email: &Email,
+    subject: &Subject,
     config: &JwtAuthConfig,
     iat: i64,
     family: Option<&str>,
@@ -238,10 +239,11 @@ pub fn generate_auth_token_with(
         .try_into()
         .map_err(|_| TokenAuthError::UnexpectedError("Failed to cast i64 to usize".to_string()))?;
 
-    let sub = Clone::clone(email.as_ref());
+    let sub = Clone::clone(subject.email.as_ref());
 
     let claims = Claims {
         sub,
+        uid: subject.id,
         exp,
         iat: Some(iat),
         jti: Some(uuid::Uuid::new_v4().to_string()),
@@ -348,6 +350,9 @@ fn create_token(claims: &Claims, secret: &[u8]) -> Result<String, TokenAuthError
 #[derive(Debug, Deserialize, Clone)]
 pub struct Claims {
     pub sub: Secret<String>,
+    /// The account's stable id: key an app's own tables on this, not `sub`
+    /// (the address, which can change).
+    pub uid: UserId,
     pub exp: usize,
     /// Issued-at (unix seconds). Always stamped on new tokens; `Option` only
     /// so tokens minted before this claim existed still deserialize (they are
@@ -377,6 +382,10 @@ impl tempered_core::IdentityClaims for Claims {
     fn subject(&self) -> &Secret<String> {
         &self.sub
     }
+
+    fn user_id(&self) -> UserId {
+        self.uid
+    }
 }
 
 impl Serialize for Claims {
@@ -386,7 +395,7 @@ impl Serialize for Claims {
     {
         // Omit absent optional claims entirely: `"aud": null` is not the same
         // as no audience to JWT validators.
-        let len = 2
+        let len = 3
             + usize::from(self.iat.is_some())
             + usize::from(self.jti.is_some())
             + usize::from(self.aud.is_some())
@@ -395,6 +404,7 @@ impl Serialize for Claims {
             + usize::from(self.ext.is_some());
         let mut state = serializer.serialize_struct("Claims", len)?;
         state.serialize_field("sub", &self.sub.expose_secret())?;
+        state.serialize_field("uid", &self.uid)?;
         state.serialize_field("exp", &self.exp)?;
         if let Some(iat) = &self.iat {
             state.serialize_field("iat", iat)?;
@@ -427,6 +437,14 @@ mod tests {
 
     use super::*;
 
+    /// A token subject for `email`, with a fresh id.
+    fn subject(email: &Email) -> Subject {
+        Subject {
+            id: UserId::new(),
+            email: email.clone(),
+        }
+    }
+
     fn epoch_store() -> HashMapTokenEpochStore {
         HashMapTokenEpochStore::new()
     }
@@ -445,7 +463,7 @@ mod tests {
     async fn test_generate_auth_cookie() {
         let config = jwt_auth_config();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
-        let cookie = generate_auth_cookie(&email, &config).unwrap();
+        let cookie = generate_auth_cookie(&subject(&email), &config).unwrap();
         assert_eq!(cookie.name(), config.jwt_cookie_name);
         assert_eq!(cookie.value().split('.').count(), 3);
         assert_eq!(cookie.path(), Some("/"));
@@ -472,7 +490,7 @@ mod tests {
     async fn test_generate_auth_token() {
         let config = jwt_auth_config();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
-        let result = generate_auth_token(&email, &config).unwrap();
+        let result = generate_auth_token(&subject(&email), &config).unwrap();
         assert_eq!(result.split('.').count(), 3);
     }
 
@@ -481,7 +499,7 @@ mod tests {
         let config = jwt_auth_config();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
-        let token = generate_auth_token(&email, &config).unwrap();
+        let token = generate_auth_token(&subject(&email), &config).unwrap();
         let result = validate_auth_token(&token, &banned_token_store, &epoch_store(), &config)
             .await
             .unwrap();
@@ -503,6 +521,7 @@ mod tests {
         let now = chrono::Utc::now().timestamp();
         let claims = Claims {
             sub: Secret::from("test@example.com".to_owned()),
+            uid: UserId::new(),
             exp: (now - 5) as usize,
             iat: Some(now - 600),
             jti: Some(uuid::Uuid::new_v4().to_string()),
@@ -541,7 +560,7 @@ mod tests {
         let banned_token_store = HashSetBannedTokenStore::default();
         let epoch = epoch_store();
 
-        let token = generate_auth_token(&email, &config).unwrap();
+        let token = generate_auth_token(&subject(&email), &config).unwrap();
         let iat = validate_auth_token(&token, &banned_token_store, &epoch, &config)
             .await
             .unwrap()
@@ -563,7 +582,7 @@ mod tests {
         let banned_token_store = HashSetBannedTokenStore::default();
         let epoch = epoch_store();
 
-        let token = generate_auth_token(&email, &config).unwrap();
+        let token = generate_auth_token(&subject(&email), &config).unwrap();
         let iat = validate_auth_token(&token, &banned_token_store, &epoch, &config)
             .await
             .unwrap()
@@ -590,7 +609,7 @@ mod tests {
         let config = jwt_auth_config_with_aud_iss();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
-        let token = generate_auth_token(&email, &config).unwrap();
+        let token = generate_auth_token(&subject(&email), &config).unwrap();
         let claims = validate_auth_token(&token, &banned_token_store, &epoch_store(), &config)
             .await
             .unwrap();
@@ -607,7 +626,7 @@ mod tests {
         let validating_config = jwt_auth_config_with_aud_iss();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
-        let token = generate_auth_token(&email, &issuing_config).unwrap();
+        let token = generate_auth_token(&subject(&email), &issuing_config).unwrap();
         let result = validate_auth_token(
             &token,
             &banned_token_store,
@@ -626,7 +645,7 @@ mod tests {
         let validating_config = jwt_auth_config_with_aud_iss();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
-        let token = generate_auth_token(&email, &issuing_config).unwrap();
+        let token = generate_auth_token(&subject(&email), &issuing_config).unwrap();
         let result = validate_auth_token(
             &token,
             &banned_token_store,
@@ -642,7 +661,7 @@ mod tests {
         let config = jwt_auth_config();
         let email = Email::try_from(Secret::from("test@example.com".to_owned())).unwrap();
         let banned_token_store = HashSetBannedTokenStore::default();
-        let token = generate_auth_token(&email, &config).unwrap();
+        let token = generate_auth_token(&subject(&email), &config).unwrap();
 
         banned_token_store.ban_token(token.clone()).await.unwrap();
         let result =
@@ -655,8 +674,8 @@ mod tests {
         let email = Email::try_from(Secret::new("test@example.com".to_owned())).unwrap();
         let config = jwt_auth_config();
 
-        let first = generate_auth_token(&email, &config).unwrap();
-        let second = generate_auth_token(&email, &config).unwrap();
+        let first = generate_auth_token(&subject(&email), &config).unwrap();
+        let second = generate_auth_token(&subject(&email), &config).unwrap();
         assert_ne!(first, second);
     }
 
@@ -668,9 +687,9 @@ mod tests {
         let banned = HashSetBannedTokenStore::new();
         let epochs = epoch_store();
 
-        let first = generate_auth_token(&email, &config).unwrap();
+        let first = generate_auth_token(&subject(&email), &config).unwrap();
         banned.ban_token(first.clone()).await.unwrap();
-        let second = generate_auth_token(&email, &config).unwrap();
+        let second = generate_auth_token(&subject(&email), &config).unwrap();
 
         assert!(matches!(
             validate_auth_token(&first, &banned, &epochs, &config).await,

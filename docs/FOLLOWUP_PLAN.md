@@ -677,7 +677,9 @@ OAuth slot instead.
   - A. `UserId` (UUID) on `User`; `UserStore::get_user_by_id`; Postgres
     `users.id` primary key, address unique. ✅
   - B. Tokens carry it: JWT `uid` claim, `SessionRecord.user_id`,
-    `IdentityClaims::user_id()`, so an app keys its tables on the id.
+    `IdentityClaims::user_id()`, so an app keys its tables on the id. ✅
+    (`TokenStrategy::issue` takes a `Subject { id, email }`, looked up
+    once per issue; refresh records keep the id.)
   - C. The durable credential stores key on it: TOTP, passkeys, OAuth
     identities, API keys (migrations, `ON DELETE CASCADE`). Their
     `reassign` methods go; email change is the account update plus

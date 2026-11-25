@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use secrecy::{ExposeSecret, Secret};
 use tempered_core::{
     AuthRequest, AuthValidator, BannedTokenStore, BannedTokenStoreError, ClassifyError, Email,
-    ErrorCategory, RefreshTokenStore, TokenEpochStore,
+    ErrorCategory, RefreshTokenStore, Subject, TokenEpochStore,
 };
 use thiserror::Error;
 
@@ -54,7 +54,11 @@ pub trait TokenStrategy: Clone + Send + Sync + 'static {
     /// Contract: if `revoke_all_for_user` ran for this user since the ticket
     /// was taken, the result MUST NOT be a usable token: either this returns
     /// an error, or the token it returns fails validation.
-    async fn issue(&self, email: &Email, ticket: Self::Ticket) -> Result<Self::Token, Self::Error>;
+    async fn issue(
+        &self,
+        subject: &Subject,
+        ticket: Self::Ticket,
+    ) -> Result<Self::Token, Self::Error>;
 
     /// Invalidate a token (logout / ban / delete).
     async fn revoke(&self, token: &Self::Token) -> Result<(), Self::Error>;
@@ -373,7 +377,7 @@ where
     async fn new_refresh(
         &self,
         refresh: &RefreshTokens,
-        email: &Email,
+        subject: &Subject,
         family: String,
         expires_at: u64,
     ) -> Result<Secret<String>, JwtTokenError> {
@@ -386,7 +390,8 @@ where
             .create(
                 hash_refresh(&token),
                 tempered_core::RefreshRecord {
-                    email: email.clone(),
+                    email: subject.email.clone(),
+                    user_id: subject.id,
                     family,
                     expires_at,
                 },
@@ -400,16 +405,16 @@ where
     /// with the app's claims.
     async fn sign(
         &self,
-        email: &Email,
+        subject: &Subject,
         ticket: &JwtTicket,
         family: Option<&str>,
     ) -> Result<String, JwtTokenError> {
         let ext = match &self.claims {
-            Some(provider) => Some(provider.claims(email).await).filter(|m| !m.is_empty()),
+            Some(provider) => Some(provider.claims(&subject.email).await).filter(|m| !m.is_empty()),
             None => None,
         };
         crate::auth_validation::local_jwt_validator::generate_auth_token_with(
-            email,
+            subject,
             &self.config,
             ticket.issued_at,
             family,
@@ -467,17 +472,19 @@ where
         })
     }
 
-    async fn issue(&self, email: &Email, ticket: JwtTicket) -> Result<JwtToken, JwtTokenError> {
+    async fn issue(&self, subject: &Subject, ticket: JwtTicket) -> Result<JwtToken, JwtTokenError> {
         // Stamped with the moment the login began, not the moment it finished.
         // A "revoke all" in between moved the cutoff past this stamp, so the
         // validator rejects the token: no check is needed here.
         let Some(refresh) = &self.refresh else {
-            return Ok(JwtToken(self.sign(email, &ticket, None).await?, None));
+            return Ok(JwtToken(self.sign(subject, &ticket, None).await?, None));
         };
         let family = uuid::Uuid::new_v4().to_string();
-        let token = self.sign(email, &ticket, Some(&family)).await?;
+        let token = self.sign(subject, &ticket, Some(&family)).await?;
         let expires_at = unix_now() + refresh.ttl_seconds;
-        let next = self.new_refresh(refresh, email, family, expires_at).await?;
+        let next = self
+            .new_refresh(refresh, subject, family, expires_at)
+            .await?;
         Ok(JwtToken(token, Some(next)))
     }
 
@@ -649,11 +656,13 @@ where
                 // deletes the successor, and the access token, stamped by
                 // `begin` before the new cutoff, is refused).
                 let ticket = self.begin(&record.email).await?;
-                let access = self
-                    .sign(&record.email, &ticket, Some(&record.family))
-                    .await?;
+                let subject = Subject {
+                    id: record.user_id,
+                    email: record.email.clone(),
+                };
+                let access = self.sign(&subject, &ticket, Some(&record.family)).await?;
                 let next = self
-                    .new_refresh(refresh, &record.email, record.family, record.expires_at)
+                    .new_refresh(refresh, &subject, record.family, record.expires_at)
                     .await
                     .map_err(|e| match e {
                         JwtTokenError::Refresh(tempered_core::RefreshTokenStoreError::NotFound) => {
@@ -743,6 +752,16 @@ mod tests {
 
     fn email() -> Email {
         Email::try_from(Secret::new("test@example.com".to_string())).unwrap()
+    }
+
+    /// The account `email()` belongs to; one id for the whole test.
+    fn subject() -> Subject {
+        static ID: std::sync::LazyLock<tempered_core::UserId> =
+            std::sync::LazyLock::new(tempered_core::UserId::new);
+        Subject {
+            id: *ID,
+            email: email(),
+        }
     }
 
     fn strategy() -> JwtTokens<HashSetBannedTokenStore> {
@@ -856,7 +875,7 @@ mod tests {
         // revocation lands in that gap: whatever was checked may be gone.
         let ticket = tokens.begin(&email()).await.unwrap();
         tokens.revoke_all_for_user(&email()).await.unwrap();
-        let token = tokens.issue(&email(), ticket).await.unwrap();
+        let token = tokens.issue(&subject(), ticket).await.unwrap();
         assert!(!validates(&tokens, &token).await);
 
         // A login that begins afterwards is unaffected.
@@ -881,7 +900,7 @@ mod tests {
     /// A whole login with nothing in between.
     async fn login(tokens: &JwtTokens<HashSetBannedTokenStore>) -> JwtToken {
         let ticket = tokens.begin(&email()).await.unwrap();
-        tokens.issue(&email(), ticket).await.unwrap()
+        tokens.issue(&subject(), ticket).await.unwrap()
     }
 
     async fn validates(tokens: &JwtTokens<HashSetBannedTokenStore>, token: &JwtToken) -> bool {

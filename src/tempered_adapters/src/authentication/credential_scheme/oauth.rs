@@ -97,7 +97,7 @@ where
 
         let token = self
             .tokens
-            .issue(&email, ticket)
+            .issue(&self.subject_for(&email).await?, ticket)
             .await
             .map_err(CredentialError::Token)?;
         Ok(LoginOutcome::Success(token))

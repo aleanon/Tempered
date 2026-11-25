@@ -46,6 +46,7 @@ impl RedisRefreshTokenStore {
 #[derive(Serialize, Deserialize)]
 struct Stored {
     email: String,
+    user_id: tempered_core::UserId,
     family: String,
     expires_at: u64,
 }
@@ -159,6 +160,7 @@ impl RefreshTokenStore for RedisRefreshTokenStore {
         let ttl = record.expires_at.saturating_sub(now()).max(1);
         let value = serde_json::to_string(&Stored {
             email: record.email.as_ref().expose_secret().clone(),
+            user_id: record.user_id,
             family: record.family.clone(),
             expires_at: record.expires_at,
         })
@@ -202,6 +204,7 @@ impl RefreshTokenStore for RedisRefreshTokenStore {
         }
         Ok(RefreshRecord {
             email,
+            user_id: stored.user_id,
             family: stored.family,
             expires_at: stored.expires_at,
         })
@@ -236,6 +239,7 @@ mod tests {
         let email = contract::email("a@example.com");
         let record = |family: &str, ttl: u64| RefreshRecord {
             email: email.clone(),
+            user_id: tempered_core::UserId::new(),
             family: family.to_string(),
             expires_at: now() + ttl,
         };
