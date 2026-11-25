@@ -600,6 +600,14 @@ pub trait SessionStore: Send + Sync {
 
 #[async_trait]
 pub trait TwoFaCodeStore: Send + Sync {
+    /// Where this store keeps its codes, when it can say: two stores with
+    /// the same keyspace share codes. Used to refuse, at startup, a second
+    /// store (passwordless email login) that would share the 2FA store's
+    /// codes. `None` (the default) means "cannot tell".
+    fn keyspace(&self) -> Option<String> {
+        None
+    }
+
     async fn store_code(
         &self,
         user_id: Email,

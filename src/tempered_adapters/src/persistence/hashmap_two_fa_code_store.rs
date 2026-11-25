@@ -69,6 +69,11 @@ impl HashMapTwoFaCodeStore {
 
 #[async_trait::async_trait]
 impl TwoFaCodeStore for HashMapTwoFaCodeStore {
+    /// Clones share their map; separate stores do not.
+    fn keyspace(&self) -> Option<String> {
+        Some(format!("memory:{:p}", Arc::as_ptr(&self.state)))
+    }
+
     async fn store_code(
         &self,
         user_id: Email,

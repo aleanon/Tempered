@@ -69,6 +69,7 @@ fn app(outbox: &Outbox, link: Option<&str>) -> Router {
         HashMapTokenEpochStore::new(),
     )
     .supports_registration()
+    .supports_password_change()
     .supports_2fa(HashMapTwoFaCodeStore::new(), outbox.clone())
     .supports_email_login(login);
     auth_service(scheme, String::new()).into()
@@ -234,4 +235,69 @@ async fn an_email_login_does_not_disturb_a_pending_two_factor_login() {
     let verify =
         json!({ "email": "user@example.com", "loginAttemptId": attempt, "2FACode": two_fa_code });
     assert_eq!(post(&app, "/verify-2fa", verify).await.0, StatusCode::OK);
+}
+
+/// A password change ends every pending way in, a mailed sign-in code too.
+#[tokio::test]
+async fn a_password_change_ends_a_pending_email_login() {
+    let outbox = Outbox::default();
+    let app = app(&outbox, None);
+    sign_up(&app, "user@example.com", false).await;
+    let (_, _, body) = post(
+        &app,
+        "/email-login/start",
+        json!({ "email": "user@example.com" }),
+    )
+    .await;
+    let (_, code) = outbox.mail(0).await.unwrap();
+
+    let (_, session, _) = post(
+        &app,
+        "/login",
+        json!({ "email": "user@example.com", "password": "correct-horse" }),
+    )
+    .await;
+    let session = session.unwrap().split(';').next().unwrap().to_string();
+    let change = Request::post("/change-password")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, session)
+        .body(Body::from(
+            json!({ "new_password": "another-good-password" }).to_string(),
+        ))
+        .unwrap();
+    assert!(
+        app.clone()
+            .oneshot(change)
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+
+    let verify = json!({ "email": "user@example.com", "loginAttemptId": body["loginAttemptId"], "code": code });
+    assert_eq!(
+        post(&app, "/email-login/verify", verify).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// One store for both would make sign-in codes pass as second factors.
+#[test]
+#[should_panic(expected = "shares the 2FA store's codes")]
+fn sharing_the_two_factor_store_is_refused_at_startup() {
+    let shared = HashMapTwoFaCodeStore::new();
+    let _ = JwtScheme::new(
+        HashMapUserStore::new(),
+        JwtAuthConfig {
+            jwt_cookie_name: "jwt".to_string(),
+            jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+            token_ttl_in_seconds: 300,
+            audience: None,
+            issuer: None,
+        },
+        HashSetBannedTokenStore::new(),
+        HashMapTokenEpochStore::new(),
+    )
+    .supports_2fa(shared.clone(), Outbox::default())
+    .supports_email_login(EmailLogin::code(shared));
 }

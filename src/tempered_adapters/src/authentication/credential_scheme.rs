@@ -179,7 +179,23 @@ impl<U, T, S, E, P, L, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E, P>, L, R, 
     /// single use, expiry and attempt budget; an account that requires 2FA
     /// is still asked for its second factor. Lights up
     /// [`SupportsEmailLogin`](tempered_core::SupportsEmailLogin).
-    pub fn supports_email_login(mut self, settings: EmailLogin) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// If the email-login store shares its codes with the 2FA store (the
+    /// same in-memory store, or a Redis store in the same namespace): a
+    /// sign-in code would then pass as a second factor.
+    pub fn supports_email_login(mut self, settings: EmailLogin) -> Self
+    where
+        S: TwoFaCodeStore,
+    {
+        let two_fa = self.two_fa.store.keyspace();
+        assert!(
+            two_fa.is_none() || two_fa != settings.store.keyspace(),
+            "the email-login code store shares the 2FA store's codes ({}); give it its own \
+             store (with Redis: `.with_namespace(\"email_login\")`)",
+            two_fa.unwrap_or_default()
+        );
         self.two_fa.email_login = Some(settings);
         self
     }
@@ -535,9 +551,18 @@ where
 
     async fn cancel_pending(&self, email: &Email) -> Result<(), TwoFaChallengeError> {
         match self.store.delete(email).await {
-            Ok(()) | Err(TwoFaCodeStoreError::UserNotFound) => Ok(()),
-            Err(e) => Err(e.into()),
+            Ok(()) | Err(TwoFaCodeStoreError::UserNotFound) => {}
+            Err(e) => return Err(e.into()),
         }
+        // A pending email-login code is a way in that the reset must end
+        // as well.
+        if let Some(login) = &self.email_login {
+            match login.store.delete(email).await {
+                Ok(()) | Err(TwoFaCodeStoreError::UserNotFound) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
     }
 
     async fn redeem(

@@ -102,6 +102,12 @@ return 'ok'
 
 #[async_trait::async_trait]
 impl TwoFaCodeStore for RedisTwoFaCodeStore {
+    /// The namespace: two stores on one Redis without different namespaces
+    /// share codes.
+    fn keyspace(&self) -> Option<String> {
+        Some(format!("redis:{}", self.namespace))
+    }
+
     async fn store_code(
         &self,
         user_id: Email,
