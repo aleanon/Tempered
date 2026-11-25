@@ -64,9 +64,10 @@ pub use core::{
     ChallengeStore, ChallengeStoreError, ClassifyError, EmailClient, EmailVerificationStoreError,
     EmailVerificationTokenStore, ErrorCategory, HttpOAuth2Scheme, OAuthHttpClient, OAuthHttpError,
     OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, PasskeyStoreError, RateLimitStore,
-    RateLimitStoreError, RequiresEmailVerification, SessionRecord, SessionStore, SessionStoreError,
-    SupportsApiKeyIssuance, SupportsOAuth2, SupportsPasskeys, TwoFaCodeStore, TwoFaCodeStoreError,
-    UserStore, UserStoreError, WebAuthnVerifier, WindowCount,
+    RateLimitStoreError, RecoveryCodeHash, RequiresEmailVerification, SessionRecord, SessionStore,
+    SessionStoreError, SupportsApiKeyIssuance, SupportsOAuth2, SupportsPasskeys, SupportsTotp,
+    TotpEnrollment, TotpStore, TotpStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
+    UserStoreError, WebAuthnVerifier, WindowCount,
 };
 
 // ============================================================================
@@ -112,6 +113,7 @@ pub use tempered_adapters::{
         JwtTicket, JwtToken, JwtTokens, MIN_JWT_SECRET_BYTES, TokenStrategy, USER_LOCK_TTL_SECONDS,
         UserLock,
     },
+    authentication::totp::{RECOVERY_CODES, Totp},
     email::MockEmailClient,
     oauth::{OAuthFlow, OAuthFlowError, VerifiedIdentity, pkce_challenge_s256},
     passkey::{PasskeyFlow, PasskeyFlowError},
@@ -119,8 +121,8 @@ pub use tempered_adapters::{
         Argon2Hasher, Argon2Params, HashMapApiKeyStore, HashMapChallengeStore,
         HashMapEmailVerificationTokenStore, HashMapOAuthIdentityStore, HashMapOAuthStateStore,
         HashMapPasskeyCredentialStore, HashMapPasswordResetTokenStore, HashMapRateLimitStore,
-        HashMapSessionStore, HashMapTokenEpochStore, HashMapTwoFaCodeStore, HashMapUserStore,
-        HashSetBannedTokenStore, PasswordVerdict,
+        HashMapSessionStore, HashMapTokenEpochStore, HashMapTotpStore, HashMapTwoFaCodeStore,
+        HashMapUserStore, HashSetBannedTokenStore, PasswordVerdict,
     },
 };
 
@@ -134,7 +136,7 @@ pub use tempered_adapters::passkey::{WebAuthnRsVerifier, webauthn_rs};
 #[cfg(feature = "postgres")]
 pub use tempered_adapters::persistence::{
     PostgresApiKeyStore, PostgresOAuthIdentityStore, PostgresPasskeyCredentialStore,
-    PostgresUserStore,
+    PostgresTotpStore, PostgresUserStore,
 };
 #[cfg(feature = "redis")]
 pub use tempered_adapters::persistence::{

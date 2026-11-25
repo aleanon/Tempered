@@ -30,7 +30,8 @@ use crate::endpoints::{ClientAddr, EndpointResponse, RouteId, error_response};
 pub enum RateLimitGroup {
     /// Password and passkey logins, and OAuth starts.
     Login,
-    /// 2FA codes, at login and at elevation.
+    /// 2FA codes, at login and at elevation, and confirming a new
+    /// authenticator app.
     SecondFactor,
     /// `/elevate` (re-entering the password).
     Elevate,
@@ -45,7 +46,7 @@ impl RateLimitGroup {
         use RouteId::*;
         Some(match route {
             Login | PasskeyLoginStart | PasskeyLoginFinish | OAuthStart => Self::Login,
-            Verify2Fa | VerifyElevation2Fa => Self::SecondFactor,
+            Verify2Fa | VerifyElevation2Fa | TotpConfirm => Self::SecondFactor,
             Elevate => Self::Elevate,
             PasswordResetInitiate | PasswordResetComplete => Self::PasswordReset,
             Signup | ResendVerification => Self::VerificationMail,

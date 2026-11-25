@@ -109,6 +109,7 @@ jsonwebtoken = { version = "10.2", default-features = false, features = [
 argon2 = { version = "0.5.3", features = ["std"] }
 sha2 = "0.10"
 hmac = "0.12"
+sha1 = "0.10"
 base64 = "0.22"
 
 # Configuration

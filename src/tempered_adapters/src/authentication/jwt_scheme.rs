@@ -1740,3 +1740,269 @@ mod config_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod totp_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::JwtScheme;
+    use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
+    use crate::authentication::credential_scheme::PasswordCredentials;
+    use crate::authentication::totp::code_for;
+    use crate::persistence::{
+        HashMapTokenEpochStore, HashMapTotpStore, HashMapTwoFaCodeStore, HashMapUserStore,
+        HashSetBannedTokenStore,
+    };
+    use secrecy::{ExposeSecret, Secret};
+    use tempered_core::{
+        AuthenticationScheme, Email, EmailClient, LoginOutcome, SupportsAccountDeletion,
+        SupportsTotp, SupportsTwoFactor, TotpStore, TwoFaAttemptId, TwoFaCode, User, UserStore,
+    };
+
+    /// Keeps every message it is asked to send.
+    #[derive(Clone, Default)]
+    struct Outbox(Arc<Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl EmailClient for Outbox {
+        async fn send_email(&self, _: &Email, _: &str, content: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push(content.to_string());
+            Ok(())
+        }
+    }
+
+    fn config(cookie: &str, secret: &str) -> JwtAuthConfig {
+        JwtAuthConfig {
+            jwt_cookie_name: cookie.to_string(),
+            jwt_secret: Secret::new(secret.to_string()),
+            token_ttl_in_seconds: 3600,
+            audience: None,
+            issuer: None,
+        }
+    }
+
+    fn email() -> Email {
+        Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
+    }
+
+    struct Setup<S> {
+        scheme: S,
+        outbox: Outbox,
+        totp: HashMapTotpStore,
+        users: HashMapUserStore,
+    }
+
+    async fn setup()
+    -> Setup<impl SupportsTotp<Credentials = PasswordCredentials> + SupportsAccountDeletion + Clone>
+    {
+        let users = HashMapUserStore::new();
+        users
+            .add_user(
+                User::parse(
+                    email().as_ref().clone(),
+                    Secret::new("passwordpassword".into()),
+                    false,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let outbox = Outbox::default();
+        let totp = HashMapTotpStore::new();
+        let scheme = JwtScheme::new(
+            users.clone(),
+            config("jwt", "a-test-secret-that-is-long-enough"),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_2fa(HashMapTwoFaCodeStore::new(), outbox.clone())
+        .supports_elevation(
+            HashSetBannedTokenStore::new(),
+            config("elevated", "another-test-secret-long-enough!"),
+            |e| e.supports_account_deletion(),
+        )
+        .supports_totp(totp.clone(), "Test App");
+        Setup {
+            scheme,
+            outbox,
+            totp,
+            users,
+        }
+    }
+
+    fn credentials() -> PasswordCredentials {
+        PasswordCredentials {
+            email: Secret::new("user@example.com".to_string()),
+            password: Secret::new("passwordpassword".to_string()),
+        }
+    }
+
+    async fn second_step<S>(scheme: &S) -> TwoFaAttemptId
+    where
+        S: AuthenticationScheme<Credentials = PasswordCredentials>,
+        S::AuthError: std::fmt::Debug,
+    {
+        match scheme.login(credentials()).await.unwrap() {
+            LoginOutcome::Requires2Fa { attempt_id, .. } => attempt_id,
+            LoginOutcome::Success(_) => panic!("2FA was not asked for"),
+        }
+    }
+
+    /// Enrol and confirm an app; returns its secret and the recovery codes.
+    async fn enrol<S: SupportsTotp>(scheme: &S, totp: &HashMapTotpStore) -> (Vec<u8>, Vec<String>) {
+        let enrollment = scheme.start_totp(email()).await.ok().unwrap();
+        assert!(
+            enrollment
+                .otpauth_uri
+                .expose_secret()
+                .starts_with("otpauth://totp/Test%20App%3A")
+        );
+        let secret = totp
+            .pending(&email())
+            .await
+            .unwrap()
+            .unwrap()
+            .expose_secret()
+            .clone();
+        let codes = scheme
+            .confirm_totp(email(), code_for(&secret, 0))
+            .await
+            .ok()
+            .unwrap();
+        (secret, codes)
+    }
+
+    #[tokio::test]
+    async fn an_app_replaces_mailed_codes_and_recovery_codes_work_once() {
+        let s = setup().await;
+        let (secret, recovery) = enrol(&s.scheme, &s.totp).await;
+        assert_eq!(recovery.len(), 10);
+        assert!(
+            s.users.get_user(&email()).await.unwrap().requires_2fa(),
+            "2FA is on"
+        );
+
+        // The login asks for a second factor, and mails nothing.
+        let attempt = second_step(&s.scheme).await;
+        assert!(s.outbox.0.lock().unwrap().is_empty());
+        let next = code_for(&secret, 1);
+        assert!(
+            s.scheme
+                .verify_2fa(email(), attempt, next.clone())
+                .await
+                .is_ok()
+        );
+
+        // The same code again is a replay.
+        let attempt = second_step(&s.scheme).await;
+        assert!(s.scheme.verify_2fa(email(), attempt, next).await.is_err());
+
+        // A recovery code works once, typed any way.
+        let attempt = second_step(&s.scheme).await;
+        let first = TwoFaCode::parse(recovery[0].clone()).unwrap();
+        assert!(
+            s.scheme
+                .verify_2fa(email(), attempt, first.clone())
+                .await
+                .is_ok()
+        );
+        let attempt = second_step(&s.scheme).await;
+        assert!(s.scheme.verify_2fa(email(), attempt, first).await.is_err());
+        let attempt = second_step(&s.scheme).await;
+        let typed = TwoFaCode::parse(recovery[1].to_uppercase().replace('-', "")).unwrap();
+        assert!(s.scheme.verify_2fa(email(), attempt, typed).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn wrong_app_codes_use_up_the_attempt() {
+        let s = setup().await;
+        let (secret, _) = enrol(&s.scheme, &s.totp).await;
+        let attempt = second_step(&s.scheme).await;
+        let wrong = TwoFaCode::parse("000000".to_string()).unwrap();
+        let wrong = if wrong == code_for(&secret, 1) || wrong == code_for(&secret, 0) {
+            TwoFaCode::parse("111111".to_string()).unwrap()
+        } else {
+            wrong
+        };
+        let mut refused = 0;
+        for _ in 0..20 {
+            if s.scheme
+                .verify_2fa(email(), attempt.clone(), wrong.clone())
+                .await
+                .is_err()
+            {
+                refused += 1;
+            }
+        }
+        assert_eq!(refused, 20);
+        // The budget is spent: now even the right code is refused.
+        let right = code_for(&secret, 1);
+        assert!(s.scheme.verify_2fa(email(), attempt, right).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_confirmation_needs_a_code_from_the_pending_app() {
+        let s = setup().await;
+        s.scheme.start_totp(email()).await.ok().unwrap();
+        let wrong = TwoFaCode::parse("123456".to_string()).unwrap();
+        // (One in a million: the wrong code is right. Then this test proves less.)
+        let _ = s.scheme.confirm_totp(email(), wrong).await;
+        if s.totp.active(&email()).await.unwrap().is_none() {
+            assert!(
+                s.totp.pending(&email()).await.unwrap().is_some(),
+                "still pending"
+            );
+            assert!(!s.users.get_user(&email()).await.unwrap().requires_2fa());
+        }
+        // Nothing to confirm without a start.
+        let other = setup().await;
+        let code = TwoFaCode::parse("123456".to_string()).unwrap();
+        assert!(other.scheme.confirm_totp(email(), code).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn disabling_the_app_brings_back_mailed_codes() {
+        let s = setup().await;
+        enrol(&s.scheme, &s.totp).await;
+        s.scheme.disable_totp(email()).await.ok().unwrap();
+
+        let attempt = second_step(&s.scheme).await;
+        let mailed = s
+            .outbox
+            .0
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("a mailed code");
+        let code = TwoFaCode::parse(mailed).unwrap();
+        assert!(s.scheme.verify_2fa(email(), attempt, code).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn new_recovery_codes_replace_the_old_ones() {
+        let s = setup().await;
+        let (_, old) = enrol(&s.scheme, &s.totp).await;
+        let new = s
+            .scheme
+            .regenerate_recovery_codes(email())
+            .await
+            .ok()
+            .unwrap();
+
+        let attempt = second_step(&s.scheme).await;
+        let stale = TwoFaCode::parse(old[0].clone()).unwrap();
+        assert!(s.scheme.verify_2fa(email(), attempt, stale).await.is_err());
+        let attempt = second_step(&s.scheme).await;
+        let fresh = TwoFaCode::parse(new[0].clone()).unwrap();
+        assert!(s.scheme.verify_2fa(email(), attempt, fresh).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn deleting_the_account_forgets_the_app() {
+        let s = setup().await;
+        enrol(&s.scheme, &s.totp).await;
+        s.scheme.delete_account(email()).await.ok().unwrap();
+        assert!(s.totp.active(&email()).await.unwrap().is_none());
+    }
+}

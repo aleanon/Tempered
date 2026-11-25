@@ -19,7 +19,8 @@ use tempered_core::{
     AuthValidator, AuthenticationScheme, CeremonyId, ClassifyError, Email,
     HttpAuthenticationScheme, HttpElevationScheme, HttpOAuth2Scheme, IdentityClaims, Password,
     RequiresEmailVerification, SupportsAccountDeletion, SupportsPasskeys, SupportsPasswordChange,
-    SupportsPasswordReset, SupportsRegistration, SupportsTwoFactor, constant_time_eq,
+    SupportsPasswordReset, SupportsRegistration, SupportsTotp, SupportsTwoFactor, TwoFaCode,
+    constant_time_eq,
 };
 
 use super::{
@@ -33,6 +34,7 @@ use crate::authentication::credential_scheme::{
     TwoFa,
 };
 use crate::authentication::token_strategy::TokenStrategy;
+use crate::authentication::totp::Totp;
 use crate::handlers::{self, verify_2fa::Verify2FaError};
 use crate::http::HttpResponseBuilder;
 
@@ -426,20 +428,22 @@ struct Verify2FaRequest {
 }
 
 #[async_trait]
-impl<S, St, E> SlotEndpoints<S> for TwoFa<St, E>
+impl<S, St, E, P> SlotEndpoints<S> for TwoFa<St, E, P>
 where
     S: HttpAuthenticationScheme + SupportsTwoFactor + Sync,
     S::TwoFactorError: ClassifyError,
     St: Send + Sync,
     E: Send + Sync,
+    P: TotpEndpoints<S>,
 {
-    fn routes(&self, _flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+    fn routes(&self, flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
         out.push(route(
             RouteId::Verify2Fa,
             Method::POST,
             o.path_or(RouteId::Verify2Fa, "/verify-2fa"),
             Tier::Public,
         ));
+        self.totp().routes(flags, o, out);
     }
 
     async fn handle(
@@ -447,10 +451,10 @@ where
         scheme: &S,
         id: RouteId,
         req: &EndpointRequest,
-        _who: Option<&Email>,
+        who: Option<&Email>,
     ) -> Option<EndpointResponse> {
         if id != RouteId::Verify2Fa {
-            return None;
+            return self.totp().handle(scheme, id, req, who).await;
         }
         respond!({
             let request: Verify2FaRequest = parse(req)?;
@@ -472,6 +476,107 @@ where
                         error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
                     }
                 })
+        })
+    }
+}
+
+// ---- TOTP (part of the 2FA slot) --------------------------------------------
+
+/// The TOTP routes of the 2FA slot: none for `()`, four for [`Totp`].
+#[async_trait]
+pub trait TotpEndpoints<S: Sync>: Send + Sync {
+    fn routes(&self, _flags: &RouteFlags, _o: &PathOverrides, _out: &mut Vec<RouteSpec>) {}
+
+    async fn handle(
+        &self,
+        _scheme: &S,
+        _id: RouteId,
+        _req: &EndpointRequest,
+        _who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        None
+    }
+}
+
+impl<S: Sync> TotpEndpoints<S> for () {}
+
+#[derive(Deserialize)]
+struct TotpCodeRequest {
+    code: String,
+}
+
+#[async_trait]
+impl<S, TS> TotpEndpoints<S> for Totp<TS>
+where
+    S: SupportsTotp + Sync,
+    S::TotpError: ClassifyError,
+    TS: Send + Sync,
+{
+    fn routes(&self, _flags: &RouteFlags, o: &PathOverrides, out: &mut Vec<RouteSpec>) {
+        // Adding or removing a second factor is a credential change: elevated.
+        for (id, path) in [
+            (RouteId::TotpStart, "/elevated/totp/start"),
+            (RouteId::TotpConfirm, "/elevated/totp/confirm"),
+            (RouteId::TotpDisable, "/elevated/totp/disable"),
+            (RouteId::TotpRecoveryCodes, "/elevated/totp/recovery-codes"),
+        ] {
+            out.push(route(id, Method::POST, o.path_or(id, path), Tier::Elevated));
+        }
+    }
+
+    async fn handle(
+        &self,
+        scheme: &S,
+        id: RouteId,
+        req: &EndpointRequest,
+        who: Option<&Email>,
+    ) -> Option<EndpointResponse> {
+        if !matches!(
+            id,
+            RouteId::TotpStart
+                | RouteId::TotpConfirm
+                | RouteId::TotpDisable
+                | RouteId::TotpRecoveryCodes
+        ) {
+            return None;
+        }
+        respond!({
+            let email = who.cloned().ok_or_else(not_logged_in)?;
+            match id {
+                RouteId::TotpStart => {
+                    let enrollment = scheme.start_totp(email).await.map_err(classified)?;
+                    Ok(json_response(
+                        StatusCode::OK,
+                        json!({
+                            "secret": enrollment.secret.expose_secret(),
+                            "otpauthUri": enrollment.otpauth_uri.expose_secret(),
+                        }),
+                    ))
+                }
+                RouteId::TotpConfirm => {
+                    let request: TotpCodeRequest = parse(req)?;
+                    let code = TwoFaCode::parse(request.code).map_err(bad_request)?;
+                    let codes = scheme.confirm_totp(email, code).await.map_err(classified)?;
+                    Ok(json_response(
+                        StatusCode::OK,
+                        json!({ "recoveryCodes": codes }),
+                    ))
+                }
+                RouteId::TotpDisable => {
+                    scheme.disable_totp(email).await.map_err(classified)?;
+                    Ok(json_response(StatusCode::OK, json!({})))
+                }
+                _ => {
+                    let codes = scheme
+                        .regenerate_recovery_codes(email)
+                        .await
+                        .map_err(classified)?;
+                    Ok(json_response(
+                        StatusCode::OK,
+                        json!({ "recoveryCodes": codes }),
+                    ))
+                }
+            }
         })
     }
 }

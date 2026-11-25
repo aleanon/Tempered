@@ -63,6 +63,10 @@ pub enum RouteId {
     PasskeyRegisterFinish,
     PasskeyLoginStart,
     PasskeyLoginFinish,
+    TotpStart,
+    TotpConfirm,
+    TotpDisable,
+    TotpRecoveryCodes,
 }
 
 /// What a request must prove before a route runs. The tiers nest: a

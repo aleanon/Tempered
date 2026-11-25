@@ -122,6 +122,7 @@ automatically:
 | Registration | `.supports_registration()` | `POST /signup` (a taken address gets the same `201`; with email verification its owner is mailed a notice) |
 | Two-factor | `.supports_2fa(store, email_client)` | `POST /verify-2fa` |
 | Elevation ("sudo") | `.supports_elevation(ban_store, config, \|e\| ...)` | `POST /elevate`, `POST /elevate/verify-2fa`, elevated routes |
+| Authenticator apps (TOTP) | `.supports_totp(store, "Your App")`, after 2FA and elevation | `POST /elevated/totp/{start,confirm,disable,recovery-codes}`. An account with an app gets no mailed code: `/verify-2fa` takes the app's code or a recovery code in `2FACode` |
 | Password reset | `.supports_password_reset(store, email_client)` | initiate + complete routes. Initiation answers at once and sends the mail afterwards, so its timing does not reveal whether the address has an account |
 | Email verification | `.supports_email_verification(...)` | `POST /verify-email`, `POST /verify-email/resend` (both logged in); signup sends the link; credential changes need a verified address |
 | OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes. A callback that fails (including a provider `error=`, e.g. the user cancelled, which answers `401`) clears the state cookie |
@@ -189,6 +190,28 @@ long a stolen cookie stays good. `SessionConfig::new(cookie, ttl)` sets the
 absolute lifetime to 24 hours (`DEFAULT_MAX_SESSION_LIFETIME_SECONDS`);
 change it with `.max_lifetime(seconds)`. A JWT has no sliding expiry: its
 `token_ttl_in_seconds` is already its absolute lifetime.
+
+### Authenticator apps and recovery codes
+
+With `.supports_totp(store, issuer)` a user can add an authenticator app
+(RFC 6238: SHA-1, six digits, 30 seconds) as their second factor. All four
+routes are elevated, so a stolen session alone cannot add or remove one:
+
+1. `POST /elevated/totp/start` answers `{ secret, otpauthUri }`. Show the URI
+   as a QR code (and the base32 secret for typing in). Nothing changes yet.
+2. `POST /elevated/totp/confirm { code }` with a code from the app turns it
+   on (and 2FA with it) and answers `{ recoveryCodes }`: ten single-use
+   codes like `abcde-23456`, stored only as hashes. Show them once.
+3. From then on, the login's `/verify-2fa` (and `/elevate/verify-2fa`)
+   takes the app's code, or a recovery code, in `2FACode`; no code is
+   mailed. Each app code works once, and wrong codes use up the same
+   attempt budget as mailed ones.
+
+`/elevated/totp/recovery-codes` replaces the recovery codes, and
+`/elevated/totp/disable` removes the app: an account that requires 2FA goes
+back to mailed codes. Deleting the account removes it too. Use
+`PostgresTotpStore` in production (its tables are in the migrations); the
+secrets are login credentials, so keep that database encrypted at rest.
 
 ### Rate limits
 

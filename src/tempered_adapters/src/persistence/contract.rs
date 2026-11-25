@@ -741,3 +741,82 @@ pub(crate) async fn rate_limit_store(store: impl tempered_core::RateLimitStore) 
     tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
     assert_eq!(store.hit("short", 1).await.unwrap().count, 1);
 }
+
+/// Pending and active secrets, single-use steps and recovery codes.
+pub(crate) async fn totp_store(store: impl tempered_core::TotpStore) {
+    use secrecy::{ExposeSecret, Secret};
+    let alice = email("alice@example.com");
+    let bob = email("bob@example.com");
+    let secret = |b: u8| Secret::new(vec![b; 20]);
+    let code = |b: u8| [b; 32];
+
+    // Nothing to start with; activating without a pending secret does nothing.
+    assert!(store.active(&alice).await.unwrap().is_none());
+    assert!(!store.activate(&alice, 1, vec![]).await.unwrap());
+    assert!(
+        !store.use_step(&alice, 1).await.unwrap(),
+        "no active secret"
+    );
+
+    // Pending is not active until activated.
+    store.set_pending(&alice, secret(1)).await.unwrap();
+    assert_eq!(
+        store
+            .pending(&alice)
+            .await
+            .unwrap()
+            .unwrap()
+            .expose_secret(),
+        &vec![1; 20]
+    );
+    assert!(store.active(&alice).await.unwrap().is_none());
+    assert!(
+        store
+            .activate(&alice, 100, vec![code(1), code(2)])
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.active(&alice).await.unwrap().unwrap().expose_secret(),
+        &vec![1; 20]
+    );
+    assert!(store.pending(&alice).await.unwrap().is_none());
+
+    // Steps move forward only; the activation step is used.
+    assert!(!store.use_step(&alice, 100).await.unwrap());
+    assert!(store.use_step(&alice, 101).await.unwrap());
+    assert!(!store.use_step(&alice, 101).await.unwrap(), "replay");
+    assert!(!store.use_step(&alice, 99).await.unwrap(), "earlier step");
+
+    // A new pending secret leaves the active one working.
+    store.set_pending(&alice, secret(2)).await.unwrap();
+    assert_eq!(
+        store.active(&alice).await.unwrap().unwrap().expose_secret(),
+        &vec![1; 20]
+    );
+
+    // Recovery codes work once each, and only for their owner.
+    assert!(!store.use_recovery_code(&bob, &code(1)).await.unwrap());
+    assert!(store.use_recovery_code(&alice, &code(1)).await.unwrap());
+    assert!(!store.use_recovery_code(&alice, &code(1)).await.unwrap());
+    store
+        .replace_recovery_codes(&alice, vec![code(3)])
+        .await
+        .unwrap();
+    assert!(
+        !store.use_recovery_code(&alice, &code(2)).await.unwrap(),
+        "replaced"
+    );
+    assert!(store.use_recovery_code(&alice, &code(3)).await.unwrap());
+
+    // Deleting forgets everything, and is idempotent.
+    store.set_pending(&bob, secret(9)).await.unwrap();
+    store.delete_all_for_user(&alice).await.unwrap();
+    store.delete_all_for_user(&alice).await.unwrap();
+    assert!(store.active(&alice).await.unwrap().is_none());
+    assert!(store.pending(&alice).await.unwrap().is_none());
+    assert!(
+        store.pending(&bob).await.unwrap().is_some(),
+        "other users untouched"
+    );
+}

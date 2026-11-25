@@ -26,8 +26,9 @@ use tempered_core::{
     Password, PasswordResetToken, PasswordResetTokenStore, PasswordResetTokenStoreError,
     RequiresEmailVerification, ResponseBuilder, SupportsAccountDeletion, SupportsElevation,
     SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset,
-    SupportsTokenRevocation, TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError,
-    TwoFaError, User, UserError, UserStore, UserStoreError, ValidatedUser, WebAuthnVerifier,
+    SupportsTokenRevocation, SupportsTotp, TotpEnrollment, TotpStore, TotpStoreError,
+    TwoFaAttemptId, TwoFaCode, TwoFaCodeStore, TwoFaCodeStoreError, TwoFaError, User, UserError,
+    UserStore, UserStoreError, ValidatedUser, WebAuthnVerifier,
     strategies::authenticator::{
         AuthenticationScheme, LoginOutcome, SupportsRegistration, SupportsTwoFactor,
     },
@@ -36,6 +37,7 @@ use thiserror::Error;
 
 use crate::authentication::deferred::Deferred;
 use crate::authentication::token_strategy::{ACCOUNT_BUSY, TokenStrategy, UserLock};
+use crate::authentication::totp::{self, Totp, TotpFactor};
 use crate::oauth::{OAuthFlow, OAuthFlowError};
 use crate::passkey::{PasskeyFlow, PasskeyFlowError};
 
@@ -98,11 +100,15 @@ pub struct RouteFlags {
 // Capability slots (the "enabled" states for each optional capability)
 // ============================================================================
 
-/// Enabled two-factor slot: a code store plus the email client used to deliver codes.
+/// Enabled two-factor slot: a code store plus the email client used to
+/// deliver codes, and optionally TOTP (`P`, see
+/// [`supports_totp`](CredentialScheme::supports_totp)). `()` is "email codes
+/// only".
 #[derive(Clone)]
-pub struct TwoFa<T, E> {
+pub struct TwoFa<T, E, P = ()> {
     store: T,
     email: E,
+    totp: P,
 }
 
 /// Enabled elevation ("sudo") slot: a *second* token strategy for short-lived
@@ -110,6 +116,13 @@ pub struct TwoFa<T, E> {
 #[derive(Clone)]
 pub struct Elevation<TE> {
     tokens: TE,
+}
+
+impl<T, E, P> TwoFa<T, E, P> {
+    /// The TOTP part (`()` without TOTP), for the route table.
+    pub(crate) fn totp(&self) -> &P {
+        &self.totp
+    }
 }
 
 impl<TE> Elevation<TE> {
@@ -392,6 +405,13 @@ trait TwoFaChallenge {
         attempt_id: &TwoFaAttemptId,
         code: &TwoFaCode,
     ) -> Result<(), TwoFaChallengeError>;
+
+    /// Forget the user's second-factor data (account deletion). Unlike
+    /// [`cancel_pending`](Self::cancel_pending) this removes enrolled
+    /// authenticator apps, which a password change must keep.
+    async fn forget_user(&self, _email: &Email) -> Result<(), TwoFaChallengeError> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -419,10 +439,11 @@ impl TwoFaChallenge for () {
 }
 
 #[async_trait]
-impl<S, E> TwoFaChallenge for TwoFa<S, E>
+impl<S, E, P> TwoFaChallenge for TwoFa<S, E, P>
 where
     S: TwoFaCodeStore + Send + Sync,
     E: EmailClient + Send + Sync,
+    P: TotpFactor,
 {
     async fn issue_challenge(
         &self,
@@ -432,9 +453,17 @@ where
         let attempt_id = TwoFaAttemptId::new();
         let code = TwoFaCode::new();
 
+        // The attempt is recorded either way: it is what ties the second
+        // step to this first one, and what counts wrong codes.
         self.store
             .store_code(email.clone(), attempt_id.clone(), code.clone())
             .await?;
+
+        // An account with an authenticator app answers from the app; the
+        // stored code is never sent, so only the app's code can match.
+        if self.totp.uses_totp(email).await? {
+            return Ok(attempt_id);
+        }
 
         self.email
             .send_email(email, purpose.subject(), code.as_str())
@@ -457,8 +486,42 @@ where
         attempt_id: &TwoFaAttemptId,
         code: &TwoFaCode,
     ) -> Result<(), TwoFaChallengeError> {
-        Ok(self.store.redeem_code(email, attempt_id, code).await?)
+        if !self.totp.uses_totp(email).await? {
+            return Ok(self.store.redeem_code(email, attempt_id, code).await?);
+        }
+        // App code or recovery code. The code store still decides: it checks
+        // the attempt id, counts the failure and consumes the attempt, so the
+        // app path has the same attempt budget and single use as mailed
+        // codes. It is handed the stored code when the app code is right and
+        // a code that cannot match when it is wrong.
+        let (_, stored) = self
+            .store
+            .get_login_attempt_id_and_two_fa_code(email)
+            .await?;
+        let presented = if self.totp.accept(email, code).await? {
+            stored
+        } else {
+            never_matching(&stored)
+        };
+        Ok(self
+            .store
+            .redeem_code(email, attempt_id, &presented)
+            .await?)
     }
+
+    async fn forget_user(&self, email: &Email) -> Result<(), TwoFaChallengeError> {
+        Ok(self.totp.forget(email).await?)
+    }
+}
+
+/// A six-digit code different from `code` in its last digit.
+fn never_matching(code: &TwoFaCode) -> TwoFaCode {
+    let mut digits: Vec<u8> = code.as_bytes().to_vec();
+    if let Some(last) = digits.last_mut() {
+        *last = b'0' + (*last - b'0' + 1) % 10;
+    }
+    TwoFaCode::parse(String::from_utf8(digits).expect("digits are ASCII"))
+        .expect("six digits stay six digits")
 }
 
 /// Token-agnostic error from the 2FA challenge step; converted into the scheme's
@@ -471,6 +534,8 @@ enum TwoFaChallengeError {
     Store(#[from] TwoFaCodeStoreError),
     #[error("Failed to send email: {0}")]
     Email(String),
+    #[error("TOTP store error: {0}")]
+    Totp(#[from] TotpStoreError),
 }
 
 impl<TE> From<TwoFaChallengeError> for CredentialError<TE>
@@ -482,6 +547,7 @@ where
             TwoFaChallengeError::NotConfigured => CredentialError::TwoFaNotConfigured,
             TwoFaChallengeError::Store(s) => CredentialError::TwoFaCodeStoreError(s),
             TwoFaChallengeError::Email(m) => CredentialError::EmailError(m),
+            TwoFaChallengeError::Totp(t) => CredentialError::TotpStoreError(t),
         }
     }
 }
@@ -608,7 +674,11 @@ impl<U, T, L, R, M, O, K> CredentialScheme<U, T, (), L, R, M, O, K> {
         CredentialScheme {
             user_store: self.user_store,
             tokens: self.tokens,
-            two_fa: TwoFa { store, email },
+            two_fa: TwoFa {
+                store,
+                email,
+                totp: (),
+            },
             elevation: self.elevation,
             password_reset: self.password_reset,
             email_verify: self.email_verify,
@@ -1256,6 +1326,9 @@ where
             // Proof that the address was verified belongs to this account, not to
             // the address: a later account that reuses it must prove it again.
             self.email_verify.forget(&email).await?;
+            // An authenticator app enrolled for this account must not work
+            // for a later account at the same address.
+            self.two_fa.forget_user(&email).await?;
             // A deleted user's token would otherwise keep validating until it
             // expires (JWT validation is signature-based, not a user-store read).
             self.two_fa.cancel_pending(&email).await?;
@@ -1306,13 +1379,14 @@ where
 // ============================================================================
 
 #[async_trait]
-impl<U, T, S, E, L, R, M, O, K> SupportsTwoFactor
-    for CredentialScheme<U, T, TwoFa<S, E>, L, R, M, O, K>
+impl<U, T, S, E, P, L, R, M, O, K> SupportsTwoFactor
+    for CredentialScheme<U, T, TwoFa<S, E, P>, L, R, M, O, K>
 where
     U: UserStore + Clone + 'static,
     T: TokenStrategy,
     S: TwoFaCodeStore + Clone + Send + Sync + 'static,
     E: EmailClient + Clone + Send + Sync + 'static,
+    P: TotpFactor + Clone + 'static,
     L: Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
     M: Clone + Send + Sync + 'static,
@@ -1335,10 +1409,7 @@ where
             .map_err(CredentialError::Token)?;
         // Checks and consumes the code in one step: two concurrent requests
         // with the right code cannot both get past it.
-        self.two_fa
-            .store
-            .redeem_code(&email, &attempt_id, &code)
-            .await?;
+        self.two_fa.redeem(&email, &attempt_id, &code).await?;
         // The account may have been deleted since the first factor.
         self.user_store.get_user(&email).await?;
         Ok(self
@@ -1346,6 +1417,125 @@ where
             .issue(&email, ticket)
             .await
             .map_err(CredentialError::Token)?)
+    }
+}
+
+// ============================================================================
+// TOTP (on the 2FA slot; needs elevation for its routes)
+// ============================================================================
+
+impl<U, T, S, E, TE, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E>, Elevation<TE>, R, M, O, K> {
+    /// Let users add an authenticator app (TOTP) as their second factor,
+    /// with recovery codes, lighting up [`SupportsTotp`] and its routes
+    /// (`/elevated/totp/...`, elevated tier: adding or removing a second
+    /// factor needs a fresh re-authentication). `issuer` is the name the
+    /// app shows next to the account. Needs [`supports_2fa`](Self::supports_2fa)
+    /// and elevation first.
+    ///
+    /// An account with an app gets no mailed code at login: its 2FA step
+    /// takes the app's code or a recovery code, in the same `2FACode` field.
+    // The return type spells out every capability slot on purpose: it is the
+    // typestate transition.
+    #[allow(clippy::type_complexity)]
+    pub fn supports_totp<TS>(
+        self,
+        store: TS,
+        issuer: impl Into<String>,
+    ) -> CredentialScheme<U, T, TwoFa<S, E, Totp<TS>>, Elevation<TE>, R, M, O, K> {
+        CredentialScheme {
+            user_store: self.user_store,
+            tokens: self.tokens,
+            two_fa: TwoFa {
+                store: self.two_fa.store,
+                email: self.two_fa.email,
+                totp: Totp::new(store, issuer),
+            },
+            elevation: self.elevation,
+            password_reset: self.password_reset,
+            email_verify: self.email_verify,
+            oauth: self.oauth,
+            passkeys: self.passkeys,
+            routes: self.routes,
+            rate_limit: self.rate_limit,
+        }
+    }
+}
+
+#[async_trait]
+impl<U, T, S, E, TS, L, R, M, O, K> SupportsTotp
+    for CredentialScheme<U, T, TwoFa<S, E, Totp<TS>>, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    S: TwoFaCodeStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
+    TS: TotpStore + Clone + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type TotpError = CredentialError<T::Error>;
+
+    async fn start_totp(&self, email: Email) -> Result<TotpEnrollment, Self::TotpError> {
+        let totp = &self.two_fa.totp;
+        let secret = totp::new_secret();
+        let enrollment = TotpEnrollment {
+            secret: Secret::new(totp::base32(secret.expose_secret())),
+            otpauth_uri: Secret::new(totp::otpauth_uri(
+                &totp.issuer,
+                &email,
+                secret.expose_secret(),
+            )),
+        };
+        totp.store.set_pending(&email, secret).await?;
+        Ok(enrollment)
+    }
+
+    async fn confirm_totp(
+        &self,
+        email: Email,
+        code: TwoFaCode,
+    ) -> Result<Vec<String>, Self::TotpError> {
+        let store = &self.two_fa.totp.store;
+        let Some(pending) = store.pending(&email).await? else {
+            return Err(CredentialError::TotpNotEnrolled(
+                "Start adding an authenticator app first",
+            ));
+        };
+        let Some(step) = totp::matching_step(pending.expose_secret(), &code, totp::unix_now())
+        else {
+            return Err(TwoFaCodeStoreError::Invalid2FACode.into());
+        };
+        let (shown, hashes) = totp::new_recovery_codes();
+        if !store.activate(&email, step, hashes).await? {
+            return Err(CredentialError::TotpNotEnrolled(
+                "Start adding an authenticator app first",
+            ));
+        }
+        // The app is the second factor now, so 2FA is on.
+        self.user_store.set_requires_2fa(&email, true).await?;
+        Ok(shown)
+    }
+
+    async fn disable_totp(&self, email: Email) -> Result<(), Self::TotpError> {
+        Ok(self.two_fa.totp.store.delete_all_for_user(&email).await?)
+    }
+
+    async fn regenerate_recovery_codes(
+        &self,
+        email: Email,
+    ) -> Result<Vec<String>, Self::TotpError> {
+        let store = &self.two_fa.totp.store;
+        if store.active(&email).await?.is_none() {
+            return Err(CredentialError::TotpNotEnrolled(
+                "No authenticator app is enabled",
+            ));
+        }
+        let (shown, hashes) = totp::new_recovery_codes();
+        store.replace_recovery_codes(&email, hashes).await?;
+        Ok(shown)
     }
 }
 
@@ -2149,6 +2339,14 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
 
     #[error("Elevated token error: {0}")]
     ElevatedToken(ElevatedRevokeError),
+
+    #[error("TOTP store error: {0}")]
+    TotpStoreError(#[from] TotpStoreError),
+
+    /// Confirming or managing TOTP with nothing to act on: no enrolment
+    /// started, or no authenticator app enabled.
+    #[error("{0}")]
+    TotpNotEnrolled(&'static str),
 }
 
 impl<TE> ClassifyError for CredentialError<TE>
@@ -2229,6 +2427,11 @@ where
                 (ErrorCategory::Internal, "Internal error".to_string())
             }
 
+            CredentialError::TotpStoreError(e) => {
+                tracing::error!(error = %e, "TOTP store failed");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
+            CredentialError::TotpNotEnrolled(why) => (ErrorCategory::BadRequest, why.to_string()),
             CredentialError::OAuth(e) => e.classify(),
             CredentialError::Passkey(e) => e.classify(),
         }

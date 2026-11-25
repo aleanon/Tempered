@@ -5,3 +5,4 @@ pub mod jwt_scheme;
 pub mod rate_limit;
 pub mod session_scheme;
 pub mod token_strategy;
+pub mod totp;

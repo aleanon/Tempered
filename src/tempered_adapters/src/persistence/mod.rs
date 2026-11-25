@@ -7,6 +7,8 @@ pub mod postgres_oauth_identity_store;
 #[cfg(feature = "postgres")]
 pub mod postgres_passkey_credential_store;
 #[cfg(feature = "postgres")]
+pub mod postgres_totp_store;
+#[cfg(feature = "postgres")]
 pub mod postgres_user_store;
 #[cfg(feature = "redis")]
 pub mod redis_banned_token_store;
@@ -40,6 +42,7 @@ pub mod hashmap_password_reset_token_store;
 pub mod hashmap_rate_limit_store;
 pub mod hashmap_session_store;
 pub mod hashmap_token_epoch_store;
+pub mod hashmap_totp_store;
 pub mod hashmap_two_fa_code_store;
 pub mod hashmap_user_store;
 pub mod hashset_banned_token_store;
@@ -58,6 +61,8 @@ pub use postgres_api_key_store::PostgresApiKeyStore;
 pub use postgres_oauth_identity_store::PostgresOAuthIdentityStore;
 #[cfg(feature = "postgres")]
 pub use postgres_passkey_credential_store::PostgresPasskeyCredentialStore;
+#[cfg(feature = "postgres")]
+pub use postgres_totp_store::PostgresTotpStore;
 #[cfg(feature = "postgres")]
 pub use postgres_user_store::PostgresUserStore;
 #[cfg(feature = "redis")]
@@ -89,6 +94,7 @@ pub use hashmap_password_reset_token_store::HashMapPasswordResetTokenStore;
 pub use hashmap_rate_limit_store::HashMapRateLimitStore;
 pub use hashmap_session_store::HashMapSessionStore;
 pub use hashmap_token_epoch_store::HashMapTokenEpochStore;
+pub use hashmap_totp_store::HashMapTotpStore;
 pub use hashmap_two_fa_code_store::HashMapTwoFaCodeStore;
 pub use hashmap_user_store::HashMapUserStore;
 pub use hashset_banned_token_store::HashSetBannedTokenStore;

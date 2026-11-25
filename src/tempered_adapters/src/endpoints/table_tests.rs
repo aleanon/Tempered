@@ -17,7 +17,8 @@ use crate::passkey::flow::test_support::MockVerifier;
 use crate::persistence::{
     HashMapChallengeStore, HashMapEmailVerificationTokenStore, HashMapOAuthIdentityStore,
     HashMapOAuthStateStore, HashMapPasskeyCredentialStore, HashMapPasswordResetTokenStore,
-    HashMapTokenEpochStore, HashMapTwoFaCodeStore, HashMapUserStore, HashSetBannedTokenStore,
+    HashMapTokenEpochStore, HashMapTotpStore, HashMapTwoFaCodeStore, HashMapUserStore,
+    HashSetBannedTokenStore,
 };
 
 /// Never called: the table is built without any request.
@@ -108,6 +109,7 @@ fn everything(elevated: bool) -> impl Endpoints {
             }
         },
     )
+    .supports_totp(HashMapTotpStore::new(), "Test")
 }
 
 fn table(
@@ -214,6 +216,25 @@ fn a_scheme_with_every_capability_serves_the_default_table() {
             "/passkey/login/finish",
             Public,
         ),
+        row(TotpStart, Method::POST, "/elevated/totp/start", Elevated),
+        row(
+            TotpConfirm,
+            Method::POST,
+            "/elevated/totp/confirm",
+            Elevated,
+        ),
+        row(
+            TotpDisable,
+            Method::POST,
+            "/elevated/totp/disable",
+            Elevated,
+        ),
+        row(
+            TotpRecoveryCodes,
+            Method::POST,
+            "/elevated/totp/recovery-codes",
+            Elevated,
+        ),
     ];
     expected.sort_by_key(|row| row.0);
     assert_eq!(
@@ -317,6 +338,10 @@ fn tier_rules_hold_for_every_scheme_built_here() {
                 }
                 DeleteAccount => assert!(spec.tier >= Tier::Login, "{spec:?}"),
                 VerifyElevatedToken => assert_eq!(spec.tier, Tier::Elevated, "{spec:?}"),
+                // Adding or removing a second factor: a fresh re-authentication.
+                TotpStart | TotpConfirm | TotpDisable | TotpRecoveryCodes => {
+                    assert_eq!(spec.tier, Tier::Elevated, "{spec:?}")
+                }
                 // Logging in, signing up and recovering are public by nature.
                 Login
                 | Signup

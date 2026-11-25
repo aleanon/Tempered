@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use secrecy::Secret;
 use thiserror::Error;
 
 use crate::domain::{
@@ -641,4 +642,76 @@ pub trait RateLimitStore: Send + Sync {
     /// a separate write lets parallel requests through uncounted.
     async fn hit(&self, key: &str, window_seconds: u64)
     -> Result<WindowCount, RateLimitStoreError>;
+}
+
+// ============================================================================
+// TOTP (authenticator apps) and recovery codes
+// ============================================================================
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum TotpStoreError {
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+/// SHA-256 of a recovery code. Recovery codes are random (50 bits), so a
+/// fast hash is enough: there is no dictionary to try.
+pub type RecoveryCodeHash = [u8; 32];
+
+/// Per-user TOTP secrets and recovery codes.
+///
+/// A user has at most one *pending* secret (being enrolled: shown to them,
+/// not yet confirmed with a code) and one *active* secret (what logins
+/// check). Confirming moves pending to active, so enrolling a new
+/// authenticator does not break the old one until the new one works.
+///
+/// Secrets are login credentials: keep them in durable storage, and
+/// encrypted at rest if the database is not.
+#[async_trait]
+pub trait TotpStore: Send + Sync {
+    /// Keep `secret` as the user's pending secret, replacing any pending one.
+    async fn set_pending(
+        &self,
+        email: &Email,
+        secret: Secret<Vec<u8>>,
+    ) -> Result<(), TotpStoreError>;
+
+    async fn pending(&self, email: &Email) -> Result<Option<Secret<Vec<u8>>>, TotpStoreError>;
+
+    /// In one atomic step: make the pending secret active (dropping the old
+    /// active one), record `used_step` as its last used time step, and
+    /// replace the recovery codes with `recovery_codes`. `false`, changing
+    /// nothing, if there is no pending secret.
+    async fn activate(
+        &self,
+        email: &Email,
+        used_step: u64,
+        recovery_codes: Vec<RecoveryCodeHash>,
+    ) -> Result<bool, TotpStoreError>;
+
+    async fn active(&self, email: &Email) -> Result<Option<Secret<Vec<u8>>>, TotpStoreError>;
+
+    /// Record `step` as used if it is later than the last one used, in one
+    /// atomic step; `false` if it is not (a replayed code, or one from an
+    /// earlier step than a code already accepted).
+    async fn use_step(&self, email: &Email, step: u64) -> Result<bool, TotpStoreError>;
+
+    /// Replace the user's recovery codes.
+    async fn replace_recovery_codes(
+        &self,
+        email: &Email,
+        recovery_codes: Vec<RecoveryCodeHash>,
+    ) -> Result<(), TotpStoreError>;
+
+    /// Remove `code` from the user's recovery codes, in one atomic step;
+    /// `false` if it is not one of them. Each code works once.
+    async fn use_recovery_code(
+        &self,
+        email: &Email,
+        code: &RecoveryCodeHash,
+    ) -> Result<bool, TotpStoreError>;
+
+    /// Forget the user's secrets and recovery codes. Succeeds when there are
+    /// none.
+    async fn delete_all_for_user(&self, email: &Email) -> Result<(), TotpStoreError>;
 }

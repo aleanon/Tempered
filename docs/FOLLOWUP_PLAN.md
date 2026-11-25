@@ -486,11 +486,20 @@ Must-have for a working framework:
   axum adapter fills from connect info (`run` serves with it). Fails open
   on store errors. Not done: progressive delays or permanent lockout.
 - **8.2 Real WebAuthn verifier**: Phase 4.
-- **8.3 TOTP and recovery codes.** Today the only second factor is a code
+- **8.3 TOTP and recovery codes.** ✅ DONE 2026-11-25. Today the only second factor is a code
   sent by email, and `requires_2fa` is a flag with no enrol route. Make the
   2FA slot a pluggable second factor (email, TOTP). Add a TOTP secret store,
   hashed recovery codes, and enrol/confirm/disable routes in the elevated
   tier.
+  As built: `TwoFa<S, E, P = ()>`, where `.supports_totp(store, issuer)`
+  (after 2FA and elevation) sets `P = Totp<TS>` and lights up
+  `SupportsTotp`. An account with an active secret gets no mail; its code
+  (or a recovery code, accepted by `TwoFaCode::parse`) is checked against
+  the app, and the code store still records the attempt and its budget.
+  `TotpStore` port: pending/active secret, monotonic last step (no
+  replay), hashed single-use recovery codes; HashMap + Postgres (runtime
+  queries, new migration). Not done: telling the client which factor to
+  ask for (the 206 body is the same), and encrypting secrets in the store.
 - **8.4 OIDC.** Verify the ID token (JWKS, `iss`/`aud`/`exp`, nonce in
   `PendingAuthorization`) and read `.well-known` discovery. Add provider
   presets for Google, Microsoft and Apple, and GitHub with its emails

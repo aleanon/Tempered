@@ -31,9 +31,10 @@ pub use ports::{
         BannedTokenStoreError, ChallengeStore, ChallengeStoreError, EmailVerificationStoreError,
         EmailVerificationTokenStore, OAuthIdentityStore, OAuthIdentityStoreError, OAuthStateStore,
         OAuthStateStoreError, PasskeyCredentialStore, PasskeyStoreError, PasswordResetTokenStore,
-        PasswordResetTokenStoreError, RateLimitStore, RateLimitStoreError, SessionRecord,
-        SessionStore, SessionStoreError, TokenEpochStore, TokenEpochStoreError, TwoFaCodeStore,
-        TwoFaCodeStoreError, UserStore, UserStoreError, WindowCount,
+        PasswordResetTokenStoreError, RateLimitStore, RateLimitStoreError, RecoveryCodeHash,
+        SessionRecord, SessionStore, SessionStoreError, TokenEpochStore, TokenEpochStoreError,
+        TotpStore, TotpStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError,
+        WindowCount,
     },
     services::{
         EmailClient, OAuthHttpClient, OAuthHttpError, VerifiedAssertion, VerifiedRegistration,
@@ -47,7 +48,7 @@ pub use strategies::{
         AuthenticationScheme, AuthorizationRequest, LoginOutcome, RequiresEmailVerification,
         SupportsAccountDeletion, SupportsApiKeyIssuance, SupportsElevation, SupportsOAuth2,
         SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
-        SupportsTokenRevocation, SupportsTwoFactor,
+        SupportsTokenRevocation, SupportsTotp, SupportsTwoFactor, TotpEnrollment,
     },
 };
 

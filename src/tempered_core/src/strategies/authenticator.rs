@@ -128,6 +128,44 @@ pub trait SupportsTwoFactor: AuthenticationScheme {
     ) -> Result<Self::Token, Self::TwoFactorError>;
 }
 
+/// What a user needs to add an authenticator app: the secret (base32, for
+/// typing in) and the `otpauth://` URI (for a QR code).
+#[derive(Debug, Clone)]
+pub struct TotpEnrollment {
+    pub secret: secrecy::Secret<String>,
+    pub otpauth_uri: secrecy::Secret<String>,
+}
+
+/// Authenticator-app (TOTP) second factor and recovery codes.
+///
+/// An enrolled user's 2FA step takes a code from their app, or one of their
+/// recovery codes, in place of a mailed code.
+#[async_trait]
+pub trait SupportsTotp: SupportsTwoFactor {
+    type TotpError: std::error::Error + Send + Sync + 'static;
+
+    /// Start adding an app for `email`. The secret is pending: logins keep
+    /// working as before until [`confirm_totp`](Self::confirm_totp).
+    async fn start_totp(&self, email: Email) -> Result<TotpEnrollment, Self::TotpError>;
+
+    /// Confirm the pending app with a code from it. On success the app is
+    /// the account's second factor (2FA is turned on if it was off), and
+    /// the returned recovery codes are the only copy: show them once.
+    async fn confirm_totp(
+        &self,
+        email: Email,
+        code: TwoFaCode,
+    ) -> Result<Vec<String>, Self::TotpError>;
+
+    /// Remove the app and its recovery codes. An account that requires 2FA
+    /// goes back to mailed codes.
+    async fn disable_totp(&self, email: Email) -> Result<(), Self::TotpError>;
+
+    /// Replace the recovery codes (the old ones stop working).
+    async fn regenerate_recovery_codes(&self, email: Email)
+    -> Result<Vec<String>, Self::TotpError>;
+}
+
 // ============================================================================
 // Optional Capability: OAuth2
 // ============================================================================
