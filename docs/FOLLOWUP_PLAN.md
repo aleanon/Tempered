@@ -633,8 +633,13 @@ OAuth slot instead.
   - `DeferredRunner`: hand the after-the-response jobs (reset and signup
     mails) to the app's durable job queue instead of the in-process bounded
     `tokio::spawn`, for apps that must not lose a mail on restart.
-- **9.3 Split `credential_scheme.rs`** (1,888 lines) into per-capability
+- **9.3 Split `credential_scheme.rs`** ✅ DONE 2026-11-25: (1,888 lines) into per-capability
   modules, keeping each slot's types and impls together.
+  As built: `credential_scheme/` with `mod.rs` (struct, slots, slot
+  traits, builders, core traits, errors, ~1,900 lines) and one module per
+  capability: `two_factor` (2FA, email login, TOTP), `elevation`,
+  `password_reset`, `email_verification`, `oauth`, `passkeys`. Children
+  see the struct's private fields, so nothing became more visible.
 - **9.4 Error sources.** Store errors carry `String`. Keep the underlying
   error as `#[source]` so callers can match unique-violation against
   connection failure.
