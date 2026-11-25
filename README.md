@@ -206,6 +206,27 @@ absolute lifetime to 24 hours (`DEFAULT_MAX_SESSION_LIFETIME_SECONDS`);
 change it with `.max_lifetime(seconds)`. A JWT has no sliding expiry: its
 `token_ttl_in_seconds` is already its absolute lifetime.
 
+### Refresh tokens and bearer clients
+
+`JwtScheme::supports_refresh_tokens(RefreshTokens::new(store, ttl))` issues
+a refresh token with every login, in an `HttpOnly`, `SameSite=Strict`
+cookie (`__Host-refresh`), and serves `POST /refresh`, which trades it for
+a new JWT and a new refresh token. Keep `token_ttl_in_seconds` short (a few
+minutes) and let the refresh token carry the session:
+
+- Each refresh token works once. Presenting a used one means a copy is out
+  there, so every token of that login is revoked (the owner logs in again).
+- Logout, password change and account deletion revoke them; a login's
+  refresh tokens all expire `ttl` after it (rotation does not extend it).
+- Use `RedisRefreshTokenStore` in production.
+
+Every JWT route also accepts `Authorization: Bearer <jwt>`. For clients
+that cannot use cookies (mobile apps, a front end on another origin),
+`.tokens_in_body()` adds `accessToken`, `refreshToken`, `tokenType` and
+`expiresIn` to login responses, and `/refresh` takes
+`{ "refreshToken": ... }`. Leave it off for browser apps on your own
+origin: a token a script can read is one an XSS can steal.
+
 ### Authenticator apps and recovery codes
 
 With `.supports_totp(store, issuer)` a user can add an authenticator app

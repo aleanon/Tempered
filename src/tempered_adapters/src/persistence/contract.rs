@@ -822,3 +822,68 @@ pub(crate) async fn totp_store(store: impl tempered_core::TotpStore) {
         "other users untouched"
     );
 }
+
+/// Single use, reuse revoking the family, logout and revoke-all, expiry.
+pub(crate) async fn refresh_token_store(store: impl tempered_core::RefreshTokenStore) {
+    use tempered_core::{RefreshRecord, RefreshTokenStoreError};
+    let alice = email("alice@example.com");
+    let bob = email("bob@example.com");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let record = |who: &Email, family: &str| RefreshRecord {
+        email: who.clone(),
+        family: family.to_string(),
+        expires_at: now + 600,
+    };
+
+    // Used once.
+    store.create([1; 32], record(&alice, "f1")).await.unwrap();
+    assert_eq!(store.redeem(&[1; 32]).await.unwrap(), record(&alice, "f1"));
+    assert!(matches!(
+        store.redeem(&[9; 32]).await,
+        Err(RefreshTokenStoreError::NotFound)
+    ));
+
+    // Its successor in the family works, until the old one is presented
+    // again: that revokes the family, successor included.
+    store.create([2; 32], record(&alice, "f1")).await.unwrap();
+    store.create([3; 32], record(&alice, "f2")).await.unwrap();
+    assert!(matches!(
+        store.redeem(&[1; 32]).await,
+        Err(RefreshTokenStoreError::Reused { email }) if email == alice
+    ));
+    assert!(matches!(
+        store.redeem(&[2; 32]).await,
+        Err(RefreshTokenStoreError::NotFound)
+    ));
+    // Another family of the same user is untouched.
+    assert!(store.redeem(&[3; 32]).await.is_ok());
+
+    // Logout revokes one family.
+    store.create([4; 32], record(&alice, "f3")).await.unwrap();
+    store.revoke_family_of(&[4; 32]).await.unwrap();
+    store.revoke_family_of(&[8; 32]).await.unwrap();
+    assert!(store.redeem(&[4; 32]).await.is_err());
+
+    // Revoke-all takes every family of one user, and only theirs.
+    store.create([5; 32], record(&alice, "f4")).await.unwrap();
+    store.create([6; 32], record(&alice, "f5")).await.unwrap();
+    store.create([7; 32], record(&bob, "f6")).await.unwrap();
+    store.revoke_all_for_user(&alice).await.unwrap();
+    assert!(store.redeem(&[5; 32]).await.is_err());
+    assert!(store.redeem(&[6; 32]).await.is_err());
+    assert!(store.redeem(&[7; 32]).await.is_ok());
+
+    // An expired token is refused.
+    let expired = RefreshRecord {
+        expires_at: now - 1,
+        ..record(&bob, "f7")
+    };
+    store.create([10; 32], expired).await.unwrap();
+    assert!(matches!(
+        store.redeem(&[10; 32]).await,
+        Err(RefreshTokenStoreError::NotFound)
+    ));
+}

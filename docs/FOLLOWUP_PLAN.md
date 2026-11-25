@@ -527,9 +527,19 @@ Must-have for a working framework:
   and needs an exemption.
 
 Should-have:
-- **8.6 Refresh tokens** with rotation and reuse detection, short-lived
+- **8.6 Refresh tokens** ✅ DONE 2026-11-25: with rotation and reuse detection, short-lived
   access JWTs, and an `Authorization: Bearer` mode for SPAs and mobile.
   Today JWTs and sessions are cookie-only.
+  As built: `RefreshTokenStore` port (hashed tokens, families, atomic
+  single-use redeem that revokes the family on reuse) with HashMap and
+  Redis stores; `RefreshTokens` on `JwtTokens` (`JwtScheme::
+  supports_refresh_tokens`), so no new slot. `TokenStrategy` gained
+  default-off hooks (extra login/logout cookies, body tokens, `refresh`).
+  `POST /refresh` (public, cookie or body), absolute family lifetime.
+  The JWT validator accepts `Authorization: Bearer`; `.tokens_in_body()`
+  puts tokens in login bodies. Not done: refresh for session schemes
+  (sessions already slide), and revoking a bearer client's refresh family
+  at logout (it has no cookie; it discards the token).
 - **8.7 Session and device management.** `SessionStore::list_for_user`,
   per-session metadata (created, last seen, user agent), and list/revoke
   routes.

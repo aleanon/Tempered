@@ -34,8 +34,9 @@ pub use ports::{
         EmailVerificationTokenStore, OAuthIdentityStore, OAuthIdentityStoreError, OAuthStateStore,
         OAuthStateStoreError, PasskeyCredentialStore, PasskeyStoreError, PasswordResetTokenStore,
         PasswordResetTokenStoreError, RateLimitStore, RateLimitStoreError, RecoveryCodeHash,
-        SessionRecord, SessionStore, SessionStoreError, TokenEpochStore, TokenEpochStoreError,
-        TotpStore, TotpStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError,
+        RefreshRecord, RefreshTokenHash, RefreshTokenStore, RefreshTokenStoreError, SessionRecord,
+        SessionStore, SessionStoreError, TokenEpochStore, TokenEpochStoreError, TotpStore,
+        TotpStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore, UserStoreError,
         WindowCount,
     },
     services::{

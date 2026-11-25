@@ -66,8 +66,11 @@ impl<B: BannedTokenStore + Clone + 'static> AuthValidator for LocalJwtValidator<
     type Error = TokenAuthError;
 
     async fn validate(&self, parts: &Self::RequestParts) -> Result<Self::Claims, Self::Error> {
-        // Extract the JWT token from the request's Cookie header
-        let token = extract_token(parts, &self.config.jwt_cookie_name)?;
+        // The cookie, or for clients that keep the token themselves (mobile
+        // apps, other origins), `Authorization: Bearer`. A header cannot be
+        // added by a cross-site form or link, so it needs no CSRF defence.
+        let token =
+            extract_token(parts, &self.config.jwt_cookie_name).or_else(|_| bearer_token(parts))?;
 
         // Validate token signature, ban list, and revocation cutoff
         let claims = validate_auth_token(
@@ -120,6 +123,19 @@ impl ClassifyError for TokenAuthError {
             }
         }
     }
+}
+
+/// The token in `Authorization: Bearer <token>`, if any.
+fn bearer_token(parts: &http::request::Parts) -> Result<String, TokenAuthError> {
+    parts
+        .headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .ok_or(TokenAuthError::MissingToken)
 }
 
 /// Read the named cookie's value from the request's `Cookie` header, treating a

@@ -67,6 +67,7 @@ pub enum RouteId {
     TotpConfirm,
     TotpDisable,
     TotpRecoveryCodes,
+    Refresh,
 }
 
 /// What a request must prove before a route runs. The tiers nest: a

@@ -638,6 +638,13 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
     pub(crate) fn token_strategy(&self) -> &T {
         &self.tokens
     }
+
+    /// Change the token strategy's settings (for strategy-specific builders
+    /// such as `JwtScheme::supports_refresh_tokens`).
+    pub(crate) fn map_tokens(mut self, f: impl FnOnce(T) -> T) -> Self {
+        self.tokens = f(self.tokens);
+        self
+    }
 }
 
 impl<U, T> CredentialScheme<U, T, (), (), (), (), (), ()>
@@ -1099,14 +1106,22 @@ where
         outcome: LoginOutcome<Self::Token>,
     ) -> Result<RB::Response, tempered_core::ResponseBuilderError> {
         match outcome {
-            LoginOutcome::Success(token) => builder
-                .status(200)
-                .cookie(&self.tokens.auth_cookie(&token))
-                .json_body(serde_json::json!({
+            LoginOutcome::Success(token) => {
+                let mut builder = builder.status(200).cookie(&self.tokens.auth_cookie(&token));
+                for cookie in self.tokens.extra_login_cookies(&token) {
+                    builder = builder.cookie(&cookie);
+                }
+                let mut body = serde_json::json!({
                     "status": "success",
                     "message": "Login successful"
-                }))
-                .build(),
+                });
+                if let Some(serde_json::Value::Object(tokens)) = self.tokens.body_tokens(&token) {
+                    body.as_object_mut()
+                        .expect("the body is an object")
+                        .extend(tokens);
+                }
+                builder.json_body(body).build()
+            }
             LoginOutcome::Requires2Fa {
                 email: _,
                 attempt_id,
@@ -1129,7 +1144,10 @@ where
         let cookie_name = cookie_name.unwrap_or_else(|| self.tokens.cookie_name().to_string());
 
         let clear_cookie = crate::cookie_util::expired_cookie(&cookie_name);
-        let builder = builder.status(200).cookie(&clear_cookie);
+        let mut builder = builder.status(200).cookie(&clear_cookie);
+        for cookie in self.tokens.extra_logout_cookies() {
+            builder = builder.cookie(&cookie);
+        }
 
         // Also clear the elevated cookie, but only if elevation is enabled.
         let builder = match self.elevation.elevated_cookie_name() {
@@ -2171,10 +2189,15 @@ where
 
         match outcome {
             // Deliver the issued token exactly as login does and enter the app.
-            LoginOutcome::Success(token) => builder
-                .cookie(&self.tokens.auth_cookie(&token))
-                .header("location", &self.oauth.post_login_redirect)
-                .build(),
+            LoginOutcome::Success(token) => {
+                let mut builder = builder.cookie(&self.tokens.auth_cookie(&token));
+                for cookie in self.tokens.extra_login_cookies(&token) {
+                    builder = builder.cookie(&cookie);
+                }
+                builder
+                    .header("location", &self.oauth.post_login_redirect)
+                    .build()
+            }
             // No token yet: send the browser to the app's second-factor step.
             // What it needs to call the 2FA verification route travels in a
             // short-lived cookie, not the URL (see `oauth_two_fa_redirect`).

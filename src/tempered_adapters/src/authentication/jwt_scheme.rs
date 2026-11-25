@@ -10,7 +10,7 @@ use tempered_core::{BannedTokenStore, TokenEpochStore, UserStore};
 
 use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
 use crate::authentication::credential_scheme::{CredentialScheme, ElevatedCapabilities};
-use crate::authentication::token_strategy::JwtTokens;
+use crate::authentication::token_strategy::{JwtTokens, RefreshTokens};
 
 // Re-export the capability slots, wire types, and error at this module's original
 // path (the facade and callers refer to `jwt_scheme::{TwoFa, Elevation, …}`).
@@ -96,6 +96,29 @@ where
             JwtTokens::from_parts(elevated_jwt_config, elevated_banned_token_store, epoch),
             configure,
         )
+    }
+}
+
+impl<U, B, F, L, R, M, O, K> CredentialScheme<U, JwtTokens<B>, F, L, R, M, O, K>
+where
+    B: BannedTokenStore + Clone,
+{
+    /// Issue a refresh token with every login, and serve `POST /refresh`,
+    /// which trades one for a new JWT and refresh token. Keep the JWT short
+    /// (`token_ttl_in_seconds` of minutes) when you use this: the refresh
+    /// token carries the long session, and can be revoked. See
+    /// [`RefreshTokens`] for rotation and reuse detection.
+    pub fn supports_refresh_tokens(self, refresh: RefreshTokens) -> Self {
+        self.map_tokens(|tokens| tokens.with_refresh(refresh))
+    }
+
+    /// Also return the tokens in login response bodies (`accessToken`,
+    /// `refreshToken`, `expiresIn`), for clients that send
+    /// `Authorization: Bearer` instead of cookies: mobile apps, or a front
+    /// end on another origin. The cookies are still set. Only for apps that
+    /// need it: a token a script can read is a token an XSS can steal.
+    pub fn tokens_in_body(self) -> Self {
+        self.map_tokens(JwtTokens::with_tokens_in_body)
     }
 }
 

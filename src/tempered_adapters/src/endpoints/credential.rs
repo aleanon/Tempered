@@ -164,7 +164,7 @@ struct ChangePasswordRequest {
 #[async_trait]
 impl<U, T, F, L, R, M, O, K> Endpoints for CredentialScheme<U, T, F, L, R, M, O, K>
 where
-    Self: HttpAuthenticationScheme<LogoutOutput = String>
+    Self: HttpAuthenticationScheme<LogoutOutput = String, Token = T::Token>
         + SupportsRegistration
         + SupportsPasswordChange
         + SupportsAccountDeletion
@@ -199,6 +199,15 @@ where
             ),
             route(Logout, Method::POST, path(Logout, "/logout"), Tier::Login),
         ];
+        if self.token_strategy().refreshes() {
+            // Public: the refresh token is the credential.
+            out.push(route(
+                Refresh,
+                Method::POST,
+                path(Refresh, "/refresh"),
+                Tier::Public,
+            ));
+        }
         if flags.registration {
             out.push(route(
                 Signup,
@@ -308,7 +317,7 @@ where
 #[allow(private_bounds)]
 impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
 where
-    Self: HttpAuthenticationScheme<LogoutOutput = String>
+    Self: HttpAuthenticationScheme<LogoutOutput = String, Token = T::Token>
         + SupportsRegistration
         + SupportsPasswordChange
         + SupportsAccountDeletion
@@ -321,6 +330,7 @@ where
     <Self as AuthenticationScheme>::Validator: AuthValidator<RequestParts = Parts>,
     <<Self as AuthenticationScheme>::Validator as AuthValidator>::Error: ClassifyError,
     LoginClaims<Self>: IdentityClaims,
+    T: TokenStrategy,
     L: SlotEndpoints<Self>,
     M: SlotEndpoints<Self>,
 {
@@ -352,6 +362,37 @@ where
         who: Option<&Email>,
     ) -> Option<EndpointResponse> {
         match id {
+            RouteId::Refresh => respond!({
+                #[derive(Deserialize)]
+                struct RefreshBody {
+                    #[serde(rename = "refreshToken")]
+                    refresh_token: String,
+                }
+                let tokens = self.token_strategy();
+                // The cookie, or for bearer clients the body.
+                let presented = tokens
+                    .refresh_cookie_name()
+                    .and_then(|name| crate::cookie_util::cookie_value(&req.parts, name))
+                    .filter(|v| !v.is_empty())
+                    .or_else(|| {
+                        serde_json::from_slice::<RefreshBody>(&req.body)
+                            .ok()
+                            .map(|b| b.refresh_token)
+                    })
+                    .ok_or_else(|| error_response(StatusCode::UNAUTHORIZED, "Log in again"))?;
+                let token = match tokens.refresh(&presented).await {
+                    Some(result) => result.map_err(classified)?,
+                    None => return Err(error_response(StatusCode::NOT_FOUND, "Not found")),
+                };
+                self.create_login_response(
+                    HttpResponseBuilder::new(),
+                    tempered_core::LoginOutcome::Success(token),
+                )
+                .map_err(|e| {
+                    tracing::error!(error = %e, "response builder failed (scheme bug)");
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
+                })
+            }),
             RouteId::Login => respond!({
                 let credentials = parse(req)?;
                 handlers::handle_login(self, credentials, HttpResponseBuilder::new())

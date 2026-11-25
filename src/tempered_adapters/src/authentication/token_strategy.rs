@@ -10,10 +10,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, Secret};
 use tempered_core::{
     AuthRequest, AuthValidator, BannedTokenStore, BannedTokenStoreError, ClassifyError, Email,
-    ErrorCategory, TokenEpochStore,
+    ErrorCategory, RefreshTokenStore, TokenEpochStore,
 };
 use thiserror::Error;
 
@@ -99,6 +99,41 @@ pub trait TokenStrategy: Clone + Send + Sync + 'static {
 
     /// Pull the token back out of a request.
     fn extract<R: AuthRequest>(&self, req: &R) -> Option<Self::Token>;
+
+    /// Cookies to set next to [`auth_cookie`](Self::auth_cookie) at login
+    /// (a refresh token).
+    fn extra_login_cookies(&self, _token: &Self::Token) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Cookies to clear at logout besides the auth cookie.
+    fn extra_logout_cookies(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The tokens to put in a login response's body, for clients that send
+    /// them as `Authorization: Bearer` rather than as cookies. `None` keeps
+    /// them out of the body (the default: an HttpOnly cookie is out of
+    /// reach of a script that runs on the page).
+    fn body_tokens(&self, _token: &Self::Token) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Whether this strategy issues refresh tokens (and serves `/refresh`).
+    fn refreshes(&self) -> bool {
+        false
+    }
+
+    /// The refresh cookie's name, when [`refreshes`](Self::refreshes).
+    fn refresh_cookie_name(&self) -> Option<&str> {
+        None
+    }
+
+    /// Trade a refresh token for a new token (and a new refresh token).
+    /// `None` without refresh tokens.
+    async fn refresh(&self, _presented: &str) -> Option<Result<Self::Token, Self::Error>> {
+        None
+    }
 }
 
 /// How long a credential lock lives if its holder never releases it. The work
@@ -130,9 +165,10 @@ impl UserLock {
 // JWT token type
 // ============================================================================
 
-/// A signed JWT delivered to / read from the client.
+/// A signed JWT delivered to / read from the client, with the refresh token
+/// issued (or presented) next to it when refresh tokens are on.
 #[derive(Debug, Clone)]
-pub struct JwtToken(pub String);
+pub struct JwtToken(pub String, pub(crate) Option<Secret<String>>);
 
 impl JwtToken {
     pub fn as_str(&self) -> &str {
@@ -145,8 +181,57 @@ impl JwtToken {
 
 impl From<String> for JwtToken {
     fn from(s: String) -> Self {
-        JwtToken(s)
+        JwtToken(s, None)
     }
+}
+
+/// Refresh tokens for a [`JwtTokens`] strategy: short-lived access JWTs, and
+/// a long-lived refresh token that `/refresh` trades for a new pair.
+///
+/// Each refresh token works once; the answer carries its successor
+/// (rotation). Presenting a used one means a copy is out there, so its
+/// whole family (every token rotated from that login) is revoked, and the
+/// owner logs in again (OAuth 2.0 Security BCP §4.14). A login's refresh
+/// tokens all expire `ttl_seconds` after it; rotation does not extend that.
+#[derive(Clone)]
+pub struct RefreshTokens {
+    store: Arc<dyn RefreshTokenStore>,
+    ttl_seconds: u64,
+    cookie_name: Arc<str>,
+}
+
+impl RefreshTokens {
+    /// Refresh tokens kept in `store`, good for `ttl_seconds` after login,
+    /// in the cookie `__Host-refresh`.
+    ///
+    /// # Panics
+    ///
+    /// If `ttl_seconds` is 0.
+    pub fn new(store: impl RefreshTokenStore + 'static, ttl_seconds: u64) -> Self {
+        assert!(ttl_seconds > 0, "a refresh token needs a lifetime");
+        Self {
+            store: Arc::new(store),
+            ttl_seconds,
+            cookie_name: "__Host-refresh".into(),
+        }
+    }
+
+    /// Use another cookie name.
+    pub fn cookie_name(mut self, name: impl Into<String>) -> Self {
+        self.cookie_name = name.into().into();
+        self
+    }
+}
+
+fn hash_refresh(token: &str) -> tempered_core::RefreshTokenHash {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(token.as_bytes()).into()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 // ============================================================================
@@ -166,6 +251,9 @@ pub struct JwtTokens<B> {
     banned: B,
     epoch: Arc<dyn TokenEpochStore>,
     validator: LocalJwtValidator<B>,
+    refresh: Option<RefreshTokens>,
+    /// Put the tokens in login response bodies (bearer clients).
+    in_body: bool,
 }
 
 impl<B> JwtTokens<B>
@@ -206,7 +294,56 @@ where
             banned,
             epoch,
             validator,
+            refresh: None,
+            in_body: false,
         }
+    }
+
+    /// Issue refresh tokens next to each JWT (see [`RefreshTokens`]).
+    pub fn with_refresh(mut self, refresh: RefreshTokens) -> Self {
+        self.refresh = Some(refresh);
+        self
+    }
+
+    /// Also return the tokens in the login response body, for clients that
+    /// send `Authorization: Bearer` (mobile apps, other origins). The
+    /// cookies are still set.
+    pub fn with_tokens_in_body(mut self) -> Self {
+        self.in_body = true;
+        self
+    }
+
+    /// A new refresh token in `family`, expiring at `expires_at`.
+    async fn new_refresh(
+        &self,
+        refresh: &RefreshTokens,
+        email: &Email,
+        family: String,
+        expires_at: u64,
+    ) -> Result<Secret<String>, JwtTokenError> {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let mut raw = [0u8; 32];
+        rand::fill(&mut raw);
+        let token = URL_SAFE_NO_PAD.encode(raw);
+        refresh
+            .store
+            .create(
+                hash_refresh(&token),
+                tempered_core::RefreshRecord {
+                    email: email.clone(),
+                    family,
+                    expires_at,
+                },
+            )
+            .await
+            .map_err(JwtTokenError::Refresh)?;
+        Ok(Secret::new(token))
+    }
+
+    /// Sign an access JWT stamped with `ticket`.
+    fn sign(&self, email: &Email, ticket: &JwtTicket) -> Result<String, JwtTokenError> {
+        generate_auth_token_issued_at(email, &self.config, ticket.issued_at)
+            .map_err(JwtTokenError::Generate)
     }
 
     /// Whether `other` signs with the same secret as this strategy.
@@ -262,9 +399,16 @@ where
         // Stamped with the moment the login began, not the moment it finished.
         // A "revoke all" in between moved the cutoff past this stamp, so the
         // validator rejects the token: no check is needed here.
-        let token = generate_auth_token_issued_at(email, &self.config, ticket.issued_at)
-            .map_err(JwtTokenError::Generate)?;
-        Ok(JwtToken(token))
+        let token = self.sign(email, &ticket)?;
+        let refresh = match &self.refresh {
+            Some(refresh) => {
+                let family = uuid::Uuid::new_v4().to_string();
+                let expires_at = unix_now() + refresh.ttl_seconds;
+                Some(self.new_refresh(refresh, email, family, expires_at).await?)
+            }
+            None => None,
+        };
+        Ok(JwtToken(token, refresh))
     }
 
     async fn revoke(&self, token: &JwtToken) -> Result<(), JwtTokenError> {
@@ -272,6 +416,14 @@ where
             .ban_token(token.0.clone())
             .await
             .map_err(JwtTokenError::Revoke)?;
+        // Logout ends the login's refresh tokens too.
+        if let (Some(refresh), Some(presented)) = (&self.refresh, &token.1) {
+            refresh
+                .store
+                .revoke_family_of(&hash_refresh(presented.expose_secret()))
+                .await
+                .map_err(JwtTokenError::Refresh)?;
+        }
         Ok(())
     }
 
@@ -295,6 +447,13 @@ where
             .revoke_before(email, latest_stamp + 1)
             .await
             .map_err(JwtTokenError::RevokeAll)?;
+        if let Some(refresh) = &self.refresh {
+            refresh
+                .store
+                .revoke_all_for_user(email)
+                .await
+                .map_err(JwtTokenError::Refresh)?;
+        }
         Ok(())
     }
 
@@ -329,8 +488,93 @@ where
     }
 
     fn extract<R: AuthRequest>(&self, req: &R) -> Option<JwtToken> {
+        let refresh = self
+            .refresh
+            .as_ref()
+            .and_then(|r| req.cookie(&r.cookie_name))
+            .map(|s| Secret::new(s.to_string()));
         req.cookie(&self.config.jwt_cookie_name)
-            .map(|s| JwtToken(s.to_string()))
+            .map(|s| JwtToken(s.to_string(), refresh))
+    }
+
+    fn extra_login_cookies(&self, token: &JwtToken) -> Vec<String> {
+        match (&self.refresh, &token.1) {
+            (Some(refresh), Some(value)) => {
+                let max_age = time::Duration::seconds(refresh.ttl_seconds as i64);
+                let mut cookie = create_auth_cookie(
+                    value.expose_secret().clone(),
+                    &refresh.cookie_name,
+                    Some(max_age),
+                );
+                // Only ever sent by this site's own requests.
+                cookie.set_same_site(cookie::SameSite::Strict);
+                vec![cookie.to_string()]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn extra_logout_cookies(&self) -> Vec<String> {
+        self.refresh
+            .iter()
+            .map(|r| crate::cookie_util::expired_cookie(&r.cookie_name))
+            .collect()
+    }
+
+    fn body_tokens(&self, token: &JwtToken) -> Option<serde_json::Value> {
+        self.in_body.then(|| {
+            let mut body = serde_json::json!({
+                "accessToken": token.0,
+                "tokenType": "Bearer",
+                "expiresIn": self.config.token_ttl_in_seconds,
+            });
+            if let Some(refresh) = &token.1 {
+                body["refreshToken"] = refresh.expose_secret().clone().into();
+            }
+            body
+        })
+    }
+
+    fn refreshes(&self) -> bool {
+        self.refresh.is_some()
+    }
+
+    fn refresh_cookie_name(&self) -> Option<&str> {
+        self.refresh.as_ref().map(|r| &*r.cookie_name)
+    }
+
+    async fn refresh(&self, presented: &str) -> Option<Result<JwtToken, JwtTokenError>> {
+        let refresh = self.refresh.as_ref()?;
+        Some(
+            async {
+                let record = refresh
+                    .store
+                    .redeem(&hash_refresh(presented))
+                    .await
+                    .map_err(|e| match e {
+                        tempered_core::RefreshTokenStoreError::Reused { email } => {
+                            tracing::warn!(
+                                user = %email.as_ref().expose_secret(),
+                                "refresh token reused; its login was revoked"
+                            );
+                            JwtTokenError::RefreshRefused
+                        }
+                        tempered_core::RefreshTokenStoreError::NotFound => {
+                            JwtTokenError::RefreshRefused
+                        }
+                        other => JwtTokenError::Refresh(other),
+                    })?;
+                // A new access token, stamped like a login's (so a "revoke
+                // all" since refuses it), and the family's next refresh token.
+                let ticket = self.begin(&record.email).await?;
+                let access = self.sign(&record.email, &ticket)?;
+                let next = self
+                    .new_refresh(refresh, &record.email, record.family, record.expires_at)
+                    .await?;
+                Ok(JwtToken(access, Some(next)))
+            }
+            .await,
+        )
     }
 }
 
@@ -358,6 +602,10 @@ pub enum JwtTokenError {
     Locked,
     #[error("Failed to take or release the credential lock: {0}")]
     Lock(tempered_core::TokenEpochStoreError),
+    #[error("Refresh token refused")]
+    RefreshRefused,
+    #[error("Refresh token store error: {0}")]
+    Refresh(tempered_core::RefreshTokenStoreError),
 }
 
 impl ClassifyError for JwtTokenError {
@@ -375,6 +623,14 @@ impl ClassifyError for JwtTokenError {
                 (ErrorCategory::Internal, "Internal error".to_string())
             }
             JwtTokenError::Locked => (ErrorCategory::Conflict, ACCOUNT_BUSY.to_string()),
+            // Unknown, expired, revoked or reused: the client logs in again.
+            JwtTokenError::RefreshRefused => {
+                (ErrorCategory::Unauthorized, "Log in again".to_string())
+            }
+            JwtTokenError::Refresh(e) => {
+                tracing::error!(error = %e, "refresh token store error");
+                (ErrorCategory::Internal, "Internal error".to_string())
+            }
             JwtTokenError::Lock(e) => {
                 tracing::error!(error = %e, "credential lock store error");
                 (ErrorCategory::Internal, "Internal error".to_string())

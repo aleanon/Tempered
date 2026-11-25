@@ -715,3 +715,70 @@ pub trait TotpStore: Send + Sync {
     /// none.
     async fn delete_all_for_user(&self, email: &Email) -> Result<(), TotpStoreError>;
 }
+
+// ============================================================================
+// Refresh tokens
+// ============================================================================
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum RefreshTokenStoreError {
+    /// Not a refresh token this store issued, or one that has expired or
+    /// been revoked.
+    #[error("Unknown or expired refresh token")]
+    NotFound,
+    /// A refresh token that was already used. Rotation means each is used
+    /// once, so a second use is a stolen copy (or the thief's, and this is
+    /// the owner): the store has revoked the whole family.
+    #[error("Refresh token reused")]
+    Reused { email: Email },
+    #[error("Unexpected error: {0}")]
+    UnexpectedError(String),
+}
+
+/// SHA-256 of a refresh token. Tokens are 256 random bits, so a fast hash
+/// is enough, and a leaked store holds nothing that can be presented.
+pub type RefreshTokenHash = [u8; 32];
+
+/// One refresh token, as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshRecord {
+    pub email: Email,
+    /// All tokens rotated from one login share a family; reusing any of
+    /// them revokes it.
+    pub family: String,
+    /// Unix seconds after which the token is refused.
+    pub expires_at: u64,
+}
+
+/// Rotating refresh tokens with reuse detection (OAuth 2.0 Security BCP
+/// §4.14).
+#[async_trait]
+pub trait RefreshTokenStore: Send + Sync {
+    /// Store a new, unused token.
+    async fn create(
+        &self,
+        token: RefreshTokenHash,
+        record: RefreshRecord,
+    ) -> Result<(), RefreshTokenStoreError>;
+
+    /// Use a token, in one atomic step: an unused, unexpired token becomes
+    /// used and its record is returned. A used token revokes its family and
+    /// answers [`Reused`](RefreshTokenStoreError::Reused); an unknown,
+    /// expired or revoked one answers
+    /// [`NotFound`](RefreshTokenStoreError::NotFound). Used tokens must be
+    /// remembered until they expire, or reuse goes unnoticed.
+    async fn redeem(
+        &self,
+        token: &RefreshTokenHash,
+    ) -> Result<RefreshRecord, RefreshTokenStoreError>;
+
+    /// Revoke the family `token` belongs to (logout). Succeeds for an
+    /// unknown token.
+    async fn revoke_family_of(
+        &self,
+        token: &RefreshTokenHash,
+    ) -> Result<(), RefreshTokenStoreError>;
+
+    /// Revoke every token of the user (password change, account deletion).
+    async fn revoke_all_for_user(&self, email: &Email) -> Result<(), RefreshTokenStoreError>;
+}
