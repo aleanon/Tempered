@@ -9,7 +9,9 @@ use super::redis_support::user_key;
 const TOKEN_PREFIX: &str = "email_change:";
 const USER_PREFIX: &str = "email_change_user:";
 
-/// Redis-backed [`EmailChangeStore`]:
+/// Redis-backed [`EmailChangeStore`] (a single node: `create` deletes a key
+/// it reads, which Redis Cluster does not allow, like the other stores'
+/// scripts):
 /// - `email_change:{hash}` → `{old}\n{new}`, expiring with the change;
 /// - `email_change_user:{old}` → the account's current token, so a newer
 ///   request removes the older one.
@@ -40,6 +42,15 @@ static CREATE_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::
 
 fn unexpected(e: impl std::error::Error + Send + Sync + 'static) -> EmailChangeStoreError {
     EmailChangeStoreError::UnexpectedError(tempered_core::Failure::new(e))
+}
+
+fn decode(value: Option<String>) -> Result<(Email, Email), EmailChangeStoreError> {
+    let value = value.ok_or(EmailChangeStoreError::NotFound)?;
+    let (old, new) = value
+        .split_once('\n')
+        .ok_or_else(|| EmailChangeStoreError::UnexpectedError("corrupt email change".into()))?;
+    let parse = |s: &str| Email::try_from(Secret::new(s.to_string())).map_err(unexpected);
+    Ok((parse(old)?, parse(new)?))
 }
 
 fn token_key(token: &[u8; 32]) -> String {
@@ -73,6 +84,17 @@ impl EmailChangeStore for RedisEmailChangeStore {
         Ok(())
     }
 
+    async fn peek(&self, token: &[u8; 32]) -> Result<(Email, Email), EmailChangeStoreError> {
+        use redis::AsyncCommands;
+        let value: Option<String> = self
+            .client
+            .clone()
+            .get(token_key(token))
+            .await
+            .map_err(unexpected)?;
+        decode(value)
+    }
+
     async fn consume(&self, token: &[u8; 32]) -> Result<(Email, Email), EmailChangeStoreError> {
         use redis::AsyncCommands;
         let value: Option<String> = self
@@ -81,12 +103,7 @@ impl EmailChangeStore for RedisEmailChangeStore {
             .get_del(token_key(token))
             .await
             .map_err(unexpected)?;
-        let value = value.ok_or(EmailChangeStoreError::NotFound)?;
-        let (old, new) = value
-            .split_once('\n')
-            .ok_or_else(|| EmailChangeStoreError::UnexpectedError("corrupt email change".into()))?;
-        let parse = |s: &str| Email::try_from(Secret::new(s.to_string())).map_err(unexpected);
-        Ok((parse(old)?, parse(new)?))
+        decode(value)
     }
 }
 

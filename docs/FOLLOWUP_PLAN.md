@@ -575,9 +575,18 @@ Should-have:
   then revokes every token on the old address. Sessions, refresh
   families, pending codes and reset links are ended rather than moved.
   `EmailChangeStore` (HashMap, Redis) holds the single-use token, one
-  per account. Not atomic across stores: if a later move fails after the
-  account moved, those records stay on the old address and the call
-  answers 500 (9.5 would make the whole change one row update).
+  per account.
+  Review fixes: the token is peeked, checked against the account, and
+  spent under both addresses' locks; sessions end *before* anything
+  moves; a failure after the account moved rolls everything back (each
+  move takes what is still at its source, so it runs either way). Not
+  atomic across stores: if the rollback fails too, it is logged, and
+  nothing left behind has a live session (9.5 would make it one row
+  update). A pending change is not cancelled by logout-everywhere or a
+  reset: confirming needs a live session of the account, which those end.
+  Passkey enrolments under the old address are dropped on the move, and
+  finishing one checks that the account exists. Email change has its own
+  rate-limit group and counts against the target's mail budget.
 - **8.10 Password policy** ✅ DONE 2026-11-25: port and an optional breached-password check
   (HIBP k-anonymity, behind a feature).
   As built: `PasswordPolicy` port in core; `.password_policy(p)` (data on

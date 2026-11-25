@@ -908,6 +908,9 @@ pub trait EmailChangeStore: Send + Sync {
         ttl_seconds: u64,
     ) -> Result<(), EmailChangeStoreError>;
 
+    /// The change under `token`, without using it: `(old, new)`.
+    async fn peek(&self, token: &[u8; 32]) -> Result<(Email, Email), EmailChangeStoreError>;
+
     /// Use the change under `token`, once, atomically: `(old, new)`.
     async fn consume(&self, token: &[u8; 32]) -> Result<(Email, Email), EmailChangeStoreError>;
 }

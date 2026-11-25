@@ -1555,7 +1555,7 @@ mod passkey_tests {
 
     /// A credential store that is down: every call fails.
     #[derive(Clone)]
-    struct UnavailableCredentialStore;
+    pub(super) struct UnavailableCredentialStore;
 
     #[async_trait::async_trait]
     impl PasskeyCredentialStore for UnavailableCredentialStore {
@@ -2705,7 +2705,7 @@ mod email_change_tests {
             })
             .await;
 
-        // From someone else's session, the token moves nothing (and is used).
+        // From someone else's session, the token moves nothing.
         assert!(
             scheme
                 .confirm_email_change(email("taken@example.com"), confirm.clone())
@@ -2759,5 +2759,164 @@ mod email_change_tests {
 
         // Single use.
         assert!(scheme.confirm_email_change(moved, confirm).await.is_err());
+    }
+
+    /// A step after the account moved fails: the account goes back to the
+    /// old address, the new one stays free, and no session survives.
+    #[tokio::test]
+    async fn a_move_that_fails_part_way_is_undone() {
+        use crate::passkey::PasskeyFlow;
+        use crate::passkey::flow::test_support::MockVerifier;
+        use crate::persistence::HashMapChallengeStore;
+
+        let outbox = Outbox::default();
+        let users = HashMapUserStore::new();
+        let scheme = JwtScheme::new(
+            users.clone(),
+            JwtAuthConfig {
+                jwt_cookie_name: "jwt".to_string(),
+                jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+                token_ttl_in_seconds: 3600,
+                audience: None,
+                issuer: None,
+            },
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_registration()
+        // The passkey store is down, so moving the passkeys fails.
+        .supports_passkeys(PasskeyFlow::new(
+            super::passkey_tests::UnavailableCredentialStore,
+            HashMapChallengeStore::new(),
+            MockVerifier,
+        ))
+        .supports_email_verification(HashMapEmailVerificationTokenStore::new(), outbox.clone())
+        .supports_email_change(HashMapEmailChangeStore::new());
+
+        let alice = email("alice@example.com");
+        let password = Password::try_from(Secret::new("a-long-password".to_string())).unwrap();
+        scheme
+            .register(
+                alice.clone(),
+                password,
+                RegistrationData {
+                    requires_2fa: false,
+                },
+            )
+            .await
+            .unwrap();
+        let link = outbox
+            .find("alice@example.com", |m| match m {
+                Mail::VerifyEmail { token } => Some(token.clone()),
+                _ => None,
+            })
+            .await;
+        scheme.verify_email(&alice, link).await.unwrap();
+        let login = |who: &str| {
+            scheme.login(PasswordCredentials {
+                email: Secret::new(who.to_string()),
+                password: Secret::new("a-long-password".to_string()),
+            })
+        };
+        let Ok(LoginOutcome::Success(token)) = login("alice@example.com").await else {
+            panic!("alice logs in");
+        };
+
+        scheme
+            .request_email_change(alice.clone(), email("alice@new.example.com"))
+            .await
+            .unwrap();
+        let confirm = outbox
+            .find("alice@new.example.com", |m| match m {
+                Mail::ConfirmEmailChange { token } => Some(token.clone()),
+                _ => None,
+            })
+            .await;
+        assert!(
+            scheme
+                .confirm_email_change(alice.clone(), confirm)
+                .await
+                .is_err()
+        );
+
+        // Back where it was: the old address has the account and its proof,
+        // the new one has neither, and the session that confirmed is over.
+        assert!(users.get_user(&alice).await.is_ok());
+        assert!(
+            users
+                .get_user(&email("alice@new.example.com"))
+                .await
+                .is_err()
+        );
+        assert!(scheme.is_email_verified(&alice).await.unwrap());
+        assert!(
+            !scheme
+                .is_email_verified(&email("alice@new.example.com"))
+                .await
+                .unwrap()
+        );
+        assert!(!validates(&scheme, &token).await);
+        assert!(matches!(
+            login("alice@example.com").await,
+            Ok(LoginOutcome::Success(_))
+        ));
+    }
+
+    /// A token reaching another account's session is refused without being
+    /// used up, so the owner can still confirm.
+    #[tokio::test]
+    async fn the_wrong_account_does_not_use_up_the_token() {
+        let outbox = Outbox::default();
+        let scheme = JwtScheme::new(
+            HashMapUserStore::new(),
+            JwtAuthConfig {
+                jwt_cookie_name: "jwt".to_string(),
+                jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+                token_ttl_in_seconds: 3600,
+                audience: None,
+                issuer: None,
+            },
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_registration()
+        .supports_email_verification(HashMapEmailVerificationTokenStore::new(), outbox.clone())
+        .supports_email_change(HashMapEmailChangeStore::new());
+        let password = Password::try_from(Secret::new("a-long-password".to_string())).unwrap();
+        for who in ["alice@example.com", "mallory@example.com"] {
+            scheme
+                .register(
+                    email(who),
+                    password.clone(),
+                    RegistrationData {
+                        requires_2fa: false,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        scheme
+            .request_email_change(email("alice@example.com"), email("alice@new.example.com"))
+            .await
+            .unwrap();
+        let confirm = outbox
+            .find("alice@new.example.com", |m| match m {
+                Mail::ConfirmEmailChange { token } => Some(token.clone()),
+                _ => None,
+            })
+            .await;
+        assert!(
+            scheme
+                .confirm_email_change(email("mallory@example.com"), confirm.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            scheme
+                .confirm_email_change(email("alice@example.com"), confirm)
+                .await
+                .unwrap(),
+            email("alice@new.example.com")
+        );
     }
 }

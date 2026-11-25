@@ -171,48 +171,124 @@ where
         let Some(change) = &self.email_verify.change else {
             return Err(CredentialError::EmailChangeNotConfigured);
         };
-        let (old, new) = change
-            .store
-            .consume(&hash_change_token(&token))
-            .await
-            .map_err(|e| match e {
-                tempered_core::EmailChangeStoreError::NotFound => {
-                    CredentialError::InvalidVerificationToken
-                }
-                other => other.into(),
-            })?;
+        let not_found = |e| match e {
+            tempered_core::EmailChangeStoreError::NotFound => {
+                CredentialError::InvalidVerificationToken
+            }
+            other => other.into(),
+        };
+        let hash = hash_change_token(&token);
         // Only from the account the change was asked for: a token that
-        // reached someone else's session moves nothing.
+        // reached someone else's session moves nothing, and is not used up.
+        let (old, new) = change.store.peek(&hash).await.map_err(not_found)?;
         if old != email {
             return Err(CredentialError::InvalidVerificationToken);
         }
-        // Under the credential lock: no login begins, and no credential is
-        // added or removed, while the account changes address.
-        let lock = self.lock_credentials(&old).await?;
-        let result: Result<(), CredentialError<T::Error>> = async {
-            // Atomic with the check that `new` is free.
-            self.user_store.change_email(&old, &new).await?;
-            // Everything durable that is keyed by the address moves with it.
-            self.passkeys.move_user(&old, &new).await?;
-            self.oauth.move_user(&old, &new).await?;
-            self.two_fa.move_user(&old, &new).await?;
-            if let Some(keys) = self.api_key_store() {
-                keys.reassign(&old, &new)
-                    .await
-                    .map_err(|e| CredentialError::ApiKeys(e.to_string()))?;
+        // Under both addresses' credential locks: no login begins, and no
+        // credential is added or removed, at either while the account moves.
+        let old_lock = self.lock_credentials(&old).await?;
+        let new_lock = match self.lock_credentials(&new).await {
+            Ok(lock) => lock,
+            Err(e) => {
+                self.unlock_credentials(&old, old_lock).await;
+                return Err(e);
             }
-            // The new address just proved itself; the old one's mark goes.
-            self.email_verify.mark_verified(&new).await?;
-            self.email_verify.forget(&old).await?;
-            // Every session and token names the old address: they end. So do
-            // pending codes and reset links.
-            self.two_fa.cancel_pending(&old).await?;
-            self.revoke_all_tokens(&old).await?;
-            Ok(())
-        }
-        .await;
-        self.unlock_credentials(&old, lock).await;
+        };
+        let result = self.move_account(&*change.store, &hash, &old, &new).await;
+        self.unlock_credentials(&new, new_lock).await;
+        self.unlock_credentials(&old, old_lock).await;
         result?;
         Ok(new)
+    }
+}
+
+#[allow(private_bounds)]
+impl<U, T, F, L, R, V, E, O, K> CredentialScheme<U, T, F, L, R, EmailVerify<V, E>, O, K>
+where
+    U: UserStore,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Sync,
+    L: ElevationRevoke + Sync,
+    R: ResetCleanup + Sync,
+    V: EmailVerificationTokenStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
+    O: OAuthCleanup + Sync,
+    K: PasskeyCleanup + Sync,
+{
+    /// The email change itself, under both locks. Ordered so that no failure
+    /// leaves a live session or a credential under an address with no
+    /// account: whoever registers a freed address must inherit nothing.
+    async fn move_account(
+        &self,
+        store: &dyn tempered_core::EmailChangeStore,
+        hash: &[u8; 32],
+        old: &Email,
+        new: &Email,
+    ) -> Result<(), CredentialError<T::Error>> {
+        let not_found = |e| match e {
+            tempered_core::EmailChangeStoreError::NotFound => {
+                CredentialError::InvalidVerificationToken
+            }
+            other => other.into(),
+        };
+        // Spent here, under the lock: of two concurrent confirms one moves.
+        store.consume(hash).await.map_err(not_found)?;
+        // Every session and token names the old address, so they end first,
+        // with pending codes and reset links: if anything below fails, the
+        // old address holds no live session.
+        self.two_fa.cancel_pending(old).await?;
+        self.revoke_all_tokens(old).await?;
+        // Atomic with the check that `new` is free. Until this succeeds
+        // nothing has moved.
+        self.user_store.change_email(old, new).await?;
+        if let Err(e) = self.move_credentials(old, new).await {
+            // Put the account back where its credentials are, so neither
+            // address is left with credentials and no account.
+            tracing::error!(error = %e, "email change failed part-way; moving the account back");
+            self.roll_back_move(old, new).await;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Move everything durable keyed by the address, and the proof of it.
+    /// Each step moves whatever is still at `from`, so running it again (or
+    /// the other way) finishes or undoes a partial move.
+    async fn move_credentials(
+        &self,
+        from: &Email,
+        to: &Email,
+    ) -> Result<(), CredentialError<T::Error>> {
+        self.passkeys.move_user(from, to).await?;
+        self.oauth.move_user(from, to).await?;
+        self.two_fa.move_user(from, to).await?;
+        if let Some(keys) = self.api_key_store() {
+            keys.reassign(from, to)
+                .await
+                .map_err(|e| CredentialError::ApiKeys(e.to_string()))?;
+        }
+        // The new address just proved itself; the old one's mark goes.
+        self.email_verify.mark_verified(to).await?;
+        self.email_verify.forget(from).await?;
+        Ok(())
+    }
+
+    /// Undo a partial move, best effort: the credentials back to `old`, then
+    /// the account. What cannot be undone is logged; nothing it leaves behind
+    /// has a live session, which ended before the move.
+    async fn roll_back_move(&self, old: &Email, new: &Email) {
+        if let Err(e) = self.move_credentials(new, old).await {
+            tracing::error!(error = %e, "email change rollback: credentials not all moved back");
+        }
+        // The old address was proven before the change; the new one was not.
+        if let Err(e) = self.email_verify.forget(new).await {
+            tracing::error!(error = %e, "email change rollback: new address still marked verified");
+        }
+        if let Err(e) = self.user_store.change_email(new, old).await {
+            tracing::error!(error = ?e, "email change rollback: the account stays at the new address");
+        }
+        if let Err(e) = self.revoke_all_tokens(new).await {
+            tracing::error!(error = %e, "email change rollback: tokens for the new address not revoked");
+        }
     }
 }

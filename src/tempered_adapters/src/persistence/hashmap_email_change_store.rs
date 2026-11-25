@@ -46,6 +46,14 @@ impl EmailChangeStore for HashMapEmailChangeStore {
         Ok(())
     }
 
+    async fn peek(&self, token: &[u8; 32]) -> Result<(Email, Email), EmailChangeStoreError> {
+        let pending = self.pending.lock().expect("email change map poisoned");
+        match pending.get(token) {
+            Some(p) if p.until > Instant::now() => Ok((p.old.clone(), p.new.clone())),
+            _ => Err(EmailChangeStoreError::NotFound),
+        }
+    }
+
     async fn consume(&self, token: &[u8; 32]) -> Result<(Email, Email), EmailChangeStoreError> {
         let mut pending = self.pending.lock().expect("email change map poisoned");
         match pending.remove(token) {

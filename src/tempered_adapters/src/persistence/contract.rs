@@ -1083,6 +1083,13 @@ pub async fn email_change_store(store: impl tempered_core::EmailChangeStore) {
         .create([1; 32], alice.clone(), new.clone(), 600)
         .await
         .unwrap();
+    // Peeking does not use it.
+    for _ in 0..2 {
+        assert_eq!(
+            store.peek(&[1; 32]).await.unwrap(),
+            (alice.clone(), new.clone())
+        );
+    }
     assert_eq!(
         store.consume(&[1; 32]).await.unwrap(),
         (alice.clone(), new.clone())
