@@ -76,7 +76,8 @@ pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()
     /// Where an event for every library request goes (see
     /// [`Self::auth_events`]).
     events: Option<Arc<dyn crate::endpoints::AuthEventSink>>,
-    /// The after-the-response jobs of every slot (one bound, one runner).
+    /// The runner every slot's after-the-response jobs share (each slot
+    /// has its own bound, from [`Deferred::for_slot`]).
     deferred: Deferred,
 }
 
@@ -217,7 +218,7 @@ impl<U, T, S, E, P, L, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E, P>, L, R, 
              store (with Redis: `.with_namespace(\"email_login\")`)",
             two_fa.unwrap_or_default()
         );
-        settings.deferred = self.deferred.clone();
+        settings.deferred = self.deferred.for_slot();
         self.two_fa.email_login = Some(settings);
         self
     }
@@ -874,7 +875,7 @@ impl<U, T, F, L, M, O, K> CredentialScheme<U, T, F, L, (), M, O, K> {
             password_reset: PasswordReset {
                 store,
                 email,
-                deferred: self.deferred.clone(),
+                deferred: self.deferred.for_slot(),
             },
             email_verify: self.email_verify,
             oauth: self.oauth,
@@ -905,7 +906,7 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
             email_verify: EmailVerify {
                 store,
                 email,
-                deferred: self.deferred.clone(),
+                deferred: self.deferred.for_slot(),
             },
             oauth: self.oauth,
             passkeys: self.passkeys,

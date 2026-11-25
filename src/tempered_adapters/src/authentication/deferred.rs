@@ -57,6 +57,16 @@ impl Default for Deferred {
 }
 
 impl Deferred {
+    /// A `Deferred` for one slot: its own bound on jobs in flight (so a
+    /// flood on one public route cannot starve another's mails), the same
+    /// runner.
+    pub(crate) fn for_slot(&self) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(MAX_DEFERRED_JOBS)),
+            runner: self.runner.clone(),
+        }
+    }
+
     /// Hand jobs to `runner` from now on. Set once; a second runner is
     /// ignored (and logged).
     pub(crate) fn set_runner(&self, runner: Arc<dyn DeferredRunner>) {
@@ -92,6 +102,33 @@ impl Deferred {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A flood on one slot leaves the others room.
+    #[tokio::test]
+    async fn each_slot_has_its_own_bound() {
+        let shared = Deferred::default();
+        let (flooded, other) = (shared.for_slot(), shared.for_slot());
+        let (release, wait) = tokio::sync::watch::channel(false);
+        for _ in 0..MAX_DEFERRED_JOBS {
+            let mut wait = wait.clone();
+            flooded.run("flood", async move {
+                let _ = wait.wait_for(|go| *go).await;
+            });
+        }
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = ran.clone();
+        other.run("mail", async move {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        for _ in 0..100 {
+            if ran.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+        release.send(true).unwrap();
+    }
 
     #[tokio::test]
     async fn a_full_queue_drops_new_jobs_instead_of_running_them() {
