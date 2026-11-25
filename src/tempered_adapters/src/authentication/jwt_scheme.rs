@@ -678,6 +678,53 @@ mod oauth_tests {
         assert!(scheme.verify_2fa(email(), attempt_id, code).await.is_err());
     }
 
+    /// Whoever signed up an unproven account may have added an
+    /// authenticator app to it. Securing the account removes that app too,
+    /// with the password and passkeys.
+    #[tokio::test]
+    async fn securing_an_unproven_account_removes_its_authenticator_app() {
+        use crate::persistence::HashMapTotpStore;
+        use tempered_core::TotpStore;
+
+        let users = HashMapUserStore::new();
+        add_account(&users, SIGNUP_PASSWORD, false).await;
+        let totp = HashMapTotpStore::new();
+        // The squatter's app, already active.
+        totp.set_pending(&email(), Secret::new(vec![1; 20]))
+            .await
+            .unwrap();
+        assert!(totp.activate(&email(), 1, vec![[7; 32]]).await.unwrap());
+
+        let scheme = JwtScheme::new(
+            users,
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_2fa(HashMapTwoFaCodeStore::new(), MockEmailClient::new())
+        .supports_elevation(
+            HashSetBannedTokenStore::new(),
+            JwtAuthConfig {
+                jwt_cookie_name: "elevated".to_string(),
+                jwt_secret: Secret::new("another-test-secret-long-enough!".to_string()),
+                ..jwt_config()
+            },
+            |e| e,
+        )
+        .supports_totp(totp.clone(), "Test")
+        .supports_oauth(flow());
+
+        oauth_login(&scheme).await.unwrap();
+        assert!(
+            totp.active(&email()).await.unwrap().is_none(),
+            "the app is gone"
+        );
+        assert!(
+            !totp.use_recovery_code(&email(), &[7; 32]).await.unwrap(),
+            "and its codes"
+        );
+    }
+
     #[tokio::test]
     async fn oauth_login_to_a_two_factor_account_fails_closed_without_two_factor_support() {
         // The scheme has no 2FA capability, so it cannot challenge this

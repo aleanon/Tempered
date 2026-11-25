@@ -2033,6 +2033,10 @@ where
                 self.user_store.set_requires_2fa(email, false).await?;
             }
             self.passkeys.forget_user(email).await?;
+            // An authenticator app is a second factor whoever signed up
+            // chose. With 2FA kept on, codes go to the address the provider
+            // has just vouched for.
+            self.two_fa.forget_user(email).await?;
             self.two_fa.cancel_pending(email).await?;
             self.revoke_all_tokens(email).await?;
             self.passkeys.forget_user(email).await?;
