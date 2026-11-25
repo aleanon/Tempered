@@ -540,6 +540,13 @@ pub async fn user_store(store: impl tempered_core::UserStore) {
         Err(UserStoreError::UserNotFound)
     );
     let carols_id = store.get_user(&carol).await.unwrap().id;
+    // A new password or 2FA setting keeps the id too.
+    store
+        .set_new_password(&carol, password("carols-password"))
+        .await
+        .unwrap();
+    store.set_requires_2fa(&carol, false).await.unwrap();
+    assert_eq!(store.get_user(&carol).await.unwrap().id, carols_id);
     store.change_email(&carol, &moved).await.unwrap();
     assert!(store.get_user(&carol).await.is_err());
     // The id stays with the account, and finds it at its new address.

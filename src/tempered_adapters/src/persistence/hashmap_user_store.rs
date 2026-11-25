@@ -45,7 +45,8 @@ impl UserStore for HashMapUserStore {
         let mut users = self.users.write().await;
         let user = users.get_mut(email).ok_or(UserStoreError::UserNotFound)?;
 
-        *user = User::new(email.clone(), new_password, user.requires_2fa());
+        // Only the password changes: the account keeps its id.
+        user.password = new_password;
         Ok(())
     }
 
