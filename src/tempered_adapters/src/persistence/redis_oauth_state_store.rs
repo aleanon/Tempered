@@ -29,6 +29,8 @@ impl RedisOAuthStateStore {
 struct Stored {
     provider: String,
     code_verifier: String,
+    #[serde(default)]
+    nonce: Option<String>,
 }
 
 fn unexpected(e: impl std::fmt::Display) -> OAuthStateStoreError {
@@ -45,6 +47,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
         let value = serde_json::to_string(&Stored {
             provider: pending.provider,
             code_verifier: pending.code_verifier.expose_secret().clone(),
+            nonce: pending.nonce.map(|n| n.expose_secret().clone()),
         })
         .map_err(unexpected)?;
         self.client
@@ -70,6 +73,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
         Ok(PendingAuthorization {
             provider: stored.provider,
             code_verifier: Secret::new(stored.code_verifier),
+            nonce: stored.nonce.map(Secret::new),
         })
     }
 }

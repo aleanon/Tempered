@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use crate::domain::{
     email::Email,
-    oauth::{OAuthProviderConfig, OAuthUserInfo},
+    oauth::{OAuthProviderConfig, OAuthUserInfo, TokenResponse},
     passkey::{CeremonyStart, CeremonyState, CredentialId, PasskeyCredential},
 };
 
@@ -24,6 +24,8 @@ pub enum OAuthHttpError {
     TokenExchange(String),
     #[error("Userinfo request failed: {0}")]
     UserInfo(String),
+    #[error("Request to the provider failed: {0}")]
+    Fetch(String),
 }
 
 /// Port for the outbound HTTP calls an OAuth2 flow makes to a provider.
@@ -43,7 +45,7 @@ pub trait OAuthHttpClient: Send + Sync {
         config: &OAuthProviderConfig,
         code: &str,
         code_verifier: &str,
-    ) -> Result<String, OAuthHttpError>;
+    ) -> Result<TokenResponse, OAuthHttpError>;
 
     /// Fetch the user's identity using the access token.
     async fn fetch_user_info(
@@ -51,6 +53,9 @@ pub trait OAuthHttpClient: Send + Sync {
         config: &OAuthProviderConfig,
         access_token: &str,
     ) -> Result<OAuthUserInfo, OAuthHttpError>;
+
+    /// `GET` a JSON document (an OIDC discovery document or a key set).
+    async fn fetch_json(&self, url: &str) -> Result<serde_json::Value, OAuthHttpError>;
 }
 
 #[derive(Debug, Error)]

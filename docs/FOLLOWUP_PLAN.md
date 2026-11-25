@@ -500,10 +500,22 @@ Must-have for a working framework:
   replay), hashed single-use recovery codes; HashMap + Postgres (runtime
   queries, new migration). Not done: telling the client which factor to
   ask for (the 206 body is the same), and encrypting secrets in the store.
-- **8.4 OIDC.** Verify the ID token (JWKS, `iss`/`aud`/`exp`, nonce in
+- **8.4 OIDC.** ✅ DONE 2026-11-25 (Apple deferred). Verify the ID token (JWKS, `iss`/`aud`/`exp`, nonce in
   `PendingAuthorization`) and read `.well-known` discovery. Add provider
   presets for Google, Microsoft and Apple, and GitHub with its emails
   endpoint. The README says "OIDC"; today it is OAuth2 plus userinfo.
+  As built: `OAuthProviderConfig.oidc: Option<OidcSettings { issuer,
+  jwks_uri }>` and `.emails_url`; `PendingAuthorization.nonce`;
+  `OAuthHttpClient::exchange_code` returns `TokenResponse { access_token,
+  id_token }` and a new `fetch_json`. `oauth::id_token::KeyCache` verifies
+  (asymmetric algs only, iss, aud, azp, exp ±60 s, nonce) with a JWKS cache
+  (1 h, refetch on unknown kid at most once a minute). Without an `email`
+  claim, userinfo must describe the same `sub`. `oauth::providers`:
+  `google`, `microsoft(tenant)` (refuses `common`/`organizations`),
+  `github` (numeric id, primary address from `/user/emails`), `discover`.
+  Apple: needs `response_mode=form_post`, a cross-site POST that a
+  `SameSite=Lax` state cookie does not survive; it needs a POST callback,
+  a `SameSite=None` state cookie for that provider and the 8.5 exemption.
 - **8.5 CSRF defence in depth.** ✅ DONE 2026-11-23.
   `endpoints::is_cross_site`: `Sec-Fetch-Site: cross-site` is refused, with
   `Origin` vs `Host` as the fallback (`null` refused, default ports

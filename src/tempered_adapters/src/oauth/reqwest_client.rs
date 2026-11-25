@@ -1,6 +1,8 @@
 use async_trait::async_trait;
-use secrecy::ExposeSecret;
-use tempered_core::{OAuthHttpClient, OAuthHttpError, OAuthProviderConfig, OAuthUserInfo};
+use secrecy::{ExposeSecret, Secret};
+use tempered_core::{
+    OAuthHttpClient, OAuthHttpError, OAuthProviderConfig, OAuthUserInfo, TokenResponse,
+};
 
 /// Production [`OAuthHttpClient`] backed by `reqwest`.
 ///
@@ -25,6 +27,8 @@ impl ReqwestOAuthHttpClient {
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
+            // Some provider APIs (GitHub's) refuse requests without one.
+            .user_agent(concat!("tempered/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("the TLS backend failed to initialise");
         Self { client }
@@ -50,7 +54,7 @@ impl OAuthHttpClient for ReqwestOAuthHttpClient {
         config: &OAuthProviderConfig,
         code: &str,
         code_verifier: &str,
-    ) -> Result<String, OAuthHttpError> {
+    ) -> Result<TokenResponse, OAuthHttpError> {
         let secret = config.client_secret.expose_secret();
         let params = [
             ("grant_type", "authorization_code"),
@@ -79,10 +83,19 @@ impl OAuthHttpClient for ReqwestOAuthHttpClient {
             .await
             .map_err(|e| OAuthHttpError::TokenExchange(e.to_string()))?;
 
-        json.get("access_token")
+        let access_token = json
+            .get("access_token")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| OAuthHttpError::TokenExchange("missing access_token in response".into()))
+            .ok_or_else(|| {
+                OAuthHttpError::TokenExchange("missing access_token in response".into())
+            })?;
+        Ok(TokenResponse {
+            access_token: Secret::new(access_token.to_string()),
+            id_token: json
+                .get("id_token")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        })
     }
 
     async fn fetch_user_info(
@@ -106,13 +119,39 @@ impl OAuthHttpClient for ReqwestOAuthHttpClient {
             .await
             .map_err(|e| OAuthHttpError::UserInfo(e.to_string()))?;
 
-        // OIDC providers expose `sub`; some OAuth2-only providers use `id`.
-        let subject = json
-            .get("sub")
-            .or_else(|| json.get("id"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| OAuthHttpError::UserInfo("missing sub/id in userinfo".into()))?
-            .to_string();
+        // OIDC providers expose `sub`; some OAuth2-only providers use `id`,
+        // GitHub as a number.
+        let subject = match json.get("sub").or_else(|| json.get("id")) {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            _ => {
+                return Err(OAuthHttpError::UserInfo(
+                    "missing sub/id in userinfo".into(),
+                ));
+            }
+        };
+
+        // A provider with an emails endpoint (GitHub) lists the addresses and
+        // which are verified; the primary one is the account's.
+        if let Some(url) = &config.emails_url {
+            let emails = self.get(url, Some(access_token)).await?;
+            let primary = emails
+                .as_array()
+                .and_then(|list| {
+                    list.iter()
+                        .find(|e| e.get("primary").and_then(|p| p.as_bool()) == Some(true))
+                })
+                .ok_or_else(|| OAuthHttpError::UserInfo("no primary address".into()))?;
+            let email = primary
+                .get("email")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| OAuthHttpError::UserInfo("primary address has no email".into()))?;
+            return Ok(OAuthUserInfo {
+                subject,
+                email: email.to_string(),
+                email_verified: primary.get("verified").and_then(|v| v.as_bool()) == Some(true),
+            });
+        }
 
         let email = json
             .get("email")
@@ -132,5 +171,99 @@ impl OAuthHttpClient for ReqwestOAuthHttpClient {
             email,
             email_verified,
         })
+    }
+
+    async fn fetch_json(&self, url: &str) -> Result<serde_json::Value, OAuthHttpError> {
+        self.get(url, None).await
+    }
+}
+
+impl ReqwestOAuthHttpClient {
+    /// `GET` JSON, with a bearer token when given.
+    async fn get(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> Result<serde_json::Value, OAuthHttpError> {
+        let mut request = self.client.get(url).header("accept", "application/json");
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        request
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| OAuthHttpError::Fetch(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| OAuthHttpError::Fetch(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn config(server: &MockServer, emails: bool) -> OAuthProviderConfig {
+        OAuthProviderConfig {
+            name: "gh".into(),
+            client_id: "c".into(),
+            client_secret: Secret::new("s".into()),
+            auth_url: format!("{}/authorize", server.uri()),
+            token_url: format!("{}/token", server.uri()),
+            userinfo_url: format!("{}/user", server.uri()),
+            redirect_uri: "http://localhost/cb".into(),
+            scopes: vec![],
+            oidc: None,
+            emails_url: emails.then(|| format!("{}/user/emails", server.uri())),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_token_response_keeps_the_id_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({ "access_token": "at", "id_token": "header.body.sig" }),
+            ))
+            .mount(&server)
+            .await;
+        let tokens = ReqwestOAuthHttpClient::new()
+            .exchange_code(&config(&server, false), "code", "verifier")
+            .await
+            .unwrap();
+        assert_eq!(tokens.access_token.expose_secret(), "at");
+        assert_eq!(tokens.id_token.as_deref(), Some("header.body.sig"));
+    }
+
+    #[tokio::test]
+    async fn a_github_style_user_takes_the_primary_address_and_its_verified_flag() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .and(header("authorization", "Bearer at"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({ "id": 583231, "login": "octocat", "email": null }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/emails"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "email": "old@example.com", "primary": false, "verified": true },
+                { "email": "octo@example.com", "primary": true, "verified": true },
+            ])))
+            .mount(&server)
+            .await;
+        let info = ReqwestOAuthHttpClient::new()
+            .fetch_user_info(&config(&server, true), "at")
+            .await
+            .unwrap();
+        assert_eq!(info.subject, "583231");
+        assert_eq!(info.email, "octo@example.com");
+        assert!(info.email_verified);
     }
 }

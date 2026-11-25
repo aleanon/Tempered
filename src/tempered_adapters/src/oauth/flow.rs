@@ -20,8 +20,8 @@ use rand::RngCore;
 use secrecy::{ExposeSecret, Secret};
 use tempered_core::{
     ClassifyError, Email, ErrorCategory, OAuthHttpClient, OAuthIdentityStore,
-    OAuthIdentityStoreError, OAuthProviderConfig, OAuthStateStore, PendingAuthorization, UserError,
-    constant_time_eq,
+    OAuthIdentityStoreError, OAuthProviderConfig, OAuthStateStore, OAuthUserInfo,
+    PendingAuthorization, UserError, constant_time_eq,
 };
 use thiserror::Error;
 
@@ -97,6 +97,8 @@ pub struct OAuthFlow<ST, ID, HC> {
     /// Shared, so cloning the flow (with the scheme, per request) copies a
     /// pointer rather than every provider's settings.
     providers: Arc<HashMap<String, OAuthProviderConfig>>,
+    /// OIDC signing keys, fetched on demand and shared by every login.
+    keys: Arc<super::id_token::KeyCache>,
 }
 
 impl<ST, ID, HC> OAuthFlow<ST, ID, HC>
@@ -111,6 +113,7 @@ where
             identity_store,
             http_client,
             providers: Arc::new(HashMap::new()),
+            keys: Arc::default(),
         }
     }
 
@@ -125,15 +128,27 @@ where
     /// into, so neither may travel unencrypted. This is a configuration
     /// error, caught at startup.
     pub fn with_provider(mut self, config: OAuthProviderConfig) -> Self {
+        let oidc = config.oidc.as_ref();
         for (field, value) in [
-            ("auth_url", &config.auth_url),
-            ("token_url", &config.token_url),
-            ("userinfo_url", &config.userinfo_url),
-            ("redirect_uri", &config.redirect_uri),
+            ("auth_url", Some(&config.auth_url)),
+            ("token_url", Some(&config.token_url)),
+            ("userinfo_url", Some(&config.userinfo_url)),
+            ("redirect_uri", Some(&config.redirect_uri)),
+            ("emails_url", config.emails_url.as_ref()),
+            ("oidc.issuer", oidc.map(|o| &o.issuer)),
+            ("oidc.jwks_uri", oidc.map(|o| &o.jwks_uri)),
         ] {
-            if let Err(problem) = check_endpoint(value) {
+            if let Some(value) = value
+                && let Err(problem) = check_endpoint(value)
+            {
                 panic!("OAuth provider {:?}: {field} {problem}", config.name);
             }
+        }
+        if oidc.is_some() && !config.scopes.iter().any(|s| s == "openid") {
+            panic!(
+                "OAuth provider {:?}: OIDC needs the `openid` scope",
+                config.name
+            );
         }
         Arc::make_mut(&mut self.providers).insert(config.name.clone(), config);
         self
@@ -151,18 +166,26 @@ where
         let code_verifier = generate_verifier();
         // Only the challenge travels through the browser; the verifier stays here.
         let code_challenge = pkce_challenge_s256(code_verifier.expose_secret());
+        let nonce = config.oidc.as_ref().map(|_| Secret::new(random_state()));
+        let authorize_url = build_authorize_url(
+            config,
+            &state,
+            &code_challenge,
+            nonce.as_ref().map(|n| n.expose_secret().as_str()),
+        );
         self.state_store
             .store_state(
                 state.clone(),
                 PendingAuthorization {
                     provider: config.name.clone(),
                     code_verifier,
+                    nonce,
                 },
             )
             .await
             .map_err(|e| OAuthFlowError::State(e.to_string()))?;
         Ok(AuthorizationRequest {
-            authorize_url: build_authorize_url(config, &state, &code_challenge),
+            authorize_url,
             state,
         })
     }
@@ -211,14 +234,21 @@ where
         }
         let code_verifier = pending.code_verifier;
 
-        let access_token = self
+        let tokens = self
             .http_client
             .exchange_code(config, code, code_verifier.expose_secret())
             .await?;
-        let info = self
-            .http_client
-            .fetch_user_info(config, &access_token)
-            .await?;
+        let info = match &config.oidc {
+            Some(oidc) => {
+                self.identity_from_id_token(config, oidc, &tokens, pending.nonce)
+                    .await?
+            }
+            None => {
+                self.http_client
+                    .fetch_user_info(config, tokens.access_token.expose_secret())
+                    .await?
+            }
+        };
 
         // A linked identity is the provider's `subject`, which is stable;
         // the email is not (OIDC Core §5.7: do not key on it). So a linked
@@ -250,6 +280,51 @@ where
             already_linked: false,
             vouches_for_email: true,
         })
+    }
+
+    /// The identity an OIDC login proves: the ID token's, checked against
+    /// the provider's keys, our client id and this login's nonce. When the
+    /// token carries no address, the userinfo endpoint supplies it, and must
+    /// describe the same subject.
+    async fn identity_from_id_token(
+        &self,
+        config: &OAuthProviderConfig,
+        oidc: &tempered_core::OidcSettings,
+        tokens: &tempered_core::TokenResponse,
+        nonce: Option<Secret<String>>,
+    ) -> Result<OAuthUserInfo, OAuthFlowError> {
+        let refused = |why: String| OAuthFlowError::IdToken(why);
+        let token = tokens
+            .id_token
+            .as_deref()
+            .ok_or_else(|| refused("the token response has no id_token".to_string()))?;
+        let nonce = nonce.ok_or_else(|| refused("this login sent no nonce".to_string()))?;
+        let claims = self
+            .keys
+            .verify(
+                &self.http_client,
+                oidc,
+                &config.client_id,
+                token,
+                nonce.expose_secret(),
+            )
+            .await
+            .map_err(refused)?;
+        if let Some(email) = claims.email {
+            return Ok(OAuthUserInfo {
+                subject: claims.subject,
+                email,
+                email_verified: claims.email_verified,
+            });
+        }
+        let info = self
+            .http_client
+            .fetch_user_info(config, tokens.access_token.expose_secret())
+            .await?;
+        if !constant_time_eq(&info.subject, &claims.subject) {
+            return Err(refused("userinfo describes another subject".to_string()));
+        }
+        Ok(info)
     }
 
     /// Record a verified identity as a way to log in to its email's account.
@@ -320,7 +395,12 @@ fn random_state() -> String {
     buf.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-fn build_authorize_url(config: &OAuthProviderConfig, state: &str, code_challenge: &str) -> String {
+fn build_authorize_url(
+    config: &OAuthProviderConfig,
+    state: &str,
+    code_challenge: &str,
+    nonce: Option<&str>,
+) -> String {
     // Checked when the provider was registered (`with_provider`).
     let mut url = url::Url::parse(&config.auth_url).expect("provider auth_url must be a valid URL");
     url.query_pairs_mut()
@@ -331,6 +411,9 @@ fn build_authorize_url(config: &OAuthProviderConfig, state: &str, code_challenge
         .append_pair("state", state)
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", CODE_CHALLENGE_METHOD);
+    if let Some(nonce) = nonce {
+        url.query_pairs_mut().append_pair("nonce", nonce);
+    }
     url.to_string()
 }
 
@@ -352,6 +435,8 @@ pub enum OAuthFlowError {
     State(String),
     #[error("Identity store error: {0}")]
     Identity(String),
+    #[error("ID token refused: {0}")]
+    IdToken(String),
 }
 
 impl ClassifyError for OAuthFlowError {
@@ -379,6 +464,15 @@ impl ClassifyError for OAuthFlowError {
                 ErrorCategory::BadGateway,
                 "OAuth provider error".to_string(),
             ),
+            // Why the token failed is for the log: it can show what a forger
+            // got right.
+            OAuthFlowError::IdToken(why) => {
+                tracing::warn!(reason = %why, "OIDC ID token refused");
+                (
+                    ErrorCategory::Unauthorized,
+                    "The login with the provider could not be verified".to_string(),
+                )
+            }
             e @ (OAuthFlowError::State(_) | OAuthFlowError::Identity(_)) => {
                 tracing::error!(error = %e, "OAuth store error");
                 (ErrorCategory::Internal, "Internal error".to_string())
@@ -418,17 +512,24 @@ mod tests {
 
     #[async_trait]
     impl OAuthHttpClient for MockClient {
+        async fn fetch_json(&self, _: &str) -> Result<serde_json::Value, OAuthHttpError> {
+            unreachable!("plain OAuth2 in these tests")
+        }
+
         async fn exchange_code(
             &self,
             _config: &OAuthProviderConfig,
             _code: &str,
             code_verifier: &str,
-        ) -> Result<String, OAuthHttpError> {
+        ) -> Result<tempered_core::TokenResponse, OAuthHttpError> {
             self.seen_verifiers
                 .lock()
                 .unwrap()
                 .push(code_verifier.to_string());
-            Ok("access-token".to_string())
+            Ok(tempered_core::TokenResponse {
+                access_token: secrecy::Secret::new("access-token".to_string()),
+                id_token: None,
+            })
         }
 
         async fn fetch_user_info(
@@ -487,6 +588,8 @@ mod tests {
             userinfo_url: "https://accounts.example.com/userinfo".to_string(),
             redirect_uri: "https://app.example.com/oauth/google/callback".to_string(),
             scopes: vec!["openid".to_string(), "email".to_string()],
+            oidc: None,
+            emails_url: None,
         }
     }
 
@@ -755,5 +858,317 @@ mod tests {
             .unwrap();
         assert_eq!(second.email(), first.email());
         assert!(!second.vouches_for_email());
+    }
+}
+
+/// OIDC: ID tokens signed with a test key, served as a JWKS by a mock
+/// provider.
+#[cfg(test)]
+mod oidc_tests {
+    use super::*;
+    use crate::persistence::hashmap_oauth_identity_store::HashMapOAuthIdentityStore;
+    use crate::persistence::hashmap_oauth_state_store::HashMapOAuthStateStore;
+    use async_trait::async_trait;
+    use jsonwebtoken::{EncodingKey, Header, encode};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tempered_core::{OAuthHttpError, OidcSettings, TokenResponse};
+
+    /// A throwaway Ed25519 key, used only here.
+    const KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIA2ZLlv7Fjn0b25zMCmAD3a/yfAHP1vNguNqqoum5wdH
+-----END PRIVATE KEY-----";
+    const KEY_X: &str = "W3DI0L_-8PhUTwOqJ8wc9wfMSEhDyL_lzkuukXRdD-Q";
+    const ISSUER: &str = "https://id.example.com";
+    const CLIENT: &str = "client-123";
+
+    #[derive(Clone, Default)]
+    struct Provider {
+        id_token: Arc<Mutex<Option<String>>>,
+        userinfo: Arc<Mutex<Option<OAuthUserInfo>>>,
+        key_fetches: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl OAuthHttpClient for Provider {
+        async fn exchange_code(
+            &self,
+            _: &OAuthProviderConfig,
+            _: &str,
+            _: &str,
+        ) -> Result<TokenResponse, OAuthHttpError> {
+            Ok(TokenResponse {
+                access_token: Secret::new("access".to_string()),
+                id_token: self.id_token.lock().unwrap().clone(),
+            })
+        }
+        async fn fetch_user_info(
+            &self,
+            _: &OAuthProviderConfig,
+            _: &str,
+        ) -> Result<OAuthUserInfo, OAuthHttpError> {
+            self.userinfo
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| OAuthHttpError::UserInfo("not expected".into()))
+        }
+        async fn fetch_json(&self, url: &str) -> Result<serde_json::Value, OAuthHttpError> {
+            assert_eq!(url, "https://id.example.com/keys");
+            self.key_fetches.fetch_add(1, Ordering::SeqCst);
+            Ok(serde_json::json!({ "keys": [{
+                "kty": "OKP", "crv": "Ed25519", "x": KEY_X, "kid": "k1", "alg": "EdDSA", "use": "sig"
+            }]}))
+        }
+    }
+
+    type Flow = OAuthFlow<HashMapOAuthStateStore, HashMapOAuthIdentityStore, Provider>;
+
+    fn flow(provider: Provider) -> Flow {
+        OAuthFlow::new(
+            HashMapOAuthStateStore::new(),
+            HashMapOAuthIdentityStore::new(),
+            provider,
+        )
+        .with_provider(OAuthProviderConfig {
+            name: "id".to_string(),
+            client_id: CLIENT.to_string(),
+            client_secret: Secret::new("secret".to_string()),
+            auth_url: "https://id.example.com/authorize".to_string(),
+            token_url: "https://id.example.com/token".to_string(),
+            userinfo_url: "https://id.example.com/userinfo".to_string(),
+            redirect_uri: "https://app.example.com/oauth/id/callback".to_string(),
+            scopes: vec!["openid".to_string(), "email".to_string()],
+            oidc: Some(OidcSettings {
+                issuer: ISSUER.to_string(),
+                jwks_uri: "https://id.example.com/keys".to_string(),
+            }),
+            emails_url: None,
+        })
+    }
+
+    fn now() -> i64 {
+        chrono::Utc::now().timestamp()
+    }
+
+    /// Claims for a good token answering `nonce`; tests break one at a time.
+    fn claims(nonce: &str) -> serde_json::Value {
+        serde_json::json!({
+            "iss": ISSUER, "aud": CLIENT, "sub": "user-1", "nonce": nonce,
+            "exp": now() + 300, "iat": now(),
+            "email": "a@example.com", "email_verified": true,
+        })
+    }
+
+    fn sign(claims: &serde_json::Value, kid: &str) -> String {
+        let mut header = Header::new(jsonwebtoken::Algorithm::EdDSA);
+        header.kid = Some(kid.to_string());
+        // The PEM's body is the PKCS#8 DER.
+        let der: String = KEY_PEM
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        let der = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, der).unwrap();
+        encode(&header, claims, &EncodingKey::from_ed_der(&der)).unwrap()
+    }
+
+    /// Begin a login; the state and the nonce the authorize URL carries.
+    async fn begin(flow: &Flow) -> (String, String) {
+        let request = flow.begin("id").await.unwrap();
+        let url = url::Url::parse(&request.authorize_url).unwrap();
+        let nonce = url
+            .query_pairs()
+            .find(|(k, _)| k == "nonce")
+            .map(|(_, v)| v.to_string())
+            .expect("an OIDC login sends a nonce");
+        (request.state, nonce)
+    }
+
+    /// Run one login whose provider answers with `token(nonce)`.
+    async fn login_with(
+        provider: Provider,
+        token: impl FnOnce(&str) -> String,
+    ) -> Result<VerifiedIdentity, OAuthFlowError> {
+        let flow = flow(provider.clone());
+        let (state, nonce) = begin(&flow).await;
+        *provider.id_token.lock().unwrap() = Some(token(&nonce));
+        flow.complete("id", "code", &state, &state).await
+    }
+
+    #[tokio::test]
+    async fn a_valid_id_token_decides_the_identity() {
+        let identity = login_with(Provider::default(), |n| sign(&claims(n), "k1"))
+            .await
+            .unwrap();
+        assert_eq!(identity.subject, "user-1");
+        assert_eq!(identity.email().as_ref().expose_secret(), "a@example.com");
+    }
+
+    #[tokio::test]
+    async fn a_broken_id_token_is_refused() {
+        type MakeToken = Box<dyn Fn(&str) -> String>;
+        let cases: Vec<(&str, MakeToken)> = vec![
+            (
+                "another login's nonce",
+                Box::new(|_| sign(&claims("not-this-one"), "k1")),
+            ),
+            (
+                "another client",
+                Box::new(|n| {
+                    sign(
+                        &{
+                            let mut c = claims(n);
+                            c["aud"] = "someone-else".into();
+                            c
+                        },
+                        "k1",
+                    )
+                }),
+            ),
+            (
+                "another issuer",
+                Box::new(|n| {
+                    sign(
+                        &{
+                            let mut c = claims(n);
+                            c["iss"] = "https://evil.example".into();
+                            c
+                        },
+                        "k1",
+                    )
+                }),
+            ),
+            (
+                "expired",
+                Box::new(|n| {
+                    sign(
+                        &{
+                            let mut c = claims(n);
+                            c["exp"] = (now() - 3600).into();
+                            c
+                        },
+                        "k1",
+                    )
+                }),
+            ),
+            (
+                "issued to another party",
+                Box::new(|n| {
+                    sign(
+                        &{
+                            let mut c = claims(n);
+                            c["aud"] = serde_json::json!([CLIENT, "other"]);
+                            c
+                        },
+                        "k1",
+                    )
+                }),
+            ),
+            ("unknown key", Box::new(|n| sign(&claims(n), "k2"))),
+            (
+                "no signature",
+                Box::new(|n| {
+                    let header = base64::Engine::encode(
+                        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                        r#"{"alg":"none","kid":"k1"}"#,
+                    );
+                    let body = base64::Engine::encode(
+                        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                        claims(n).to_string(),
+                    );
+                    format!("{header}.{body}.")
+                }),
+            ),
+            (
+                "HMAC",
+                Box::new(|n| {
+                    let mut header = Header::new(jsonwebtoken::Algorithm::HS256);
+                    header.kid = Some("k1".into());
+                    encode(
+                        &header,
+                        &claims(n),
+                        &EncodingKey::from_secret(KEY_X.as_bytes()),
+                    )
+                    .unwrap()
+                }),
+            ),
+        ];
+        for (case, token) in cases {
+            let result = login_with(Provider::default(), token).await;
+            assert!(
+                matches!(result, Err(OAuthFlowError::IdToken(_))),
+                "{case}: {:?}",
+                result.map(|i| i.subject)
+            );
+        }
+        // And a provider that sends no ID token at all.
+        let flow = flow(Provider::default());
+        let (state, _) = begin(&flow).await;
+        assert!(matches!(
+            flow.complete("id", "code", &state, &state).await,
+            Err(OAuthFlowError::IdToken(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn keys_are_fetched_once_and_an_unknown_kid_does_not_refetch_at_once() {
+        let provider = Provider::default();
+        let flow = flow(provider.clone());
+        for _ in 0..3 {
+            let (state, nonce) = begin(&flow).await;
+            *provider.id_token.lock().unwrap() = Some(sign(&claims(&nonce), "k1"));
+            flow.complete("id", "code", &state, &state).await.unwrap();
+        }
+        assert_eq!(provider.key_fetches.load(Ordering::SeqCst), 1);
+        let (state, nonce) = begin(&flow).await;
+        *provider.id_token.lock().unwrap() = Some(sign(&claims(&nonce), "rotated"));
+        assert!(flow.complete("id", "code", &state, &state).await.is_err());
+        assert_eq!(
+            provider.key_fetches.load(Ordering::SeqCst),
+            1,
+            "no refetch within a minute"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_an_email_claim_userinfo_must_describe_the_same_subject() {
+        let no_email = |n: &str| {
+            let mut c = claims(n);
+            c.as_object_mut().unwrap().remove("email");
+            sign(&c, "k1")
+        };
+        let provider = Provider::default();
+        *provider.userinfo.lock().unwrap() = Some(OAuthUserInfo {
+            subject: "user-1".into(),
+            email: "a@example.com".into(),
+            email_verified: true,
+        });
+        assert!(login_with(provider, no_email).await.is_ok());
+
+        let provider = Provider::default();
+        *provider.userinfo.lock().unwrap() = Some(OAuthUserInfo {
+            subject: "someone-else".into(),
+            email: "victim@example.com".into(),
+            email_verified: true,
+        });
+        assert!(matches!(
+            login_with(provider, no_email).await,
+            Err(OAuthFlowError::IdToken(_))
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "OIDC needs the `openid` scope")]
+    fn oidc_without_the_openid_scope_is_refused_at_startup() {
+        let mut config = flow(Provider::default()).provider("id").unwrap().clone();
+        config.scopes = vec!["email".to_string()];
+        let _ = OAuthFlow::new(
+            HashMapOAuthStateStore::new(),
+            HashMapOAuthIdentityStore::new(),
+            Provider::default(),
+        )
+        .with_provider(config);
     }
 }

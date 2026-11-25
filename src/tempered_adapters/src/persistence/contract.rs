@@ -91,6 +91,7 @@ pub(crate) async fn oauth_state_store(store: impl tempered_core::OAuthStateStore
             PendingAuthorization {
                 provider: "google".to_string(),
                 code_verifier: Secret::new("verifier-1".to_string()),
+                nonce: Some(Secret::new("nonce-1".to_string())),
             },
         )
         .await
@@ -99,6 +100,7 @@ pub(crate) async fn oauth_state_store(store: impl tempered_core::OAuthStateStore
     let found = store.consume_state("s1").await.unwrap();
     assert_eq!(found.provider, "google");
     assert_eq!(found.code_verifier.expose_secret(), "verifier-1");
+    assert_eq!(found.nonce.unwrap().expose_secret(), "nonce-1");
     assert!(matches!(
         store.consume_state("s1").await,
         Err(OAuthStateStoreError::UnknownState)

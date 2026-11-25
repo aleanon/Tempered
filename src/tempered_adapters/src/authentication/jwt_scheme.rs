@@ -136,13 +136,20 @@ mod oauth_tests {
 
     #[async_trait]
     impl OAuthHttpClient for MockClient {
+        async fn fetch_json(&self, _: &str) -> Result<serde_json::Value, OAuthHttpError> {
+            unreachable!("no OIDC in these tests")
+        }
+
         async fn exchange_code(
             &self,
             _config: &OAuthProviderConfig,
             _code: &str,
             _code_verifier: &str,
-        ) -> Result<String, OAuthHttpError> {
-            Ok("access-token".to_string())
+        ) -> Result<tempered_core::TokenResponse, OAuthHttpError> {
+            Ok(tempered_core::TokenResponse {
+                access_token: secrecy::Secret::new("access-token".to_string()),
+                id_token: None,
+            })
         }
 
         async fn fetch_user_info(
@@ -168,6 +175,8 @@ mod oauth_tests {
             userinfo_url: "https://accounts.example.com/userinfo".to_string(),
             redirect_uri: "https://app.example.com/oauth/google/callback".to_string(),
             scopes: vec!["openid".to_string(), "email".to_string()],
+            oidc: None,
+            emails_url: None,
         }
     }
 

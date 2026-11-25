@@ -128,6 +128,21 @@ automatically:
 | OAuth2 / OIDC (with PKCE) | `.supports_oauth(flow)` | provider start + callback routes. A callback that fails (including a provider `error=`, e.g. the user cancelled, which answers `401`) clears the state cookie |
 | Passkeys (WebAuthn) | `.supports_passkeys(flow)` | passkey login routes (public) + enrolment routes (logged-in user only; add `e.supports_passkey_enrollment()` in the elevation closure to require a fresh re-authentication). A passkey login skips 2FA unless you add `.passkey_login_requires_2fa()`: then a 2FA account gets `206 { loginAttemptId, email }` and finishes at `/verify-2fa` |
 
+Providers come from `tempered::oauth_providers`: `google(..)`,
+`microsoft(tenant, ..)` and `github(..)` presets, or `discover(http, name,
+issuer, ..)` for any OpenID Connect provider (it reads
+`{issuer}/.well-known/openid-configuration` and refuses a document for
+another issuer). Register each with `OAuthFlow::with_provider`. For an OIDC
+provider (`oidc: Some(..)`) the login sends a nonce and is decided by the
+ID token: its signature is checked with the provider's published keys
+(cached for an hour), and so are its issuer, audience (`azp` when there are
+several), expiry and nonce. Only asymmetric algorithms are accepted. GitHub
+is plain OAuth2: the address is the primary one from its emails endpoint.
+Microsoft needs a tenant id (multi-tenant `common` issuers cannot be pinned)
+and does not mark addresses verified, so a first Microsoft login cannot take
+over an existing account by address. Apple is not supported yet: it sends
+the address only with a cross-site `form_post` callback.
+
 An OAuth login follows the same rules as a password login: the first login for
 an email creates the account, later ones log in to it, and an account that
 requires 2FA is still asked for its code: instead of issuing a session, the

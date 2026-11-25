@@ -19,6 +19,33 @@ pub struct OAuthProviderConfig {
     /// Our callback URL registered with the provider.
     pub redirect_uri: String,
     pub scopes: Vec<String>,
+    /// OpenID Connect: when set, the login is decided by the ID token the
+    /// token endpoint returns (signature, issuer, audience, expiry and a
+    /// nonce all checked), not by the userinfo endpoint alone. Include
+    /// `openid` in `scopes`.
+    pub oidc: Option<OidcSettings>,
+    /// GitHub-style providers whose user endpoint may not show the address:
+    /// a JSON list of `{ email, primary, verified }` to take the primary
+    /// address from.
+    pub emails_url: Option<String>,
+}
+
+/// What OpenID Connect needs beyond OAuth2: who issues the ID tokens and
+/// where their signing keys are.
+#[derive(Debug, Clone)]
+pub struct OidcSettings {
+    /// The `iss` the ID tokens must carry, exactly.
+    pub issuer: String,
+    /// The provider's JSON Web Key Set.
+    pub jwks_uri: String,
+}
+
+/// What a token endpoint answered.
+#[derive(Clone)]
+pub struct TokenResponse {
+    pub access_token: Secret<String>,
+    /// The OIDC ID token (a JWT), when the provider sent one.
+    pub id_token: Option<String>,
 }
 
 /// The identity returned by a provider's userinfo endpoint.
@@ -45,4 +72,8 @@ pub struct PendingAuthorization {
     /// The PKCE verifier generated for this request (RFC 7636). Secret: it
     /// leaves the server only in the back-channel token request.
     pub code_verifier: Secret<String>,
+    /// The OIDC nonce sent with the request, which the ID token must echo
+    /// (so a token issued for another login cannot be replayed into this
+    /// one). `None` for plain OAuth2 providers.
+    pub nonce: Option<Secret<String>>,
 }

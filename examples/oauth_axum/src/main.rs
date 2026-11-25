@@ -81,6 +81,8 @@ async fn main() {
         userinfo_url: format!("{BASE}/mock/userinfo"),
         redirect_uri: format!("{BASE}/auth/mock/callback"),
         scopes: vec!["openid".to_string(), "email".to_string()],
+        oidc: None,
+        emails_url: None,
     };
 
     let flow = OAuthFlow::new(

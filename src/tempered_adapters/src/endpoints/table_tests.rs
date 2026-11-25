@@ -27,12 +27,16 @@ struct NoOAuthClient;
 
 #[async_trait::async_trait]
 impl OAuthHttpClient for NoOAuthClient {
+    async fn fetch_json(&self, _: &str) -> Result<serde_json::Value, OAuthHttpError> {
+        unreachable!()
+    }
+
     async fn exchange_code(
         &self,
         _: &OAuthProviderConfig,
         _: &str,
         _: &str,
-    ) -> Result<String, OAuthHttpError> {
+    ) -> Result<tempered_core::TokenResponse, OAuthHttpError> {
         unreachable!()
     }
     async fn fetch_user_info(

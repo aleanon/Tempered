@@ -42,8 +42,9 @@ pub mod core {
 pub use tempered_core::{
     ApiKeyId, CeremonyId, CeremonyKind, CeremonyStart, CeremonyState, CredentialId, Email,
     EmailVerificationToken, IdentityClaims, MAX_PASSWORD_CHARS, MIN_PASSWORD_CHARS,
-    OAuthProviderConfig, OAuthUserInfo, PasskeyCredential, Password, PendingAuthorization,
-    SessionId, TwoFaAttemptId, TwoFaCode, TwoFaError, User, UserError, ValidatedUser,
+    OAuthProviderConfig, OAuthUserInfo, OidcSettings, PasskeyCredential, Password,
+    PendingAuthorization, SessionId, TokenResponse, TwoFaAttemptId, TwoFaCode, TwoFaError, User,
+    UserError, ValidatedUser,
 };
 
 // ============================================================================
@@ -161,6 +162,12 @@ pub use tempered_axum::{
     AuthService, IntoStatusMessage, PathOverrides, RouteId, Tier, auth_service,
     middleware::{validate_elevated_token, validate_token},
 };
+
+/// Ready-made OAuth/OIDC provider settings (Google, Microsoft, GitHub) and
+/// OIDC discovery.
+pub mod oauth_providers {
+    pub use tempered_adapters::oauth::providers::*;
+}
 
 /// The framework-neutral route table (for writing an adapter for another web
 /// framework; see `docs/ROUTE_TABLE_DESIGN.md`).

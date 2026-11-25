@@ -11,7 +11,9 @@ pub use domain::{
     api_key::ApiKeyId,
     email::Email,
     email_verification_token::EmailVerificationToken,
-    oauth::{OAuthProviderConfig, OAuthUserInfo, PendingAuthorization},
+    oauth::{
+        OAuthProviderConfig, OAuthUserInfo, OidcSettings, PendingAuthorization, TokenResponse,
+    },
     passkey::{
         CeremonyId, CeremonyKind, CeremonyStart, CeremonyState, CredentialId, PasskeyCeremony,
         PasskeyCredential, PendingCeremony,
