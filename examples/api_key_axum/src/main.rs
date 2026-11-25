@@ -27,8 +27,8 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use tempered::{
-    ApiKeyClaims, ApiKeyScheme, Email, ExposeSecret, HashMapApiKeyStore, Issuance, Secret,
-    SupportsApiKeyIssuance, validate_token,
+    ApiKeyClaims, ApiKeyScheme, HashMapApiKeyStore, Issuance, SupportsApiKeyIssuance, core::UserId,
+    validate_token,
 };
 use tower_http::services::ServeDir;
 
@@ -44,7 +44,8 @@ async fn main() {
     let scheme: Scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
 
     // Seed a key so the protected route is usable immediately.
-    let owner = Email::try_from(Secret::new("demo@service.example".to_string())).unwrap();
+    // Keys belong to an id: an account's, or one you give a service.
+    let owner = UserId::new();
     let (id, plaintext) = scheme
         .issue_api_key(owner, vec!["read".to_string()])
         .await
@@ -68,7 +69,8 @@ async fn main() {
 
 #[derive(Deserialize)]
 struct IssueRequest {
-    email: String,
+    /// The owner's id; a new one when absent.
+    owner: Option<String>,
     #[serde(default)]
     scopes: Vec<String>,
 }
@@ -78,13 +80,18 @@ async fn issue_key(
     State(scheme): State<Scheme>,
     Json(req): Json<IssueRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let owner = Email::try_from(Secret::new(req.email))
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let owner = match req.owner {
+        Some(id) => UserId::parse(&id)
+            .ok_or_else(|| (StatusCode::BAD_REQUEST, "owner must be a UUID".to_string()))?,
+        None => UserId::new(),
+    };
     let (id, plaintext) = scheme
         .issue_api_key(owner, req.scopes)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(json!({ "id": id.to_string(), "api_key": plaintext })))
+    Ok(Json(
+        json!({ "id": id.to_string(), "owner": owner.to_string(), "api_key": plaintext }),
+    ))
 }
 
 /// Reachable only with a valid key; echoes the validated claims.
@@ -92,7 +99,7 @@ async fn protected(Extension(claims): Extension<ApiKeyClaims>) -> Json<serde_jso
     Json(json!({
         "message": "authenticated via API key",
         "key_id": claims.id.to_string(),
-        "owner": claims.owner.as_ref().expose_secret(),
+        "owner": claims.owner.to_string(),
         "scopes": claims.scopes,
     }))
 }

@@ -1322,7 +1322,10 @@ where
 {
     /// Who a token for `email` is issued to: the account's id and address.
     /// Fails if the account is gone.
-    async fn subject_for(&self, email: &Email) -> Result<tempered_core::Subject, UserStoreError> {
+    pub(crate) async fn subject_for(
+        &self,
+        email: &Email,
+    ) -> Result<tempered_core::Subject, UserStoreError> {
         let user = self.user_store.get_user(email).await?;
         Ok(tempered_core::Subject::from(&user))
     }
@@ -1411,10 +1414,10 @@ where
         }
         let lock = self.lock_credentials(&email).await?;
         let result = async {
-            self.user_store.get_user(&email).await?;
+            let owner = self.subject_for(&email).await?.id;
             crate::authentication::api_key_scheme::issue_key(
                 &*management.store,
-                email.clone(),
+                owner,
                 scopes,
                 expires_at,
             )
@@ -1426,12 +1429,15 @@ where
         result
     }
 
-    /// Delete the user's API keys, when users may manage them.
-    async fn forget_api_keys(&self, email: &Email) -> Result<(), CredentialError<T::Error>> {
+    /// Delete the account's API keys, when users may manage them.
+    async fn forget_api_keys(
+        &self,
+        owner: &tempered_core::UserId,
+    ) -> Result<(), CredentialError<T::Error>> {
         match &self.api_keys {
             Some(management) => management
                 .store
-                .delete_all_for_owner(email)
+                .delete_all_for_owner(owner)
                 .await
                 .map_err(|e| CredentialError::ApiKeys(e.to_string())),
             None => Ok(()),
@@ -1721,7 +1727,7 @@ where
             // for a later account at the same address.
             self.two_fa.forget_user(&account.id).await?;
             // Nor may its API keys.
-            self.forget_api_keys(&email).await?;
+            self.forget_api_keys(&account.id).await?;
             // A deleted user's token would otherwise keep validating until it
             // expires (JWT validation is signature-based, not a user-store read).
             self.two_fa.cancel_pending(&email).await?;
@@ -1735,7 +1741,7 @@ where
             self.two_fa.cancel_pending(&email).await?;
             self.revoke_all_tokens(&email).await?;
             // And keys, in case one was issued as the account went.
-            self.forget_api_keys(&email).await?;
+            self.forget_api_keys(&account.id).await?;
             Ok(())
         }
         .await;

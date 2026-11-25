@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use tempered_core::{ApiKeyId, ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, Email};
+use tempered_core::{
+    ApiKeyId, ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, UserId,
+};
 
 /// In-memory API key store for tests and local development.
 ///
@@ -41,7 +43,7 @@ impl ApiKeyStore for HashMapApiKeyStore {
             .ok_or(ApiKeyStoreError::NotFound)
     }
 
-    async fn revoke_key(&self, owner: &Email, id: &ApiKeyId) -> Result<(), ApiKeyStoreError> {
+    async fn revoke_key(&self, owner: &UserId, id: &ApiKeyId) -> Result<(), ApiKeyStoreError> {
         let mut map = self.by_prefix.write().await;
         let prefix = map
             .iter()
@@ -56,7 +58,7 @@ impl ApiKeyStore for HashMapApiKeyStore {
         }
     }
 
-    async fn list_for_user(&self, owner: &Email) -> Result<Vec<ApiKeyMetadata>, ApiKeyStoreError> {
+    async fn list_for_user(&self, owner: &UserId) -> Result<Vec<ApiKeyMetadata>, ApiKeyStoreError> {
         let map = self.by_prefix.read().await;
         Ok(map
             .values()
@@ -85,20 +87,11 @@ impl ApiKeyStore for HashMapApiKeyStore {
         Ok(())
     }
 
-    async fn delete_all_for_owner(&self, owner: &Email) -> Result<(), ApiKeyStoreError> {
+    async fn delete_all_for_owner(&self, owner: &UserId) -> Result<(), ApiKeyStoreError> {
         self.by_prefix
             .write()
             .await
             .retain(|_, r| &r.owner != owner);
-        Ok(())
-    }
-
-    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), ApiKeyStoreError> {
-        for record in self.by_prefix.write().await.values_mut() {
-            if &record.owner == old {
-                record.owner = new.clone();
-            }
-        }
         Ok(())
     }
 }

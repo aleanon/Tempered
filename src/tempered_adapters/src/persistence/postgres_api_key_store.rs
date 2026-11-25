@@ -1,6 +1,7 @@
-use secrecy::{ExposeSecret, Secret};
 use sqlx::PgPool;
-use tempered_core::{ApiKeyId, ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, Email};
+use tempered_core::{
+    ApiKeyId, ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, UserId,
+};
 
 /// PostgreSQL-backed [`ApiKeyStore`] (table `api_keys`, see the crate's
 /// migrations; `new` does not run them). Holds the SHA-256 of each key's
@@ -39,7 +40,7 @@ impl ApiKeyStore for PostgresApiKeyStore {
             record.id.to_string(),
             record.prefix,
             record.secret_hash,
-            record.owner.as_ref().expose_secret(),
+            record.owner.as_uuid(),
             &record.scopes,
             record.created_at as i64,
             record.expires_at.map(|t| t as i64)
@@ -70,7 +71,7 @@ impl ApiKeyStore for PostgresApiKeyStore {
             id: parse_id(&row.id)?,
             prefix: row.prefix,
             secret_hash: row.secret_hash,
-            owner: Email::try_from(Secret::new(row.owner)).map_err(unexpected)?,
+            owner: UserId::from_uuid(row.owner),
             scopes: row.scopes,
             created_at: row.created_at as u64,
             expires_at: row.expires_at.map(|t| t as u64),
@@ -79,11 +80,11 @@ impl ApiKeyStore for PostgresApiKeyStore {
     }
 
     #[tracing::instrument(name = "Revoke API key", skip_all)]
-    async fn revoke_key(&self, owner: &Email, id: &ApiKeyId) -> Result<(), ApiKeyStoreError> {
+    async fn revoke_key(&self, owner: &UserId, id: &ApiKeyId) -> Result<(), ApiKeyStoreError> {
         let deleted = sqlx::query!(
             r#"DELETE FROM api_keys WHERE id = $1 AND owner = $2"#,
             id.to_string(),
-            owner.as_ref().expose_secret()
+            owner.as_uuid()
         )
         .execute(&self.pool)
         .await
@@ -96,11 +97,11 @@ impl ApiKeyStore for PostgresApiKeyStore {
     }
 
     #[tracing::instrument(name = "List API keys", skip_all)]
-    async fn list_for_user(&self, owner: &Email) -> Result<Vec<ApiKeyMetadata>, ApiKeyStoreError> {
+    async fn list_for_user(&self, owner: &UserId) -> Result<Vec<ApiKeyMetadata>, ApiKeyStoreError> {
         sqlx::query!(
             r#"SELECT id, prefix, scopes, created_at, expires_at, last_used_at
                FROM api_keys WHERE owner = $1 ORDER BY created_at"#,
-            owner.as_ref().expose_secret()
+            owner.as_uuid()
         )
         .fetch_all(&self.pool)
         .await
@@ -130,21 +131,8 @@ impl ApiKeyStore for PostgresApiKeyStore {
     }
 
     #[tracing::instrument(name = "Delete an owner's API keys", skip_all)]
-    async fn delete_all_for_owner(&self, owner: &Email) -> Result<(), ApiKeyStoreError> {
-        sqlx::query!(
-            r#"DELETE FROM api_keys WHERE owner = $1"#,
-            owner.as_ref().expose_secret()
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(unexpected)?;
-        Ok(())
-    }
-
-    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), ApiKeyStoreError> {
-        sqlx::query("UPDATE api_keys SET owner = $2 WHERE owner = $1")
-            .bind(old.as_ref().expose_secret())
-            .bind(new.as_ref().expose_secret())
+    async fn delete_all_for_owner(&self, owner: &UserId) -> Result<(), ApiKeyStoreError> {
+        sqlx::query!(r#"DELETE FROM api_keys WHERE owner = $1"#, owner.as_uuid())
             .execute(&self.pool)
             .await
             .map_err(unexpected)?;

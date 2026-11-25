@@ -461,7 +461,9 @@ pub struct ApiKeyRecord {
     pub prefix: String,
     /// Hex SHA-256 of the secret half.
     pub secret_hash: String,
-    pub owner: Email,
+    /// Whose key it is: an account id (or, for a service, whatever id the
+    /// app gives it).
+    pub owner: UserId,
     pub scopes: Vec<String>,
     /// Unix seconds.
     pub created_at: u64,
@@ -507,22 +509,19 @@ pub trait ApiKeyStore: Send + Sync {
     /// key that belongs to someone else both fail with
     /// [`ApiKeyStoreError::NotFound`], so a caller cannot revoke, or learn
     /// about, another user's keys.
-    async fn revoke_key(&self, owner: &Email, id: &ApiKeyId) -> Result<(), ApiKeyStoreError>;
+    async fn revoke_key(&self, owner: &UserId, id: &ApiKeyId) -> Result<(), ApiKeyStoreError>;
 
     /// List non-secret metadata for all of a user's keys.
-    async fn list_for_user(&self, owner: &Email) -> Result<Vec<ApiKeyMetadata>, ApiKeyStoreError>;
+    async fn list_for_user(&self, owner: &UserId) -> Result<Vec<ApiKeyMetadata>, ApiKeyStoreError>;
 
     /// Delete every key `owner` holds, succeeding when there are none. Call
     /// it when the account is deleted: a key does not check that its owner
     /// still exists.
-    async fn delete_all_for_owner(&self, owner: &Email) -> Result<(), ApiKeyStoreError>;
+    async fn delete_all_for_owner(&self, owner: &UserId) -> Result<(), ApiKeyStoreError>;
 
     /// Record that key `id` was used at `at` (Unix seconds). Best effort:
     /// a failure must not refuse the request.
     async fn record_use(&self, id: &ApiKeyId, at: u64) -> Result<(), ApiKeyStoreError>;
-
-    /// Give every key of `old` to `new` (an email change).
-    async fn reassign(&self, old: &Email, new: &Email) -> Result<(), ApiKeyStoreError>;
 }
 
 // SessionStore port trait and errors

@@ -31,7 +31,7 @@
 use axum::{Extension, Router, routing::get};
 use tempered::core::{AuthValidator, AuthenticationScheme, LoginOutcome};
 use tempered::{
-    ApiKeyClaims, ApiKeyScheme, Claims, ClassifyError, Email, ErrorCategory, ExposeSecret,
+    ApiKeyClaims, ApiKeyScheme, Claims, ClassifyError, ErrorCategory, ExposeSecret,
     HashMapApiKeyStore, HashMapTokenEpochStore, HashMapUserStore, HashSetBannedTokenStore,
     Issuance, JwtAuthConfig, JwtScheme, Secret, SupportsApiKeyIssuance, async_trait, auth_service,
     validate_token,
@@ -182,11 +182,7 @@ fn app(scheme: AppScheme) -> Router {
 async fn whoami(Extension(caller): Extension<Caller>) -> String {
     match caller {
         Caller::Person(claims) => format!("person {}", claims.sub.expose_secret()),
-        Caller::Service(key) => format!(
-            "service {} (key {})",
-            key.owner.as_ref().expose_secret(),
-            key.id
-        ),
+        Caller::Service(key) => format!("service {} (key {})", key.owner, key.id),
     }
 }
 
@@ -214,7 +210,8 @@ fn services() -> Services {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheme = AppScheme::new(people(), services());
-    let owner = Email::try_from(Secret::new("billing@service.example".to_string()))?;
+    // The billing service's id (keys belong to an id, not an address).
+    let owner = tempered::core::UserId::new();
     let (_, key) = scheme.services().issue_api_key(owner, vec![]).await?;
     println!("service key: {key}");
 
@@ -258,8 +255,9 @@ mod tests {
     #[tokio::test]
     async fn a_person_and_a_service_reach_the_same_route() {
         let services = services();
-        let owner = Email::try_from(Secret::new("billing@service.example".to_string())).unwrap();
+        let owner = tempered::core::UserId::new();
         let (_, key) = services.issue_api_key(owner, vec![]).await.unwrap();
+        // (`owner` is checked against the reply below.)
         let app = app(AppScheme::new(people(), services));
 
         let creds = r#"{"email":"a@example.com","password":"correct-horse","requires2FA":false}"#;
@@ -291,10 +289,7 @@ mod tests {
         // A service, by key.
         let (status, body) = call(&app, whoami(("x-api-key", &key))).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(
-            body.starts_with("service billing@service.example"),
-            "{body}"
-        );
+        assert!(body.starts_with(&format!("service {owner}")), "{body}");
 
         // Neither.
         let (status, _) = call(&app, Request::get("/whoami").body(Body::empty()).unwrap()).await;

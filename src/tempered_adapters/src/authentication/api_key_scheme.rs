@@ -24,10 +24,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tempered_core::{
     ApiKeyId, ApiKeyMetadata, ApiKeyRecord, ApiKeyStore, ApiKeyStoreError, AuthRequest,
-    AuthValidator, AuthenticationScheme, ClassifyError, Email, ErrorCategory,
-    HttpAuthenticationScheme, HttpResponseBuilderExt, LoginOutcome, ResponseBuilder,
-    ResponseBuilderError, SupportsApiKeyIssuance, constant_time_eq,
-    domain::api_key::split_presented_key,
+    AuthValidator, AuthenticationScheme, ClassifyError, ErrorCategory, HttpAuthenticationScheme,
+    HttpResponseBuilderExt, LoginOutcome, ResponseBuilder, ResponseBuilderError,
+    SupportsApiKeyIssuance, UserId, constant_time_eq, domain::api_key::split_presented_key,
 };
 use thiserror::Error;
 
@@ -153,7 +152,7 @@ pub(crate) fn unix_now() -> u64 {
 /// management routes.
 pub(crate) async fn issue_key<S: ApiKeyStore + ?Sized>(
     store: &S,
-    owner: Email,
+    owner: UserId,
     scopes: Vec<String>,
     expires_at: Option<u64>,
 ) -> Result<(ApiKeyId, String), ApiKeyAuthError> {
@@ -166,7 +165,7 @@ pub(crate) async fn issue_key<S: ApiKeyStore + ?Sized>(
             id: id.clone(),
             prefix: prefix.clone(),
             secret_hash: hash_secret(&secret),
-            owner: owner.clone(),
+            owner,
             scopes: scopes.clone(),
             created_at: unix_now(),
             expires_at,
@@ -325,7 +324,7 @@ where
     #[tracing::instrument(name = "ApiKeyScheme::issue_api_key", skip(self))]
     async fn issue_api_key_until(
         &self,
-        owner: Email,
+        owner: UserId,
         scopes: Vec<String>,
         expires_at: Option<u64>,
     ) -> Result<(ApiKeyId, String), Self::IssuanceError> {
@@ -334,13 +333,13 @@ where
 
     async fn revoke_api_key(
         &self,
-        owner: &Email,
+        owner: &UserId,
         id: &ApiKeyId,
     ) -> Result<(), Self::IssuanceError> {
         self.store.revoke_key(owner, id).await.map_err(store_err)
     }
 
-    async fn revoke_all_api_keys(&self, owner: &Email) -> Result<(), Self::IssuanceError> {
+    async fn revoke_all_api_keys(&self, owner: &UserId) -> Result<(), Self::IssuanceError> {
         self.store
             .delete_all_for_owner(owner)
             .await
@@ -349,7 +348,7 @@ where
 
     async fn list_api_keys(
         &self,
-        owner: &Email,
+        owner: &UserId,
     ) -> Result<Vec<ApiKeyMetadata>, Self::IssuanceError> {
         self.store.list_for_user(owner).await.map_err(store_err)
     }
@@ -362,7 +361,7 @@ where
 #[derive(Clone, Debug)]
 pub struct ApiKeyClaims {
     pub id: ApiKeyId,
-    pub owner: Email,
+    pub owner: UserId,
     pub scopes: Vec<String>,
 }
 
@@ -453,10 +452,10 @@ impl ClassifyError for ApiKeyAuthError {
 mod tests {
     use super::*;
     use crate::persistence::hashmap_api_key_store::HashMapApiKeyStore;
-    use secrecy::Secret;
 
-    fn owner() -> Email {
-        Email::try_from(Secret::new("svc@example.com".to_string())).unwrap()
+    /// The service the keys are issued to.
+    fn owner() -> UserId {
+        UserId::from_uuid(uuid::Uuid::from_u128(1))
     }
 
     fn parts_with_header(name: &str, value: &str) -> http::request::Parts {
@@ -523,7 +522,7 @@ mod tests {
         // logged-in user revoke anyone's key. The owner must match.
         let scheme = ApiKeyScheme::new(HashMapApiKeyStore::new()).supports_issuance();
         let (id, plaintext) = scheme.issue_api_key(owner(), vec![]).await.unwrap();
-        let mallory = Email::try_from(Secret::new("mallory@example.com".to_string())).unwrap();
+        let mallory = UserId::new();
 
         assert!(matches!(
             scheme.revoke_api_key(&mallory, &id).await,

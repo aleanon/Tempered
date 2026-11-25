@@ -159,13 +159,13 @@ async fn api_keys(
     store: &dyn tempered_core::ApiKeyStore,
     id: RouteId,
     req: &EndpointRequest,
-    email: Email,
+    owner: tempered_core::UserId,
     allowed_scopes: &[String],
 ) -> Result<EndpointResponse, EndpointResponse> {
     use crate::authentication::api_key_scheme::store_err;
     let internal = |e: tempered_core::ApiKeyStoreError| classified(store_err(e));
     if id == RouteId::ApiKeyList {
-        let keys = store.list_for_user(&email).await.map_err(internal)?;
+        let keys = store.list_for_user(&owner).await.map_err(internal)?;
         return Ok(json_response(
             StatusCode::OK,
             json!({ "keys": keys, "allowedScopes": allowed_scopes }),
@@ -175,7 +175,7 @@ async fn api_keys(
         .param("id")
         .and_then(tempered_core::ApiKeyId::parse)
         .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Not found"))?;
-    match store.revoke_key(&email, &key_id).await {
+    match store.revoke_key(&owner, &key_id).await {
         Ok(()) => Ok(json_response(StatusCode::OK, json!({}))),
         Err(tempered_core::ApiKeyStoreError::NotFound) => {
             Err(error_response(StatusCode::NOT_FOUND, "Not found"))
@@ -601,7 +601,21 @@ where
                 let allowed = self.allowed_api_key_scopes().to_vec();
                 respond!({
                     let email = who.cloned().ok_or_else(not_logged_in)?;
-                    api_keys(&*store, id, req, email, &allowed).await
+                    // Keys belong to the account's id.
+                    let owner = match self.subject_for(&email).await {
+                        Ok(user) => user.id,
+                        Err(tempered_core::UserStoreError::UserNotFound) => {
+                            return Err(not_logged_in());
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "user store failed");
+                            return Err(error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Internal error",
+                            ));
+                        }
+                    };
+                    api_keys(&*store, id, req, owner, &allowed).await
                 })
             }
             RouteId::ListSessions => respond!({

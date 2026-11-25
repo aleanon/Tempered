@@ -14,11 +14,12 @@ use axum::{
 use tempered_adapters::authentication::api_key_scheme::ApiKeyScheme;
 use tempered_adapters::persistence::HashMapApiKeyStore;
 use tempered_axum::auth_service::auth_service;
-use tempered_core::{Email, SupportsApiKeyIssuance};
+use tempered_core::SupportsApiKeyIssuance;
 use tower::ServiceExt; // for `oneshot`
 
-fn owner() -> Email {
-    Email::try_from(secrecy::Secret::new("demo@service.example".to_string())).unwrap()
+/// The service the keys are issued to.
+fn owner() -> tempered_core::UserId {
+    tempered_core::UserId::from_uuid(uuid::Uuid::from_u128(1))
 }
 
 /// Build an `auth_service`-wired router for an issuance-enabled API-key scheme,

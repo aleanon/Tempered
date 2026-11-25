@@ -288,7 +288,7 @@ where
             // has just vouched for.
             self.two_fa.forget_user(&id).await?;
             // So are API keys whoever signed up issued themselves.
-            self.forget_api_keys(email).await?;
+            self.forget_api_keys(&id).await?;
             self.two_fa.cancel_pending(email).await?;
             self.revoke_all_tokens(email).await?;
             // Once more, in case the lock expired under a slow store and an

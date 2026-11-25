@@ -817,13 +817,13 @@ pub async fn passkey_credential_store(
 pub async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
     use tempered_core::{ApiKeyId, ApiKeyRecord, ApiKeyStoreError};
 
-    let alice = email("alice@example.com");
-    let bob = email("bob@example.com");
-    let record = |prefix: &str, owner: &Email, scopes: &[&str]| ApiKeyRecord {
+    // Owners are ids; they need not be accounts (a service's key).
+    let (alice, bob) = (tempered_core::UserId::new(), tempered_core::UserId::new());
+    let record = |prefix: &str, owner: &tempered_core::UserId, scopes: &[&str]| ApiKeyRecord {
         id: ApiKeyId::new(),
         prefix: prefix.to_string(),
         secret_hash: format!("hash-of-{prefix}"),
-        owner: owner.clone(),
+        owner: *owner,
         scopes: scopes.iter().map(|s| s.to_string()).collect(),
         created_at: 1000,
         expires_at: Some(5000),
@@ -900,12 +900,6 @@ pub async fn api_key_store(store: impl tempered_core::ApiKeyStore) {
     );
     let listed = store.list_for_user(&bob).await.unwrap();
     assert_eq!(listed[0].last_used_at, Some(2000));
-
-    // An email change moves the keys.
-    let moved = email("bob@new.example.com");
-    store.reassign(&bob, &moved).await.unwrap();
-    assert!(store.list_for_user(&bob).await.unwrap().is_empty());
-    assert_eq!(store.find_by_prefix("pb1").await.unwrap().owner, moved);
 }
 
 /// Hits count up within a window, keys are separate, and a window ends.

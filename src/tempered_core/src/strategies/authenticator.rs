@@ -9,6 +9,7 @@ use crate::{
         password::Password,
         two_fa_attempt_id::TwoFaAttemptId,
         two_fa_code::TwoFaCode,
+        user_id::UserId,
     },
     ports::repositories::ApiKeyMetadata,
     strategies::auth_validator::AuthValidator,
@@ -667,7 +668,7 @@ pub trait SupportsApiKeyIssuance: AuthenticationScheme {
     /// caller exactly once and is never recoverable afterwards.
     async fn issue_api_key_until(
         &self,
-        owner: Email,
+        owner: UserId,
         scopes: Vec<String>,
         expires_at: Option<u64>,
     ) -> Result<(ApiKeyId, String), Self::IssuanceError>;
@@ -676,7 +677,7 @@ pub trait SupportsApiKeyIssuance: AuthenticationScheme {
     /// expires.
     async fn issue_api_key(
         &self,
-        owner: Email,
+        owner: UserId,
         scopes: Vec<String>,
     ) -> Result<(ApiKeyId, String), Self::IssuanceError> {
         self.issue_api_key_until(owner, scopes, None).await
@@ -685,18 +686,21 @@ pub trait SupportsApiKeyIssuance: AuthenticationScheme {
     /// Revoke `owner`'s key `id`. Pass the authenticated caller as `owner`:
     /// a key id taken from a request names someone else's key just as
     /// easily, and that is refused like a missing key.
-    async fn revoke_api_key(&self, owner: &Email, id: &ApiKeyId)
-    -> Result<(), Self::IssuanceError>;
+    async fn revoke_api_key(
+        &self,
+        owner: &UserId,
+        id: &ApiKeyId,
+    ) -> Result<(), Self::IssuanceError>;
 
     /// Revoke every key `owner` holds. An API-key scheme is separate from
     /// the scheme that owns the account, so the app calls this when it
     /// deletes the account; otherwise the keys keep working.
-    async fn revoke_all_api_keys(&self, owner: &Email) -> Result<(), Self::IssuanceError>;
+    async fn revoke_all_api_keys(&self, owner: &UserId) -> Result<(), Self::IssuanceError>;
 
     /// List non-secret metadata for all of a user's keys.
     async fn list_api_keys(
         &self,
-        owner: &Email,
+        owner: &UserId,
     ) -> Result<Vec<ApiKeyMetadata>, Self::IssuanceError>;
 }
 

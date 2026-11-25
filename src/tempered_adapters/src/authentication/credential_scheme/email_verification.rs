@@ -262,11 +262,6 @@ where
         // Passkeys belong to the account id and stay; enrolments started
         // under the old address go (they are filed by it).
         self.passkeys.drop_ceremonies(from).await?;
-        if let Some(keys) = self.api_key_store() {
-            keys.reassign(from, to)
-                .await
-                .map_err(|e| CredentialError::ApiKeys(e.to_string()))?;
-        }
         // The new address just proved itself; the old one's mark goes.
         self.email_verify.mark_verified(to).await?;
         self.email_verify.forget(from).await?;
@@ -279,11 +274,6 @@ where
     /// live session, which ended before the move.
     async fn roll_back_move(&self, old: &Email, new: &Email) {
         let mut failed = Vec::new();
-        if let Some(keys) = self.api_key_store()
-            && let Err(e) = keys.reassign(new, old).await
-        {
-            failed.push(("API keys", e.to_string()));
-        }
         // The old address was proven before the change; the new one was not.
         if let Err(e) = self.email_verify.mark_verified(old).await {
             failed.push(("old address's proof", e.to_string()));

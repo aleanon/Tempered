@@ -840,6 +840,7 @@ mod oauth_tests {
 
         let users = HashMapUserStore::new();
         add_account(&users, SIGNUP_PASSWORD, false).await;
+        let id = users.get_user(&email()).await.unwrap().id;
         let keys = HashMapApiKeyStore::new();
         let scheme = JwtScheme::new(
             users,
@@ -853,10 +854,10 @@ mod oauth_tests {
             .issue_user_api_key(email(), vec!["read".to_string()], None)
             .await
             .unwrap();
-        assert_eq!(keys.list_for_user(&email()).await.unwrap().len(), 1);
+        assert_eq!(keys.list_for_user(&id).await.unwrap().len(), 1);
 
         oauth_login(&scheme).await.unwrap();
-        assert!(keys.list_for_user(&email()).await.unwrap().is_empty());
+        assert!(keys.list_for_user(&id).await.unwrap().is_empty());
     }
 
     /// Whoever signed up an unproven account may have added an

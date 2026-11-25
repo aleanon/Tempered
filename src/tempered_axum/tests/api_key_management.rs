@@ -19,7 +19,7 @@ use tempered_adapters::persistence::{
 };
 use tempered_axum::auth_service::auth_service;
 use tempered_axum::middleware::{require_scope, validate_token};
-use tempered_core::{Email, SupportsApiKeyIssuance};
+use tempered_core::SupportsApiKeyIssuance;
 use tower::ServiceExt;
 
 type Keys = ApiKeyScheme<HashMapApiKeyStore, Issuance>;
@@ -188,7 +188,7 @@ async fn a_user_issues_uses_lists_and_revokes_a_key() {
 #[tokio::test]
 async fn an_expired_key_is_refused() {
     let (_, service, keys) = apps();
-    let owner = Email::try_from(Secret::new("dev@example.com".to_string())).unwrap();
+    let owner = tempered_core::UserId::new();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
