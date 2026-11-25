@@ -180,3 +180,20 @@ pub trait WebAuthnVerifier: Send + Sync {
         stored: &PasskeyCredential,
     ) -> Result<VerifiedAssertion, WebAuthnError>;
 }
+
+/// Why a password was refused by a [`PasswordPolicy`].
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+#[error("{0}")]
+pub struct PasswordRejected(pub String);
+
+/// Extra rules for new passwords (signup, password change, reset), beyond
+/// the length rule every [`Password`](crate::Password) already meets.
+#[async_trait]
+pub trait PasswordPolicy: Send + Sync {
+    /// `Err` with a message the user can act on, or `Ok` to accept.
+    async fn check(
+        &self,
+        email: &Email,
+        password: &crate::Password,
+    ) -> Result<(), PasswordRejected>;
+}

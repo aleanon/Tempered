@@ -568,8 +568,12 @@ Should-have:
   second factor (else 403).
 - **8.9 Email change** (verify the new address, notify the old one,
   elevated). This needs 9.5 first.
-- **8.10 Password policy** port and an optional breached-password check
+- **8.10 Password policy** ✅ DONE 2026-11-25: port and an optional breached-password check
   (HIBP k-anonymity, behind a feature).
+  As built: `PasswordPolicy` port in core; `.password_policy(p)` (data on
+  the scheme) checked at signup, password change and reset (before the
+  link is spent); `BreachedPasswordCheck` behind `breached-passwords`
+  (Add-Padding, fails open).
 - **8.11 Account self-service routes.** Link or unlink an OAuth provider
   while logged in, and list, rename or delete passkeys.
 - **8.12 API-key management.** Issue/list/revoke routes in the elevated

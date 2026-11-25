@@ -68,6 +68,8 @@ pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()
     routes: RouteFlags,
     /// Rate limits on the routes, when turned on (see [`Self::rate_limited`]).
     rate_limit: Option<crate::authentication::rate_limit::RateLimiter>,
+    /// Extra rules for new passwords (see [`Self::password_policy`]).
+    password_policy: Option<Arc<dyn tempered_core::PasswordPolicy>>,
 }
 
 /// Authorization level a route requires.
@@ -752,6 +754,7 @@ where
             passkeys: (),
             routes: RouteFlags::default(),
             rate_limit: None,
+            password_policy: None,
         }
     }
 }
@@ -779,6 +782,7 @@ impl<U, T, L, R, M, O, K> CredentialScheme<U, T, (), L, R, M, O, K> {
             passkeys: self.passkeys,
             routes: self.routes,
             rate_limit: self.rate_limit,
+            password_policy: self.password_policy,
         }
     }
 }
@@ -822,6 +826,7 @@ impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
             passkeys: self.passkeys,
             routes: self.routes,
             rate_limit: self.rate_limit,
+            password_policy: self.password_policy,
         }
     }
 }
@@ -848,6 +853,7 @@ impl<U, T, F, L, M, O, K> CredentialScheme<U, T, F, L, (), M, O, K> {
             passkeys: self.passkeys,
             routes: self.routes,
             rate_limit: self.rate_limit,
+            password_policy: self.password_policy,
         }
     }
 }
@@ -874,6 +880,7 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
             passkeys: self.passkeys,
             routes: self.routes,
             rate_limit: self.rate_limit,
+            password_policy: self.password_policy,
         }
     }
 }
@@ -904,6 +911,7 @@ impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
             passkeys: self.passkeys,
             routes: self.routes,
             rate_limit: self.rate_limit,
+            password_policy: self.password_policy,
         }
     }
 }
@@ -931,6 +939,7 @@ impl<U, T, F, L, R, M, O> CredentialScheme<U, T, F, L, R, M, O, ()> {
             },
             routes: self.routes,
             rate_limit: self.rate_limit,
+            password_policy: self.password_policy,
         }
     }
 }
@@ -1004,6 +1013,33 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
     pub fn rate_limited(mut self, limiter: crate::authentication::rate_limit::RateLimiter) -> Self {
         self.rate_limit = Some(limiter);
         self
+    }
+
+    /// Check every new password (signup, password change, reset) against
+    /// `policy` too, beyond the length rule. A refused password is a `400`
+    /// with the policy's message. See `BreachedPasswordCheck` (feature
+    /// `breached-passwords`) for one built in.
+    pub fn password_policy(mut self, policy: impl tempered_core::PasswordPolicy + 'static) -> Self {
+        self.password_policy = Some(Arc::new(policy));
+        self
+    }
+
+    /// Apply the password policy, if there is one.
+    async fn check_new_password<TE>(
+        &self,
+        email: &Email,
+        password: &Password,
+    ) -> Result<(), CredentialError<TE>>
+    where
+        TE: std::error::Error + Send + Sync + 'static,
+    {
+        match &self.password_policy {
+            Some(policy) => policy
+                .check(email, password)
+                .await
+                .map_err(|e| CredentialError::PasswordRejected(e.0)),
+            None => Ok(()),
+        }
     }
 
     /// The rate limiter, if [`rate_limited`](Self::rate_limited) set one.
@@ -1376,6 +1412,9 @@ where
         password: Password,
         data: Self::RegistrationData,
     ) -> Result<(), Self::RegistrationError> {
+        // Depends on the password alone, not on whether the address is
+        // taken, so it reveals nothing about accounts.
+        self.check_new_password(&email, &password).await?;
         let user = User::new(email.clone(), password, data.requires_2fa);
         // A taken address answers exactly like a new one, so signup does not
         // tell anyone which addresses have accounts. The existing account is
@@ -1412,6 +1451,7 @@ where
         email: Email,
         new_password: Password,
     ) -> Result<(), Self::PasswordChangeError> {
+        self.check_new_password(&email, &new_password).await?;
         self.user_store
             .set_new_password(&email, new_password)
             .await?;
@@ -1718,6 +1758,7 @@ impl<U, T, S, E, TE, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E>, Elevation<T
             passkeys: self.passkeys,
             routes: self.routes,
             rate_limit: self.rate_limit,
+            password_policy: self.password_policy,
         }
     }
 }
@@ -2070,6 +2111,15 @@ where
     ) -> Result<(), Self::PasswordResetError> {
         let token =
             PasswordResetToken::parse(&reset_token).ok_or(CredentialError::InvalidResetToken)?;
+
+        // Check the new password before spending the link, so a refused one
+        // can be retried with the same link. Peeking is only for that: the
+        // redeem below is the check that counts.
+        if self.password_policy.is_some()
+            && let Ok(owner) = self.password_reset.store.get_email_for_token(&token).await
+        {
+            self.check_new_password(&owner, &new_password).await?;
+        }
 
         // Atomically redeem the token before touching the password: two
         // concurrent requests can't both pass a check-then-delete, and if the
@@ -2682,6 +2732,10 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
     #[error("{0}")]
     TotpNotEnrolled(&'static str),
 
+    /// The password policy refused the new password.
+    #[error("{0}")]
+    PasswordRejected(String),
+
     /// Email login for an account whose second factor is the inbox too.
     #[error("This account signs in with its password")]
     EmailLoginNotAllowed,
@@ -2770,6 +2824,7 @@ where
                 (ErrorCategory::Internal, "Internal error".to_string())
             }
             CredentialError::TotpNotEnrolled(why) => (ErrorCategory::BadRequest, why.to_string()),
+            CredentialError::PasswordRejected(why) => (ErrorCategory::BadRequest, why),
             CredentialError::EmailLoginNotAllowed => (
                 ErrorCategory::Forbidden,
                 "This account signs in with its password".to_string(),

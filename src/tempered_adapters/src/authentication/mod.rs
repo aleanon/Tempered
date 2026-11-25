@@ -1,4 +1,6 @@
 pub mod api_key_scheme;
+#[cfg(feature = "breached-passwords")]
+pub mod breached;
 pub mod credential_scheme;
 pub mod deferred;
 pub mod jwt_scheme;

@@ -40,8 +40,8 @@ pub use ports::{
         WindowCount,
     },
     services::{
-        EmailClient, OAuthHttpClient, OAuthHttpError, VerifiedAssertion, VerifiedRegistration,
-        WebAuthnError, WebAuthnVerifier,
+        EmailClient, OAuthHttpClient, OAuthHttpError, PasswordPolicy, PasswordRejected,
+        VerifiedAssertion, VerifiedRegistration, WebAuthnError, WebAuthnVerifier,
     },
 };
 

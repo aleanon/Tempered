@@ -12,6 +12,8 @@ postgres = ["tempered_adapters/postgres"]
 redis = ["tempered_adapters/redis"]
 oauth-client = ["tempered_adapters/oauth-client"]
 postmark-email = ["tempered_adapters/postmark-email"]
+# BreachedPasswordCheck, a password policy using the HIBP range API.
+breached-passwords = ["tempered_adapters/breached-passwords"]
 # The production passkey verifier (links OpenSSL; not in `default`).
 passkeys-webauthn = ["tempered_adapters/passkeys-webauthn"]
 

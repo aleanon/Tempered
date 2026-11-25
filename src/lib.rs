@@ -129,6 +129,8 @@ pub use tempered_adapters::{
 };
 
 // Feature-gated heavy backends (see the crate features in Cargo.toml).
+#[cfg(feature = "breached-passwords")]
+pub use tempered_adapters::authentication::breached::BreachedPasswordCheck;
 #[cfg(feature = "postmark-email")]
 pub use tempered_adapters::email::PostmarkEmailClient;
 #[cfg(feature = "oauth-client")]

@@ -16,6 +16,8 @@ redis = ["dep:redis"]
 oauth-client = ["dep:reqwest"]
 # PostmarkEmailClient (MockEmailClient is always available).
 postmark-email = ["dep:reqwest"]
+# BreachedPasswordCheck (Have I Been Pwned range API).
+breached-passwords = ["dep:reqwest"]
 # WebAuthnRsVerifier, the production passkey verifier. Off by default even
 # here: webauthn-rs links OpenSSL.
 passkeys-webauthn = ["dep:webauthn-rs"]

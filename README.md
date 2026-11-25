@@ -277,6 +277,18 @@ back to mailed codes. Deleting the account removes it too. Use
 `PostgresTotpStore` in production (its tables are in the migrations); the
 secrets are login credentials, so keep that database encrypted at rest.
 
+### Password policy
+
+Every password is 8 to 256 characters. `.password_policy(policy)` adds
+rules of your own for every new password (signup, password change, reset):
+implement `PasswordPolicy::check(email, password)` and return
+`PasswordRejected(message)` to refuse, which answers `400` with the
+message. A refused reset password leaves the link usable.
+`BreachedPasswordCheck` (feature `breached-passwords`) refuses passwords
+found in data breaches, using the Have I Been Pwned range API: only the
+first five hex digits of the password's SHA-1 are sent, and the reply is
+padded. If the API cannot be reached the password is accepted.
+
 ### Rate limits
 
 `.rate_limited(RateLimiter::new(store))` on the scheme limits how often the
