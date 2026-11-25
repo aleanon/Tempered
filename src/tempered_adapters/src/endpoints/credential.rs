@@ -516,8 +516,9 @@ struct Verify2FaRequest {
 #[async_trait]
 impl<S, St, E, P> SlotEndpoints<S> for TwoFa<St, E, P>
 where
-    S: HttpAuthenticationScheme + SupportsTwoFactor + Sync,
+    S: HttpAuthenticationScheme + SupportsTwoFactor + tempered_core::SupportsEmailLogin + Sync,
     S::TwoFactorError: ClassifyError,
+    S::EmailLoginError: ClassifyError,
     St: Send + Sync,
     E: Send + Sync,
     P: TotpEndpoints<S>,
@@ -529,6 +530,14 @@ where
             o.path_or(RouteId::Verify2Fa, "/verify-2fa"),
             Tier::Public,
         ));
+        if self.email_login_enabled() {
+            for (id, path) in [
+                (RouteId::EmailLoginStart, "/email-login/start"),
+                (RouteId::EmailLoginVerify, "/email-login/verify"),
+            ] {
+                out.push(route(id, Method::POST, o.path_or(id, path), Tier::Public));
+            }
+        }
         self.totp().routes(flags, o, out);
     }
 
@@ -539,8 +548,12 @@ where
         req: &EndpointRequest,
         who: Option<&Email>,
     ) -> Option<EndpointResponse> {
-        if id != RouteId::Verify2Fa {
-            return self.totp().handle(scheme, id, req, who).await;
+        match id {
+            RouteId::Verify2Fa => {}
+            RouteId::EmailLoginStart | RouteId::EmailLoginVerify if self.email_login_enabled() => {
+                return email_login(scheme, id, req).await;
+            }
+            _ => return self.totp().handle(scheme, id, req, who).await,
         }
         respond!({
             let request: Verify2FaRequest = parse(req)?;
@@ -564,6 +577,52 @@ where
                 })
         })
     }
+}
+
+/// The passwordless email login routes of the 2FA slot.
+async fn email_login<S>(scheme: &S, id: RouteId, req: &EndpointRequest) -> Option<EndpointResponse>
+where
+    S: HttpAuthenticationScheme + tempered_core::SupportsEmailLogin + Sync,
+    S::EmailLoginError: ClassifyError,
+{
+    #[derive(Deserialize)]
+    struct Start {
+        email: Secret<String>,
+    }
+    #[derive(Deserialize)]
+    struct Verify {
+        email: Secret<String>,
+        #[serde(rename = "loginAttemptId")]
+        login_attempt_id: String,
+        code: String,
+    }
+    respond!({
+        if id == RouteId::EmailLoginStart {
+            let request: Start = parse(req)?;
+            let email = Email::try_from(request.email).map_err(bad_request)?;
+            let attempt = scheme.start_email_login(email).await.map_err(classified)?;
+            // The same answer whether or not the address has an account.
+            return Ok(json_response(
+                StatusCode::OK,
+                json!({ "loginAttemptId": attempt.to_string() }),
+            ));
+        }
+        let request: Verify = parse(req)?;
+        let email = Email::try_from(request.email).map_err(bad_request)?;
+        let attempt =
+            tempered_core::TwoFaAttemptId::parse(&request.login_attempt_id).map_err(bad_request)?;
+        let code = TwoFaCode::parse(request.code).map_err(bad_request)?;
+        let outcome = scheme
+            .finish_email_login(email, attempt, code)
+            .await
+            .map_err(classified)?;
+        scheme
+            .create_login_response(HttpResponseBuilder::new(), outcome)
+            .map_err(|e| {
+                tracing::error!(error = %e, "response builder failed (scheme bug)");
+                error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error")
+            })
+    })
 }
 
 // ---- TOTP (part of the 2FA slot) --------------------------------------------

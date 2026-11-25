@@ -357,7 +357,9 @@ fn tier_rules_hold_for_every_scheme_built_here() {
                 | OAuthCallback
                 | PasskeyLoginStart
                 | PasskeyLoginFinish
-                | Refresh => {
+                | Refresh
+                | EmailLoginStart
+                | EmailLoginVerify => {
                     assert_eq!(spec.tier, Tier::Public, "{spec:?}")
                 }
             }

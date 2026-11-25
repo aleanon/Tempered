@@ -128,6 +128,33 @@ pub trait SupportsTwoFactor: AuthenticationScheme {
     ) -> Result<Self::Token, Self::TwoFactorError>;
 }
 
+/// Passwordless login by email: a code (and optionally a link carrying
+/// it) is mailed, and presenting it logs in.
+///
+/// Answers do not depend on whether the account exists: `start` returns an
+/// attempt id at once, and the code is stored and sent afterwards, only for
+/// an account that exists. An account that requires 2FA is still asked for
+/// its second factor.
+#[async_trait]
+pub trait SupportsEmailLogin: AuthenticationScheme {
+    type EmailLoginError: std::error::Error + Send + Sync + 'static;
+
+    /// Begin: mail a sign-in code to `email` (if it has an account) and
+    /// return the attempt the code will belong to.
+    async fn start_email_login(
+        &self,
+        email: Email,
+    ) -> Result<TwoFaAttemptId, Self::EmailLoginError>;
+
+    /// Finish with the mailed code.
+    async fn finish_email_login(
+        &self,
+        email: Email,
+        attempt_id: TwoFaAttemptId,
+        code: TwoFaCode,
+    ) -> Result<LoginOutcome<Self::Token>, Self::EmailLoginError>;
+}
+
 /// What a user needs to add an authenticator app: the secret (base32, for
 /// typing in) and the `otpauth://` URI (for a QR code).
 #[derive(Debug, Clone)]

@@ -109,6 +109,39 @@ pub struct TwoFa<T, E, P = ()> {
     store: T,
     email: E,
     totp: P,
+    /// Passwordless login by mailed code, when turned on
+    /// ([`supports_email_login`](CredentialScheme::supports_email_login)).
+    email_login: Option<EmailLogin>,
+}
+
+/// Settings for passwordless login by email.
+#[derive(Clone)]
+pub struct EmailLogin {
+    /// The app page a sign-in link opens; it reads `email`,
+    /// `loginAttemptId` and `code` from the query and posts them to
+    /// `/email-login/verify`. `None` mails the code only.
+    link_base: Option<Arc<str>>,
+    deferred: Deferred,
+}
+
+impl EmailLogin {
+    /// Mail the code only.
+    pub fn code() -> Self {
+        Self {
+            link_base: None,
+            deferred: Deferred::default(),
+        }
+    }
+
+    /// Also mail a link to `page` (an absolute URL in your app) carrying the
+    /// code. The page must post it: a link that logged in on `GET` would be
+    /// used up by mail scanners that open links to check them.
+    pub fn link(page: impl Into<String>) -> Self {
+        Self {
+            link_base: Some(page.into().into()),
+            deferred: Deferred::default(),
+        }
+    }
 }
 
 /// Enabled elevation ("sudo") slot: a *second* token strategy for short-lived
@@ -122,6 +155,24 @@ impl<T, E, P> TwoFa<T, E, P> {
     /// The TOTP part (`()` without TOTP), for the route table.
     pub(crate) fn totp(&self) -> &P {
         &self.totp
+    }
+
+    /// Whether passwordless login by email is on, for the route table.
+    pub(crate) fn email_login_enabled(&self) -> bool {
+        self.email_login.is_some()
+    }
+}
+
+impl<U, T, S, E, P, L, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E, P>, L, R, M, O, K> {
+    /// Let users log in without a password: `/email-login/start` mails a
+    /// six-digit code (and with [`EmailLogin::link`] a link carrying it),
+    /// `/email-login/verify` logs in with it. The code has the 2FA code's
+    /// single use, expiry and attempt budget; an account that requires 2FA
+    /// is still asked for its second factor. Lights up
+    /// [`SupportsEmailLogin`](tempered_core::SupportsEmailLogin).
+    pub fn supports_email_login(mut self, settings: EmailLogin) -> Self {
+        self.two_fa.email_login = Some(settings);
+        self
     }
 }
 
@@ -685,6 +736,7 @@ impl<U, T, L, R, M, O, K> CredentialScheme<U, T, (), L, R, M, O, K> {
                 store,
                 email,
                 totp: (),
+                email_login: None,
             },
             elevation: self.elevation,
             password_reset: self.password_reset,
@@ -1439,6 +1491,123 @@ where
 }
 
 // ============================================================================
+// Passwordless login by email (on the 2FA slot)
+// ============================================================================
+
+#[async_trait]
+impl<U, T, S, E, P, L, R, M, O, K> tempered_core::SupportsEmailLogin
+    for CredentialScheme<U, T, TwoFa<S, E, P>, L, R, M, O, K>
+where
+    U: UserStore + Clone + 'static,
+    T: TokenStrategy,
+    S: TwoFaCodeStore + Clone + Send + Sync + 'static,
+    E: EmailClient + Clone + Send + Sync + 'static,
+    P: TotpFactor + Clone + 'static,
+    L: Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
+    M: Clone + Send + Sync + 'static,
+    O: Clone + Send + Sync + 'static,
+    K: Clone + Send + Sync + 'static,
+{
+    type EmailLoginError = CredentialError<T::Error>;
+
+    async fn start_email_login(
+        &self,
+        email: Email,
+    ) -> Result<TwoFaAttemptId, Self::EmailLoginError> {
+        let Some(settings) = &self.two_fa.email_login else {
+            return Err(CredentialError::TwoFaNotConfigured);
+        };
+        // The attempt id is the answer whether or not the account exists;
+        // the rest happens after the response (see `deferred`).
+        let attempt_id = TwoFaAttemptId::new();
+        let (users, store, mail) = (
+            self.user_store.clone(),
+            self.two_fa.store.clone(),
+            self.two_fa.email.clone(),
+        );
+        let link_base = settings.link_base.clone();
+        let attempt = attempt_id.clone();
+        settings.deferred.run("email login mail", async move {
+            match users.get_user(&email).await {
+                Ok(_) => {}
+                Err(UserStoreError::UserNotFound) => return,
+                Err(e) => {
+                    tracing::error!(error = ?e, "email login: user lookup failed");
+                    return;
+                }
+            }
+            let code = TwoFaCode::new();
+            if let Err(e) = store
+                .store_code(email.clone(), attempt.clone(), code.clone())
+                .await
+            {
+                tracing::error!(error = ?e, "email login: failed to store the code");
+                return;
+            }
+            let content = match &link_base {
+                None => code.as_str().to_string(),
+                Some(page) => {
+                    let mut url = match url::Url::parse(page) {
+                        Ok(url) => url,
+                        Err(e) => {
+                            tracing::error!(error = %e, "email login: the link page is not a URL");
+                            return;
+                        }
+                    };
+                    url.query_pairs_mut()
+                        .append_pair("email", email.as_ref().expose_secret())
+                        .append_pair("loginAttemptId", &attempt.to_string())
+                        .append_pair("code", code.as_str());
+                    format!("Your sign-in code is {}, or open {url}", code.as_str())
+                }
+            };
+            if let Err(e) = mail.send_email(&email, "Your sign-in code", &content).await {
+                tracing::error!(error = e, "email login: failed to send the mail");
+            }
+        });
+        Ok(attempt_id)
+    }
+
+    async fn finish_email_login(
+        &self,
+        email: Email,
+        attempt_id: TwoFaAttemptId,
+        code: TwoFaCode,
+    ) -> Result<LoginOutcome<Self::Token>, Self::EmailLoginError> {
+        if self.two_fa.email_login.is_none() {
+            return Err(CredentialError::TwoFaNotConfigured);
+        }
+        // Taken before the code is checked, like a password login's.
+        let ticket = self
+            .tokens
+            .begin(&email)
+            .await
+            .map_err(CredentialError::Token)?;
+        // The mailed code, never an app code: this proves the inbox only.
+        self.two_fa
+            .store
+            .redeem_code(&email, &attempt_id, &code)
+            .await?;
+        let user = self.user_store.get_user(&email).await?;
+        if user.requires_2fa() {
+            // The inbox is one factor; a 2FA account needs its second.
+            let attempt_id = self
+                .two_fa
+                .issue_challenge(&email, ChallengePurpose::SignIn)
+                .await?;
+            return Ok(LoginOutcome::Requires2Fa { email, attempt_id });
+        }
+        Ok(LoginOutcome::Success(
+            self.tokens
+                .issue(&email, ticket)
+                .await
+                .map_err(CredentialError::Token)?,
+        ))
+    }
+}
+
+// ============================================================================
 // TOTP (on the 2FA slot; needs elevation for its routes)
 // ============================================================================
 
@@ -1467,6 +1636,7 @@ impl<U, T, S, E, TE, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E>, Elevation<T
                 store: self.two_fa.store,
                 email: self.two_fa.email,
                 totp: Totp::new(store, issuer),
+                email_login: self.two_fa.email_login,
             },
             elevation: self.elevation,
             password_reset: self.password_reset,

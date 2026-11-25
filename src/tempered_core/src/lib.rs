@@ -49,9 +49,10 @@ pub use strategies::{
     auth_validator::{AuthValidator, IdentityClaims},
     authenticator::{
         AuthenticationScheme, AuthorizationRequest, LoginOutcome, RequiresEmailVerification,
-        SupportsAccountDeletion, SupportsApiKeyIssuance, SupportsElevation, SupportsOAuth2,
-        SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset, SupportsRegistration,
-        SupportsTokenRevocation, SupportsTotp, SupportsTwoFactor, TotpEnrollment,
+        SupportsAccountDeletion, SupportsApiKeyIssuance, SupportsElevation, SupportsEmailLogin,
+        SupportsOAuth2, SupportsPasskeys, SupportsPasswordChange, SupportsPasswordReset,
+        SupportsRegistration, SupportsTokenRevocation, SupportsTotp, SupportsTwoFactor,
+        TotpEnrollment,
     },
 };
 

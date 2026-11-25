@@ -552,8 +552,15 @@ Should-have:
   touch is one `cjson` script. `TokenStrategy::{lists_sessions, sessions,
   end_session}` (session strategy only); routes `GET /sessions`, `DELETE
   /sessions/{handle}` (login tier), handles = SHA-256 of the id.
-- **8.8 Passwordless login**: magic links and email OTP, as a new slot over
+- **8.8 Passwordless login** ✅ DONE 2026-11-25: magic links and email OTP, as a new slot over
   the existing token-store shapes.
+  As built: not a new slot. `.supports_email_login(EmailLogin)` is a
+  setting on the 2FA slot, whose code store already gives single use,
+  expiry and the attempt budget; a magic link is the same code in a link
+  to an app page that posts it (`EmailLogin::link`), so link scanners
+  cannot use it up. `SupportsEmailLogin`; routes `/email-login/{start,
+  verify}` (public, rate-limited as mail / second factor); start is
+  account-blind (deferred send). 2FA accounts still get a second factor.
 - **8.9 Email change** (verify the new address, notify the old one,
   elevated). This needs 9.5 first.
 - **8.10 Password policy** port and an optional breached-password check

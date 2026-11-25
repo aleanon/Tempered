@@ -206,6 +206,20 @@ absolute lifetime to 24 hours (`DEFAULT_MAX_SESSION_LIFETIME_SECONDS`);
 change it with `.max_lifetime(seconds)`. A JWT has no sliding expiry: its
 `token_ttl_in_seconds` is already its absolute lifetime.
 
+### Passwordless login by email
+
+`.supports_email_login(EmailLogin::code())`, on a scheme with 2FA, lets a
+user log in with a mailed six-digit code: `POST /email-login/start
+{ email }` answers `{ loginAttemptId }` at once, for any address, and mails
+the code afterwards only if the account exists (so neither the answer nor
+its timing reveals that); `POST /email-login/verify { email,
+loginAttemptId, code }` logs in. `EmailLogin::link(page)` also mails a link
+to `page` with `email`, `loginAttemptId` and `code` in the query; the page
+posts them (a link that logged in on `GET` would be used up by mail
+scanners that open links). The code is single-use with the 2FA attempt
+budget, and an account that requires 2FA is still asked for its second
+factor (`206`).
+
 ### Devices (session schemes)
 
 A session scheme serves `GET /sessions` and `DELETE /sessions/{handle}` to

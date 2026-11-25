@@ -51,6 +51,7 @@ testcontainers-modules.workspace = true
 wiremock.workspace = true
 reqwest.workspace = true
 tower.workspace = true
+url.workspace = true
 
 # Database
 sqlx.workspace = true

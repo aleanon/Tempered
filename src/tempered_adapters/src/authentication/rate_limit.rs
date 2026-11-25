@@ -46,10 +46,10 @@ impl RateLimitGroup {
         use RouteId::*;
         Some(match route {
             Login | PasskeyLoginStart | PasskeyLoginFinish | OAuthStart => Self::Login,
-            Verify2Fa | VerifyElevation2Fa | TotpConfirm => Self::SecondFactor,
+            Verify2Fa | VerifyElevation2Fa | TotpConfirm | EmailLoginVerify => Self::SecondFactor,
             Elevate => Self::Elevate,
             PasswordResetInitiate | PasswordResetComplete => Self::PasswordReset,
-            Signup | ResendVerification => Self::VerificationMail,
+            Signup | ResendVerification | EmailLoginStart => Self::VerificationMail,
             _ => return None,
         })
     }

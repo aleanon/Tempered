@@ -70,6 +70,8 @@ pub enum RouteId {
     Refresh,
     ListSessions,
     EndSession,
+    EmailLoginStart,
+    EmailLoginVerify,
 }
 
 /// What a request must prove before a route runs. The tiers nest: a

@@ -67,9 +67,9 @@ pub use core::{
     OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, PasskeyStoreError, RateLimitStore,
     RateLimitStoreError, RecoveryCodeHash, RefreshRecord, RefreshTokenStore,
     RefreshTokenStoreError, RequiresEmailVerification, SessionRecord, SessionSeen, SessionStore,
-    SessionStoreError, SupportsApiKeyIssuance, SupportsOAuth2, SupportsPasskeys, SupportsTotp,
-    TotpEnrollment, TotpStore, TotpStoreError, TwoFaCodeStore, TwoFaCodeStoreError, UserStore,
-    UserStoreError, WebAuthnVerifier, WindowCount,
+    SessionStoreError, SupportsApiKeyIssuance, SupportsEmailLogin, SupportsOAuth2,
+    SupportsPasskeys, SupportsTotp, TotpEnrollment, TotpStore, TotpStoreError, TwoFaCodeStore,
+    TwoFaCodeStoreError, UserStore, UserStoreError, WebAuthnVerifier, WindowCount,
 };
 
 // ============================================================================
@@ -101,7 +101,7 @@ pub use tempered_adapters::{
     authentication::api_key_scheme::{ApiKeyClaims, ApiKeyScheme, Issuance},
     authentication::credential_scheme::{
         Authz, CredentialError, CredentialScheme, DEFAULT_OAUTH_STATE_COOKIE, ElevatedCapabilities,
-        ElevatedRevokeError, OAUTH_TWO_FA_COOKIE, RouteFlags,
+        ElevatedRevokeError, EmailLogin, OAUTH_TWO_FA_COOKIE, RouteFlags,
     },
     authentication::jwt_scheme::{
         Elevation, EmailVerify, JwtScheme, OAuth, Passkeys, PasswordReset, TwoFa,
