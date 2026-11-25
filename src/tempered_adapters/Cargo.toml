@@ -22,6 +22,8 @@ metrics = ["dep:metrics"]
 # The store contract tests (`persistence::contract`), for checking a store
 # of your own against the ports' promises.
 testing = []
+# Entry points for the fuzz targets in `fuzz/` (not public API).
+fuzzing = []
 # BreachedPasswordCheck (Have I Been Pwned range API).
 breached-passwords = ["dep:reqwest"]
 # WebAuthnRsVerifier, the production passkey verifier. Off by default even

@@ -41,6 +41,18 @@ jobs:
       - run: cargo test --workspace
       # The webauthn-rs verifier is off by default (it links OpenSSL).
       - run: "cargo test -p tempered_adapters --features passkeys-webauthn --lib passkey::"
+      # The public store contracts, as a third-party store would run them.
+      - run: cargo test -p tempered --features testing --test public_contracts
+
+  msrv:
+    name: MSRV (rust-version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Keep in step with `rust-version` in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.91
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p tempered --all-features
 
   lean:
     name: lean build (no default features)

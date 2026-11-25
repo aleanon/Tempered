@@ -1,0 +1,46 @@
+[package]
+name = "tempered-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tempered_adapters = { path = "../src/tempered_adapters", default-features = false, features = [
+    "fuzzing",
+    "passkeys-webauthn",
+] }
+
+# Not part of the main workspace: it builds with nightly (`cargo +nightly fuzz`).
+[workspace]
+
+[[bin]]
+name = "domain"
+path = "fuzz_targets/domain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "request_credentials"
+path = "fuzz_targets/request_credentials.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cookies_agree"
+path = "fuzz_targets/cookies_agree.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webauthn"
+path = "fuzz_targets/webauthn.rs"
+test = false
+doc = false
+bench = false
