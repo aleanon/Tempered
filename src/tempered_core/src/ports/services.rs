@@ -7,6 +7,78 @@ use crate::domain::{
     passkey::{CeremonyStart, CeremonyState, CredentialId, PasskeyCredential},
 };
 
+/// A message the library sends. Override
+/// [`EmailClient::send_mail`] to write your own (HTML, your locale, a link
+/// into your app instead of a raw token); the default sends
+/// [`subject`](Self::subject) and [`text`](Self::text) through
+/// [`EmailClient::send_email`].
+#[non_exhaustive]
+#[derive(Clone)]
+pub enum Mail {
+    /// The second-factor code for a login.
+    SignInCode { code: crate::TwoFaCode },
+    /// The second-factor code for an elevation (a sensitive action).
+    ElevationCode { code: crate::TwoFaCode },
+    /// A password-reset token (for `/password-reset/complete`).
+    PasswordReset { token: String },
+    /// An email-verification token (for `/verify-email`).
+    VerifyEmail { token: String },
+    /// Someone tried to sign up with an address that has an account.
+    AlreadyRegistered,
+    /// A passwordless sign-in code, and the link to the app's page that
+    /// posts it, when the app set one.
+    EmailLogin {
+        code: crate::TwoFaCode,
+        link: Option<String>,
+    },
+}
+
+/// Only the kind of message: the codes and tokens stay out of logs.
+impl std::fmt::Debug for Mail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self {
+            Mail::SignInCode { .. } => "SignInCode",
+            Mail::ElevationCode { .. } => "ElevationCode",
+            Mail::PasswordReset { .. } => "PasswordReset",
+            Mail::VerifyEmail { .. } => "VerifyEmail",
+            Mail::AlreadyRegistered => "AlreadyRegistered",
+            Mail::EmailLogin { .. } => "EmailLogin",
+        };
+        f.write_str(kind)
+    }
+}
+
+impl Mail {
+    /// The default subject line.
+    pub fn subject(&self) -> &'static str {
+        match self {
+            Mail::SignInCode { .. } => "Your sign-in code",
+            Mail::ElevationCode { .. } => "Code to confirm a sensitive account action",
+            Mail::PasswordReset { .. } => "Password Reset",
+            Mail::VerifyEmail { .. } => "Verify your email",
+            Mail::AlreadyRegistered => "You already have an account",
+            Mail::EmailLogin { .. } => "Your sign-in code",
+        }
+    }
+
+    /// The default plain-text body.
+    pub fn text(&self) -> String {
+        match self {
+            Mail::SignInCode { code } | Mail::ElevationCode { code } => code.to_string(),
+            Mail::PasswordReset { token } | Mail::VerifyEmail { token } => token.clone(),
+            Mail::AlreadyRegistered => "Someone tried to create an account with this \
+email address, which already has one. If it was you, sign in, or reset your password if \
+you have forgotten it. If it was not, you can ignore this message: nothing has changed."
+                .to_string(),
+            Mail::EmailLogin { code, link: None } => code.to_string(),
+            Mail::EmailLogin {
+                code,
+                link: Some(link),
+            } => format!("Your sign-in code is {}, or open {link}", code.as_str()),
+        }
+    }
+}
+
 /// Port trait for email sending service
 #[async_trait]
 pub trait EmailClient: Send + Sync {
@@ -16,6 +88,14 @@ pub trait EmailClient: Send + Sync {
         subject: &str,
         content: &str,
     ) -> Result<(), String>;
+
+    /// Send one of the library's messages. The default renders it with
+    /// [`Mail::subject`] and [`Mail::text`]; override this to compose your
+    /// own.
+    async fn send_mail(&self, recipient: &Email, mail: Mail) -> Result<(), String> {
+        self.send_email(recipient, mail.subject(), &mail.text())
+            .await
+    }
 }
 
 #[derive(Debug, Error)]

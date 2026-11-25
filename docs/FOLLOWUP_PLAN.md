@@ -617,7 +617,13 @@ OAuth slot instead.
   authentication ... note: call `.supports_2fa(code_store,
   email_client)`". The scheme traits are also exported at the facade
   root.
-- **9.2 Customisation ports.**
+- **9.2 Customisation ports.** ✅ DONE 2026-11-25. As built: `Mail` +
+  `EmailClient::send_mail` (default renders the old texts) instead of a
+  separate composer; `AuthEventSink`/`AuthEvent { route, status, account,
+  client }` from the one choke point `Endpoints::handle` (`.auth_events`);
+  `DeferredRunner` (`.deferred_runner`, shared by every slot); custom JWT
+  claims via `ClaimsProvider` under `ext` (`JwtScheme::jwt_claims`).
+  Session claims stay as they are (the app can look its data up). Plan:
   - `EmailComposer`: typed messages, HTML, links rather than raw tokens,
     locale.
   - `AuthEventSink`: login ok/fail, 2FA, reset, link, delete, for audit

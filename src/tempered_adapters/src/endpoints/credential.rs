@@ -373,7 +373,11 @@ where
         // status. No addresses, codes or tokens.
         let span =
             tracing::info_span!("tempered.route", route = ?spec.id, status = tracing::field::Empty);
-        let response = tracing::Instrument::instrument(self.serve(spec, req), span.clone()).await;
+        let client = (self.auth_event_sink().is_some())
+            .then(|| req.parts.extensions.get::<super::ClientAddr>().map(|c| c.0))
+            .flatten();
+        let (response, account) =
+            tracing::Instrument::instrument(self.serve(spec, req), span.clone()).await;
         span.record("status", response.status().as_u16());
         #[cfg(feature = "metrics")]
         metrics::counter!(
@@ -382,6 +386,15 @@ where
             "status" => response.status().as_str().to_string(),
         )
         .increment(1);
+        if let Some(sink) = self.auth_event_sink() {
+            sink.record(super::AuthEvent {
+                route: spec.id,
+                status: response.status().as_u16(),
+                account,
+                client,
+            })
+            .await;
+        }
         response
     }
 
@@ -416,50 +429,66 @@ where
     U: tempered_core::UserStore,
 {
     /// The route, behind the span and counter `handle` adds.
-    async fn serve(&self, spec: &RouteSpec, req: EndpointRequest) -> EndpointResponse {
+    /// The route, and the account it concerned (the admitted user, or for
+    /// a public route the address its body names), for the audit event.
+    async fn serve(
+        &self,
+        spec: &RouteSpec,
+        req: EndpointRequest,
+    ) -> (EndpointResponse, Option<Email>) {
         // Before anything else: a page on another site does not get to log
         // the visitor in, sign them up or change their account. Reads (the
         // OAuth start and callback, which a provider redirect makes
         // cross-site by design) are left alone.
         if !matches!(spec.method, Method::GET | Method::HEAD) && super::is_cross_site(&req.parts) {
-            return super::cross_site_refused();
+            return (super::cross_site_refused(), None);
         }
         let who = match self.admit(spec.tier, &req.parts).await {
             Ok(who) => who,
-            Err(response) => return response,
+            Err(response) => return (response, account_named_in(&req)),
         };
-        let who = who.as_ref();
+        let account = who.clone().or_else(|| account_named_in(&req));
+        (
+            self.dispatch(spec, &req, who.as_ref(), account.as_ref())
+                .await,
+            account,
+        )
+    }
+
+    async fn dispatch(
+        &self,
+        spec: &RouteSpec,
+        req: &EndpointRequest,
+        who: Option<&Email>,
+        account: Option<&Email>,
+    ) -> EndpointResponse {
         // Count the attempt before doing anything for it. The account is the
         // admitted user, or for public routes the address the body names.
-        if let Some(limiter) = self.rate_limiter() {
-            let named = who.is_none().then(|| account_named_in(&req)).flatten();
-            if let Err(response) = limiter
-                .check(spec.id, &req.parts, who.or(named.as_ref()))
-                .await
-            {
-                return response;
-            }
+        if let Some(limiter) = self.rate_limiter()
+            && let Err(response) = limiter.check(spec.id, &req.parts, account).await
+        {
+            return response;
         }
-        if let Some(response) = self.handle_core(spec.id, &req, who).await {
+        if let Some(response) = self.handle_core(spec.id, req, who).await {
             return response;
         }
         let (f, l, r, m, o, k) = self.slots();
-        if let Some(response) = f.handle(self, spec.id, &req, who).await {
+        if let Some(response) = f.handle(self, spec.id, req, who).await {
             return response;
         }
-        if let Some(response) = l.handle(self, spec.id, &req, who).await {
+        if let Some(response) = l.handle(self, spec.id, req, who).await {
             return response;
         }
-        if let Some(response) = r.handle(self, spec.id, &req, who).await {
+        if let Some(response) = r.handle(self, spec.id, req, who).await {
             return response;
         }
-        if let Some(response) = m.handle(self, spec.id, &req, who).await {
+        if let Some(response) = m.handle(self, spec.id, req, who).await {
             return response;
         }
-        if let Some(response) = o.handle(self, spec.id, &req, who).await {
+        if let Some(response) = o.handle(self, spec.id, req, who).await {
             return response;
         }
-        if let Some(response) = k.handle(self, spec.id, &req, who).await {
+        if let Some(response) = k.handle(self, spec.id, req, who).await {
             return response;
         }
         error_response(StatusCode::NOT_FOUND, "Not found")

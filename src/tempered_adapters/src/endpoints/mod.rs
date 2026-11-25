@@ -245,6 +245,27 @@ pub fn status_for(category: ErrorCategory) -> StatusCode {
 // Cross-site requests
 // ============================================================================
 
+/// What happened on one library route, for an audit log or a "new sign-in"
+/// notice: which route, its status, the account it concerned (the
+/// logged-in user, or the address a public request named) and the client
+/// address when known.
+#[derive(Debug, Clone)]
+pub struct AuthEvent {
+    pub route: RouteId,
+    pub status: u16,
+    pub account: Option<Email>,
+    pub client: Option<std::net::IpAddr>,
+}
+
+/// Receives an [`AuthEvent`] for every library request (see
+/// `CredentialScheme::auth_events`). The request waits for `record`, so
+/// keep it quick: write to a channel or a buffered log rather than a slow
+/// store.
+#[async_trait]
+pub trait AuthEventSink: Send + Sync {
+    async fn record(&self, event: AuthEvent);
+}
+
 /// The address of the client that sent a request, as a request extension.
 ///
 /// A framework adapter inserts it from the connection (the axum adapter does

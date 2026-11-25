@@ -14,12 +14,26 @@
 //! busy. The user asks again.
 //!
 //! A job that is queued when the process stops is lost. For these mails
-//! that is acceptable: the user requests another.
+//! that is acceptable: the user requests another. An app that wants them
+//! on its own executor or job system sets a [`DeferredRunner`]; one that
+//! must not lose a mail can also have its `EmailClient::send_mail` put the
+//! message on a durable queue instead of sending it.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 
 use tokio::sync::Semaphore;
+
+/// A job the library runs after a response (a reset or signup mail).
+pub type DeferredJob = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// Runs the library's after-the-response jobs, instead of `tokio::spawn`
+/// (see `CredentialScheme::deferred_runner`). `what` names the job for
+/// logs. The bound on jobs in flight still applies before a job gets here.
+pub trait DeferredRunner: Send + Sync {
+    fn run(&self, what: &'static str, job: DeferredJob);
+}
 
 /// How many deferred jobs a slot keeps in flight before it drops new ones.
 pub const MAX_DEFERRED_JOBS: usize = 64;
@@ -28,17 +42,29 @@ pub const MAX_DEFERRED_JOBS: usize = 64;
 #[derive(Clone)]
 pub(crate) struct Deferred {
     permits: Arc<Semaphore>,
+    /// Shared by every clone, so a runner set on the scheme reaches the
+    /// slots made before it was set.
+    runner: Arc<OnceLock<Arc<dyn DeferredRunner>>>,
 }
 
 impl Default for Deferred {
     fn default() -> Self {
         Self {
             permits: Arc::new(Semaphore::new(MAX_DEFERRED_JOBS)),
+            runner: Arc::default(),
         }
     }
 }
 
 impl Deferred {
+    /// Hand jobs to `runner` from now on. Set once; a second runner is
+    /// ignored (and logged).
+    pub(crate) fn set_runner(&self, runner: Arc<dyn DeferredRunner>) {
+        if self.runner.set(runner).is_err() {
+            tracing::warn!("a deferred runner was already set; keeping the first");
+        }
+    }
+
     /// Run `job` in the background, or drop it (logged as `what`) if
     /// [`MAX_DEFERRED_JOBS`] are already in flight.
     pub(crate) fn run<F>(&self, what: &'static str, job: F)
@@ -47,10 +73,16 @@ impl Deferred {
     {
         match self.permits.clone().try_acquire_owned() {
             Ok(permit) => {
-                tokio::spawn(async move {
+                let job = Box::pin(async move {
                     job.await;
                     drop(permit);
                 });
+                match self.runner.get() {
+                    Some(runner) => runner.run(what, job),
+                    None => {
+                        tokio::spawn(job);
+                    }
+                }
             }
             Err(_) => tracing::warn!(job = what, "too many deferred jobs in flight; dropped"),
         }

@@ -19,7 +19,6 @@ use thiserror::Error;
 
 use crate::auth_validation::local_jwt_validator::{
     JwtAuthConfig, LocalJwtValidator, TokenAuthError, create_auth_cookie, decode_signed,
-    generate_auth_token_issued_at,
 };
 
 /// How a credential scheme mints, validates, and revokes its session token.
@@ -293,6 +292,17 @@ pub struct JwtTokens<B> {
     refresh: Option<RefreshTokens>,
     /// Put the tokens in login response bodies (bearer clients).
     in_body: bool,
+    /// The app's own claims for each token.
+    claims: Option<Arc<dyn ClaimsProvider>>,
+}
+
+/// Adds the app's own claims (roles, tenant, plan, ...) to each JWT, under
+/// `ext`, when it is issued or refreshed. Handlers read them from
+/// `Claims::ext`. Keep them small and non-secret: a JWT is readable by
+/// whoever holds it.
+#[async_trait]
+pub trait ClaimsProvider: Send + Sync {
+    async fn claims(&self, email: &Email) -> serde_json::Map<String, serde_json::Value>;
 }
 
 impl<B> JwtTokens<B>
@@ -335,7 +345,14 @@ where
             validator,
             refresh: None,
             in_body: false,
+            claims: None,
         }
+    }
+
+    /// Add the app's claims to each token (see [`ClaimsProvider`]).
+    pub fn with_claims(mut self, provider: impl ClaimsProvider + 'static) -> Self {
+        self.claims = Some(Arc::new(provider));
+        self
     }
 
     /// Issue refresh tokens next to each JWT (see [`RefreshTokens`]).
@@ -379,15 +396,26 @@ where
         Ok(Secret::new(token))
     }
 
-    /// Sign an access JWT stamped with `ticket`, naming its refresh family.
-    fn sign(
+    /// Sign an access JWT stamped with `ticket`, naming its refresh family,
+    /// with the app's claims.
+    async fn sign(
         &self,
         email: &Email,
         ticket: &JwtTicket,
         family: Option<&str>,
     ) -> Result<String, JwtTokenError> {
-        generate_auth_token_issued_at(email, &self.config, ticket.issued_at, family)
-            .map_err(JwtTokenError::Generate)
+        let ext = match &self.claims {
+            Some(provider) => Some(provider.claims(email).await).filter(|m| !m.is_empty()),
+            None => None,
+        };
+        crate::auth_validation::local_jwt_validator::generate_auth_token_with(
+            email,
+            &self.config,
+            ticket.issued_at,
+            family,
+            ext,
+        )
+        .map_err(JwtTokenError::Generate)
     }
 
     /// Whether `other` signs with the same secret as this strategy.
@@ -444,10 +472,10 @@ where
         // A "revoke all" in between moved the cutoff past this stamp, so the
         // validator rejects the token: no check is needed here.
         let Some(refresh) = &self.refresh else {
-            return Ok(JwtToken(self.sign(email, &ticket, None)?, None));
+            return Ok(JwtToken(self.sign(email, &ticket, None).await?, None));
         };
         let family = uuid::Uuid::new_v4().to_string();
-        let token = self.sign(email, &ticket, Some(&family))?;
+        let token = self.sign(email, &ticket, Some(&family)).await?;
         let expires_at = unix_now() + refresh.ttl_seconds;
         let next = self.new_refresh(refresh, email, family, expires_at).await?;
         Ok(JwtToken(token, Some(next)))
@@ -621,7 +649,9 @@ where
                 // deletes the successor, and the access token, stamped by
                 // `begin` before the new cutoff, is refused).
                 let ticket = self.begin(&record.email).await?;
-                let access = self.sign(&record.email, &ticket, Some(&record.family))?;
+                let access = self
+                    .sign(&record.email, &ticket, Some(&record.family))
+                    .await?;
                 let next = self
                     .new_refresh(refresh, &record.email, record.family, record.expires_at)
                     .await

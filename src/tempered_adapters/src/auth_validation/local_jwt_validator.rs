@@ -215,6 +215,17 @@ pub fn generate_auth_token_issued_at(
     iat: i64,
     family: Option<&str>,
 ) -> Result<String, TokenAuthError> {
+    generate_auth_token_with(email, config, iat, family, None)
+}
+
+/// [`generate_auth_token_issued_at`] with the app's own claims (`ext`).
+pub fn generate_auth_token_with(
+    email: &Email,
+    config: &JwtAuthConfig,
+    iat: i64,
+    family: Option<&str>,
+    ext: Option<serde_json::Map<String, serde_json::Value>>,
+) -> Result<String, TokenAuthError> {
     let exp = Utc::now()
         .timestamp()
         .checked_add(config.token_ttl_in_seconds as i64)
@@ -237,6 +248,7 @@ pub fn generate_auth_token_issued_at(
         aud: config.audience.clone(),
         iss: config.issuer.clone(),
         fam: family.map(str::to_string),
+        ext,
     };
 
     create_token(&claims, config.jwt_secret.expose_secret().as_bytes())
@@ -355,6 +367,10 @@ pub struct Claims {
     /// the token came in a cookie or as `Authorization: Bearer`.
     #[serde(default)]
     pub fam: Option<String>,
+    /// The app's own claims (roles, tenant, ...), from a
+    /// `ClaimsProvider` at issue time.
+    #[serde(default)]
+    pub ext: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl tempered_core::IdentityClaims for Claims {
@@ -375,7 +391,8 @@ impl Serialize for Claims {
             + usize::from(self.jti.is_some())
             + usize::from(self.aud.is_some())
             + usize::from(self.iss.is_some())
-            + usize::from(self.fam.is_some());
+            + usize::from(self.fam.is_some())
+            + usize::from(self.ext.is_some());
         let mut state = serializer.serialize_struct("Claims", len)?;
         state.serialize_field("sub", &self.sub.expose_secret())?;
         state.serialize_field("exp", &self.exp)?;
@@ -390,6 +407,9 @@ impl Serialize for Claims {
         }
         if let Some(fam) = &self.fam {
             state.serialize_field("fam", fam)?;
+        }
+        if let Some(ext) = &self.ext {
+            state.serialize_field("ext", ext)?;
         }
         if let Some(iss) = &self.iss {
             state.serialize_field("iss", iss)?;
@@ -489,6 +509,7 @@ mod tests {
             aud: None,
             iss: None,
             fam: None,
+            ext: None,
         };
         let token = create_token(&claims, config.jwt_secret.expose_secret().as_bytes()).unwrap();
         let result = validate_auth_token(

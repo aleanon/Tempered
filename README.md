@@ -350,6 +350,26 @@ pass `.client_address(|parts| ...)` reading the header your proxy sets
 If the counter store is down, attempts are let through and the error is
 logged.
 
+### Customising
+
+- **Mail.** Every message the library sends is a typed `Mail` (sign-in or
+  elevation code, reset token, verification token, already-registered
+  notice, email-login code and link). Override `EmailClient::send_mail` to
+  write your own (HTML, the user's language, a link into your app instead
+  of a raw token); the default renders `Mail::subject` and `Mail::text`
+  through `send_email`.
+- **Audit events.** `.auth_events(sink)` reports every library request to
+  your `AuthEventSink`: `{ route, status, account, client }`, for an audit
+  log, alerts on repeated failures or a "new sign-in" email. The request
+  waits for `record`, so hand slow work off.
+- **After-the-response jobs.** `.deferred_runner(runner)` runs the reset,
+  signup and sign-in mails on your executor or job system instead of
+  `tokio::spawn`. To never lose one on a restart, have `send_mail` put the
+  message on a durable queue.
+- **JWT claims.** `JwtScheme::jwt_claims(provider)` adds your claims
+  (roles, tenant) to every JWT under `ext`, at issue and refresh; handlers
+  read `Claims::ext`.
+
 ### Observability
 
 Every library request runs in a `tracing` span, `tempered.route`, with the

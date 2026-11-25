@@ -120,6 +120,15 @@ where
     pub fn tokens_in_body(self) -> Self {
         self.map_tokens(JwtTokens::with_tokens_in_body)
     }
+
+    /// Add the app's own claims (roles, tenant, ...) to every JWT, under
+    /// `ext` (see [`ClaimsProvider`](crate::authentication::token_strategy::ClaimsProvider)).
+    pub fn jwt_claims(
+        self,
+        provider: impl crate::authentication::token_strategy::ClaimsProvider + 'static,
+    ) -> Self {
+        self.map_tokens(|tokens| tokens.with_claims(provider))
+    }
 }
 
 // ============================================================================
@@ -1619,9 +1628,7 @@ mod email_verification_tests {
 
     use super::JwtScheme;
     use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
-    use crate::authentication::credential_scheme::{
-        ALREADY_REGISTERED_NOTICE, PasswordCredentials, RegistrationData,
-    };
+    use crate::authentication::credential_scheme::{PasswordCredentials, RegistrationData};
     use crate::persistence::{
         HashMapEmailVerificationTokenStore, HashMapTokenEpochStore, HashMapUserStore,
         HashSetBannedTokenStore,
@@ -1740,7 +1747,10 @@ mod email_verification_tests {
 
         // A verification link, then the notice.
         outbox.mail(0).await;
-        assert_eq!(outbox.mail(1).await, ALREADY_REGISTERED_NOTICE);
+        assert_eq!(
+            outbox.mail(1).await,
+            tempered_core::Mail::AlreadyRegistered.text()
+        );
         let original = PasswordCredentials {
             email: Secret::new("user@example.com".to_string()),
             password: Secret::new("a-long-password".to_string()),
@@ -2312,5 +2322,198 @@ mod totp_tests {
         enrol(&s.scheme, &s.totp).await;
         s.scheme.delete_account(email()).await.ok().unwrap();
         assert!(s.totp.active(&email()).await.unwrap().is_none());
+    }
+}
+
+/// The customisation hooks: typed mail, audit events, the deferred runner
+/// and the app's own JWT claims.
+#[cfg(test)]
+mod customisation_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::JwtScheme;
+    use crate::auth_validation::local_jwt_validator::JwtAuthConfig;
+    use crate::authentication::credential_scheme::PasswordCredentials;
+    use crate::authentication::deferred::{DeferredJob, DeferredRunner};
+    use crate::authentication::token_strategy::ClaimsProvider;
+    use crate::endpoints::{
+        AuthEvent, AuthEventSink, EndpointRequest, Endpoints, PathOverrides, RouteId,
+    };
+    use crate::persistence::{
+        HashMapPasswordResetTokenStore, HashMapTokenEpochStore, HashMapUserStore,
+        HashSetBannedTokenStore,
+    };
+    use secrecy::Secret;
+    use tempered_core::{
+        AuthValidator, AuthenticationScheme, Email, EmailClient, LoginOutcome, Mail,
+        SupportsPasswordReset, User, UserStore,
+    };
+
+    fn config() -> JwtAuthConfig {
+        JwtAuthConfig {
+            jwt_cookie_name: "jwt".to_string(),
+            jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+            token_ttl_in_seconds: 300,
+            audience: None,
+            issuer: None,
+        }
+    }
+
+    fn email() -> Email {
+        Email::try_from(Secret::new("user@example.com".to_string())).unwrap()
+    }
+
+    async fn users() -> HashMapUserStore {
+        let users = HashMapUserStore::new();
+        users
+            .add_user(
+                User::parse(
+                    email().as_ref().clone(),
+                    Secret::new("passwordpassword".into()),
+                    false,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        users
+    }
+
+    /// Keeps the typed messages; renders nothing.
+    #[derive(Clone, Default)]
+    struct Typed(Arc<Mutex<Vec<Mail>>>);
+
+    #[async_trait::async_trait]
+    impl EmailClient for Typed {
+        async fn send_email(&self, _: &Email, _: &str, _: &str) -> Result<(), String> {
+            unreachable!("send_mail is overridden")
+        }
+        async fn send_mail(&self, _: &Email, mail: Mail) -> Result<(), String> {
+            self.0.lock().unwrap().push(mail);
+            Ok(())
+        }
+    }
+
+    /// Runs jobs on its own, counting them.
+    #[derive(Clone, Default)]
+    struct Counting(Arc<Mutex<Vec<&'static str>>>);
+
+    impl DeferredRunner for Counting {
+        fn run(&self, what: &'static str, job: DeferredJob) {
+            self.0.lock().unwrap().push(what);
+            tokio::spawn(job);
+        }
+    }
+
+    #[tokio::test]
+    async fn mail_arrives_typed_through_the_apps_runner() {
+        let mail = Typed::default();
+        let runner = Counting::default();
+        let scheme = JwtScheme::new(
+            users().await,
+            config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_password_reset(HashMapPasswordResetTokenStore::new(), mail.clone())
+        .deferred_runner(runner.clone());
+
+        scheme.initiate_password_reset(email()).await.unwrap();
+        for _ in 0..200 {
+            if !mail.0.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        assert_eq!(*runner.0.lock().unwrap(), ["password reset mail"]);
+        let sent = mail.0.lock().unwrap().clone();
+        assert!(matches!(sent.as_slice(), [Mail::PasswordReset { token }] if !token.is_empty()));
+        assert_eq!(
+            format!("{:?}", sent[0]),
+            "PasswordReset",
+            "Debug shows no token"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct Recorded(Arc<Mutex<Vec<AuthEvent>>>);
+
+    #[async_trait::async_trait]
+    impl AuthEventSink for Recorded {
+        async fn record(&self, event: AuthEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    #[tokio::test]
+    async fn every_request_is_reported_with_its_account_and_status() {
+        let events = Recorded::default();
+        let scheme = JwtScheme::new(
+            users().await,
+            config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .auth_events(events.clone());
+        let spec = scheme
+            .routes(&PathOverrides::default())
+            .into_iter()
+            .find(|r| r.id == RouteId::Login)
+            .unwrap();
+        let body = serde_json::json!({ "email": "user@example.com", "password": "wrong-password" });
+        let request = EndpointRequest::new(
+            http::Request::post("/login")
+                .header("content-type", "application/json")
+                .body(())
+                .unwrap()
+                .into_parts()
+                .0,
+            bytes::Bytes::from(body.to_string()),
+            Vec::new(),
+        );
+        let response = scheme.handle(&spec, request).await;
+        let recorded = events.0.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].route, RouteId::Login);
+        assert_eq!(recorded[0].status, response.status().as_u16());
+        assert_eq!(recorded[0].account, Some(email()));
+    }
+
+    struct Roles;
+
+    #[async_trait::async_trait]
+    impl ClaimsProvider for Roles {
+        async fn claims(&self, _: &Email) -> serde_json::Map<String, serde_json::Value> {
+            serde_json::json!({ "role": "editor" })
+                .as_object()
+                .unwrap()
+                .clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_apps_claims_ride_in_the_jwt() {
+        let scheme = JwtScheme::new(
+            users().await,
+            config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .jwt_claims(Roles);
+        let credentials = PasswordCredentials {
+            email: Secret::new("user@example.com".to_string()),
+            password: Secret::new("passwordpassword".to_string()),
+        };
+        let LoginOutcome::Success(token) = scheme.login(credentials).await.unwrap() else {
+            panic!("no 2FA");
+        };
+        let parts = http::Request::builder()
+            .header("cookie", format!("jwt={}", token.as_str()))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        let claims = scheme.validator().validate(&parts).await.unwrap();
+        assert_eq!(claims.ext.unwrap()["role"], "editor");
     }
 }

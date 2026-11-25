@@ -63,9 +63,9 @@ pub mod repositories {
 pub use core::{
     ApiKeyStore, ApiKeyStoreError, AuthorizationRequest, BannedTokenStore, BannedTokenStoreError,
     ChallengeStore, ChallengeStoreError, ClassifyError, EmailClient, EmailVerificationStoreError,
-    EmailVerificationTokenStore, ErrorCategory, HttpOAuth2Scheme, OAuthHttpClient, OAuthHttpError,
-    OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, PasskeyStoreError, RateLimitStore,
-    RateLimitStoreError, RecoveryCodeHash, RefreshRecord, RefreshTokenStore,
+    EmailVerificationTokenStore, ErrorCategory, HttpOAuth2Scheme, Mail, OAuthHttpClient,
+    OAuthHttpError, OAuthIdentityStore, OAuthStateStore, PasskeyCredentialStore, PasskeyStoreError,
+    RateLimitStore, RateLimitStoreError, RecoveryCodeHash, RefreshRecord, RefreshTokenStore,
     RefreshTokenStoreError, RequiresEmailVerification, SessionRecord, SessionSeen, SessionStore,
     SessionStoreError, SupportsApiKeyIssuance, SupportsEmailLogin, SupportsOAuth2,
     SupportsPasskeys, SupportsTotp, TotpEnrollment, TotpStore, TotpStoreError, TwoFaCodeStore,
@@ -103,6 +103,7 @@ pub use tempered_adapters::{
         Authz, CredentialError, CredentialScheme, DEFAULT_OAUTH_STATE_COOKIE, ElevatedCapabilities,
         ElevatedRevokeError, EmailLogin, OAUTH_TWO_FA_COOKIE, RouteFlags,
     },
+    authentication::deferred::{DeferredJob, DeferredRunner},
     authentication::jwt_scheme::{
         Elevation, EmailVerify, JwtScheme, OAuth, Passkeys, PasswordReset, TwoFa,
     },
@@ -112,8 +113,8 @@ pub use tempered_adapters::{
         SessionScheme, SessionTicket, SessionToken, SessionTokens,
     },
     authentication::token_strategy::{
-        JwtTicket, JwtToken, JwtTokens, MIN_JWT_SECRET_BYTES, RefreshTokens, SessionInfo,
-        TokenStrategy, USER_LOCK_TTL_SECONDS, UserLock,
+        ClaimsProvider, JwtTicket, JwtToken, JwtTokens, MIN_JWT_SECRET_BYTES, RefreshTokens,
+        SessionInfo, TokenStrategy, USER_LOCK_TTL_SECONDS, UserLock,
     },
     authentication::totp::{RECOVERY_CODES, Totp},
     email::MockEmailClient,
@@ -171,6 +172,8 @@ pub use tempered_axum::{
 pub mod oauth_providers {
     pub use tempered_adapters::oauth::providers::*;
 }
+
+pub use tempered_adapters::endpoints::{AuthEvent, AuthEventSink, ClientAddr};
 
 /// The framework-neutral route table (for writing an adapter for another web
 /// framework; see `docs/ROUTE_TABLE_DESIGN.md`).

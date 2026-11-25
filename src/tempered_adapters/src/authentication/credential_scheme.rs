@@ -73,6 +73,11 @@ pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()
     /// Where users' own API keys live, when they may manage them (see
     /// [`Self::supports_api_key_management`]).
     api_keys: Option<ApiKeyManagement>,
+    /// Where an event for every library request goes (see
+    /// [`Self::auth_events`]).
+    events: Option<Arc<dyn crate::endpoints::AuthEventSink>>,
+    /// The after-the-response jobs of every slot (one bound, one runner).
+    deferred: Deferred,
 }
 
 /// Users managing their own API keys: the store, and the scopes they may
@@ -201,7 +206,7 @@ impl<U, T, S, E, P, L, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E, P>, L, R, 
     /// If the email-login store shares its codes with the 2FA store (the
     /// same in-memory store, or a Redis store in the same namespace): a
     /// sign-in code would then pass as a second factor.
-    pub fn supports_email_login(mut self, settings: EmailLogin) -> Self
+    pub fn supports_email_login(mut self, mut settings: EmailLogin) -> Self
     where
         S: TwoFaCodeStore,
     {
@@ -212,6 +217,7 @@ impl<U, T, S, E, P, L, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E, P>, L, R, 
              store (with Redis: `.with_namespace(\"email_login\")`)",
             two_fa.unwrap_or_default()
         );
+        settings.deferred = self.deferred.clone();
         self.two_fa.email_login = Some(settings);
         self
     }
@@ -348,11 +354,6 @@ trait EmailProof {
     fn after_signup(&self, email: Email, new_account: bool);
 }
 
-/// The body of the mail a signup for a taken address sends its owner.
-pub(crate) const ALREADY_REGISTERED_NOTICE: &str = "Someone tried to create an account with this \
-email address, which already has one. If it was you, sign in, or reset your password if \
-you have forgotten it. If it was not, you can ignore this message: nothing has changed.";
-
 /// Why a verification email could not be sent.
 #[derive(Debug)]
 enum VerificationSendError {
@@ -417,7 +418,12 @@ where
             .await
             .map_err(VerificationSendError::Store)?;
         self.email
-            .send_email(email, "Verify your email", &token.to_string())
+            .send_mail(
+                email,
+                tempered_core::Mail::VerifyEmail {
+                    token: token.to_string(),
+                },
+            )
             .await
             .map_err(VerificationSendError::Email)
     }
@@ -433,11 +439,7 @@ where
                 }
             } else if let Err(e) = this
                 .email
-                .send_email(
-                    &email,
-                    "You already have an account",
-                    ALREADY_REGISTERED_NOTICE,
-                )
+                .send_mail(&email, tempered_core::Mail::AlreadyRegistered)
                 .await
             {
                 tracing::error!(error = ?e, "failed to send the already-registered notice");
@@ -467,10 +469,10 @@ enum ChallengePurpose {
 }
 
 impl ChallengePurpose {
-    fn subject(self) -> &'static str {
+    fn mail(self, code: TwoFaCode) -> tempered_core::Mail {
         match self {
-            ChallengePurpose::SignIn => "Your sign-in code",
-            ChallengePurpose::Elevation => "Code to confirm a sensitive account action",
+            ChallengePurpose::SignIn => tempered_core::Mail::SignInCode { code },
+            ChallengePurpose::Elevation => tempered_core::Mail::ElevationCode { code },
         }
     }
 }
@@ -558,7 +560,7 @@ where
         }
 
         self.email
-            .send_email(email, purpose.subject(), code.as_str())
+            .send_mail(email, purpose.mail(code.clone()))
             .await
             .map_err(TwoFaChallengeError::Email)?;
 
@@ -770,6 +772,8 @@ where
             rate_limit: None,
             password_policy: None,
             api_keys: None,
+            events: None,
+            deferred: Deferred::default(),
         }
     }
 }
@@ -799,6 +803,8 @@ impl<U, T, L, R, M, O, K> CredentialScheme<U, T, (), L, R, M, O, K> {
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
             api_keys: self.api_keys,
+            events: self.events,
+            deferred: self.deferred,
         }
     }
 }
@@ -847,6 +853,8 @@ impl<U, T, F, R, M, O, K> CredentialScheme<U, T, F, (), R, M, O, K> {
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
             api_keys: self.api_keys,
+            events: self.events,
+            deferred: self.deferred,
         }
     }
 }
@@ -866,7 +874,7 @@ impl<U, T, F, L, M, O, K> CredentialScheme<U, T, F, L, (), M, O, K> {
             password_reset: PasswordReset {
                 store,
                 email,
-                deferred: Deferred::default(),
+                deferred: self.deferred.clone(),
             },
             email_verify: self.email_verify,
             oauth: self.oauth,
@@ -875,6 +883,8 @@ impl<U, T, F, L, M, O, K> CredentialScheme<U, T, F, L, (), M, O, K> {
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
             api_keys: self.api_keys,
+            events: self.events,
+            deferred: self.deferred,
         }
     }
 }
@@ -895,7 +905,7 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
             email_verify: EmailVerify {
                 store,
                 email,
-                deferred: Deferred::default(),
+                deferred: self.deferred.clone(),
             },
             oauth: self.oauth,
             passkeys: self.passkeys,
@@ -903,6 +913,8 @@ impl<U, T, F, L, R, O, K> CredentialScheme<U, T, F, L, R, (), O, K> {
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
             api_keys: self.api_keys,
+            events: self.events,
+            deferred: self.deferred,
         }
     }
 }
@@ -935,6 +947,8 @@ impl<U, T, F, L, R, M, K> CredentialScheme<U, T, F, L, R, M, (), K> {
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
             api_keys: self.api_keys,
+            events: self.events,
+            deferred: self.deferred,
         }
     }
 }
@@ -964,6 +978,8 @@ impl<U, T, F, L, R, M, O> CredentialScheme<U, T, F, L, R, M, O, ()> {
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
             api_keys: self.api_keys,
+            events: self.events,
+            deferred: self.deferred,
         }
     }
 }
@@ -1073,6 +1089,29 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
             store: Arc::new(store),
             allowed_scopes: allowed_scopes.into_iter().map(Into::into).collect(),
         });
+        self
+    }
+
+    /// Report every library request to `sink` (route, status, account,
+    /// client address): for an audit log, alerts on repeated failures, or
+    /// a "new sign-in" email.
+    pub fn auth_events(mut self, sink: impl crate::endpoints::AuthEventSink + 'static) -> Self {
+        self.events = Some(Arc::new(sink));
+        self
+    }
+
+    pub(crate) fn auth_event_sink(&self) -> Option<&Arc<dyn crate::endpoints::AuthEventSink>> {
+        self.events.as_ref()
+    }
+
+    /// Run the after-the-response jobs (reset, signup and sign-in mails)
+    /// with `runner` instead of `tokio::spawn`: your executor, tracking or
+    /// job system. Applies to every slot, whenever it was added.
+    pub fn deferred_runner(
+        self,
+        runner: impl crate::authentication::deferred::DeferredRunner + 'static,
+    ) -> Self {
+        self.deferred.set_runner(Arc::new(runner));
         self
     }
 
@@ -1788,8 +1827,8 @@ where
                 tracing::error!(error = ?e, "email login: failed to store the code");
                 return;
             }
-            let content = match &link_base {
-                None => code.as_str().to_string(),
+            let link = match &link_base {
+                None => None,
                 Some(page) => {
                     let mut url = match url::Url::parse(page) {
                         Ok(url) => url,
@@ -1802,10 +1841,11 @@ where
                         .append_pair("email", email.as_ref().expose_secret())
                         .append_pair("loginAttemptId", &attempt.to_string())
                         .append_pair("code", code.as_str());
-                    format!("Your sign-in code is {}, or open {url}", code.as_str())
+                    Some(url.to_string())
                 }
             };
-            if let Err(e) = mail.send_email(&email, "Your sign-in code", &content).await {
+            let message = tempered_core::Mail::EmailLogin { code, link };
+            if let Err(e) = mail.send_mail(&email, message).await {
                 tracing::error!(error = e, "email login: failed to send the mail");
             }
         });
@@ -1903,6 +1943,8 @@ impl<U, T, S, E, TE, R, M, O, K> CredentialScheme<U, T, TwoFa<S, E>, Elevation<T
             rate_limit: self.rate_limit,
             password_policy: self.password_policy,
             api_keys: self.api_keys,
+            events: self.events,
+            deferred: self.deferred,
         }
     }
 }
@@ -2235,7 +2277,12 @@ where
                 }
                 if let Err(e) = reset
                     .email
-                    .send_email(&email, "Password Reset", &token.to_string())
+                    .send_mail(
+                        &email,
+                        tempered_core::Mail::PasswordReset {
+                            token: token.to_string(),
+                        },
+                    )
                     .await
                 {
                     tracing::error!(error = e, "password reset: failed to send the mail");
