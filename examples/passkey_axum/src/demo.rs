@@ -55,7 +55,7 @@ impl DemoVerifier {
 impl WebAuthnVerifier for DemoVerifier {
     fn start_registration(
         &self,
-        _email: &tempered::Email,
+        _user: &tempered::core::Subject,
         _existing: &[PasskeyCredential],
     ) -> Result<CeremonyStart, WebAuthnError> {
         Ok(self.start())
