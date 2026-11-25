@@ -246,10 +246,13 @@ id is a `404`.
 
 ### API keys for your users
 
-`.supports_api_key_management(store)` on the login scheme lets users manage
-their own keys, in the store an `ApiKeyScheme` validates against:
+`.supports_api_key_management(store, ["read", "write"])` on the login
+scheme lets users manage their own keys, in the store an `ApiKeyScheme`
+validates against. The second argument is the scopes a user may give their
+own key; any other is refused (`400`), so nobody grants themselves
+`admin`:
 `GET /api-keys` lists `{ id, prefix, scopes, createdAt, expiresAt,
-lastUsedAt }`; `POST /elevated/api-keys { scopes, expiresInDays }` issues
+lastUsedAt }` and the `allowedScopes`; `POST /elevated/api-keys { scopes, expiresInDays }` issues
 one and answers the key once (`201 { id, apiKey, expiresAt }`); `DELETE
 /elevated/api-keys/{id}` revokes it. Without elevation the two changes
 need a verified address instead (no `/elevated`). An expired key is

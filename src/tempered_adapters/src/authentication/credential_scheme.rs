@@ -72,7 +72,15 @@ pub struct CredentialScheme<U, T, F = (), L = (), R = (), M = (), O = (), K = ()
     password_policy: Option<Arc<dyn tempered_core::PasswordPolicy>>,
     /// Where users' own API keys live, when they may manage them (see
     /// [`Self::supports_api_key_management`]).
-    api_keys: Option<Arc<dyn tempered_core::ApiKeyStore>>,
+    api_keys: Option<ApiKeyManagement>,
+}
+
+/// Users managing their own API keys: the store, and the scopes they may
+/// give a key.
+#[derive(Clone)]
+pub(crate) struct ApiKeyManagement {
+    store: Arc<dyn tempered_core::ApiKeyStore>,
+    allowed_scopes: Arc<[String]>,
 }
 
 /// Authorization level a route requires.
@@ -1046,12 +1054,31 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
     /// verified address otherwise. Keys go into `store`, the one your
     /// [`ApiKeyScheme`](crate::authentication::api_key_scheme::ApiKeyScheme)
     /// validates against. Deleting the account deletes its keys.
-    pub fn supports_api_key_management(
+    ///
+    /// `allowed_scopes` are the only scopes a user may give their own key
+    /// (a request for any other is refused): a scope is a permission, and
+    /// users must not grant themselves ones they lack (say, `admin`). Keys
+    /// with other scopes are for your own code to issue, with
+    /// [`SupportsApiKeyIssuance`](tempered_core::SupportsApiKeyIssuance).
+    pub fn supports_api_key_management<I, Sc>(
         mut self,
         store: impl tempered_core::ApiKeyStore + 'static,
-    ) -> Self {
-        self.api_keys = Some(Arc::new(store));
+        allowed_scopes: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = Sc>,
+        Sc: Into<String>,
+    {
+        self.api_keys = Some(ApiKeyManagement {
+            store: Arc::new(store),
+            allowed_scopes: allowed_scopes.into_iter().map(Into::into).collect(),
+        });
         self
+    }
+
+    /// The scopes users may give their own keys.
+    pub(crate) fn allowed_api_key_scopes(&self) -> &[String] {
+        self.api_keys.as_ref().map_or(&[], |m| &m.allowed_scopes)
     }
 
     /// Whether the scheme has elevation (for the route table).
@@ -1064,7 +1091,7 @@ impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K> {
 
     /// The API-key store, when users may manage their keys.
     pub(crate) fn api_key_store(&self) -> Option<&Arc<dyn tempered_core::ApiKeyStore>> {
-        self.api_keys.as_ref()
+        self.api_keys.as_ref().map(|m| &m.store)
     }
 
     /// Apply the password policy, if there is one.
@@ -1268,6 +1295,67 @@ where
             return Some(Err(CredentialError::ElevatedToken(e)));
         }
         Some(Ok(ended))
+    }
+}
+
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore,
+    T: TokenStrategy,
+    F: Send + Sync,
+    L: Send + Sync,
+    R: Send + Sync,
+    M: Send + Sync,
+    O: Send + Sync,
+    K: Send + Sync,
+{
+    /// Issue a key for the logged-in user `email`: only allowed scopes,
+    /// and under the credential lock, so no key is issued for an account a
+    /// deletion is removing.
+    pub(crate) async fn issue_user_api_key(
+        &self,
+        email: Email,
+        scopes: Vec<String>,
+        expires_at: Option<u64>,
+    ) -> Result<(tempered_core::ApiKeyId, String), CredentialError<T::Error>> {
+        let Some(management) = &self.api_keys else {
+            return Err(CredentialError::ApiKeys(
+                "API key management is off".to_string(),
+            ));
+        };
+        if let Some(scope) = scopes
+            .iter()
+            .find(|s| !management.allowed_scopes.contains(s))
+        {
+            return Err(CredentialError::ScopeNotAllowed(scope.clone()));
+        }
+        let lock = self.lock_credentials(&email).await?;
+        let result = async {
+            self.user_store.get_user(&email).await?;
+            crate::authentication::api_key_scheme::issue_key(
+                &*management.store,
+                email.clone(),
+                scopes,
+                expires_at,
+            )
+            .await
+            .map_err(|e| CredentialError::ApiKeys(e.to_string()))
+        }
+        .await;
+        self.unlock_credentials(&email, lock).await;
+        result
+    }
+
+    /// Delete the user's API keys, when users may manage them.
+    async fn forget_api_keys(&self, email: &Email) -> Result<(), CredentialError<T::Error>> {
+        match &self.api_keys {
+            Some(management) => management
+                .store
+                .delete_all_for_owner(email)
+                .await
+                .map_err(|e| CredentialError::ApiKeys(e.to_string())),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1551,11 +1639,7 @@ where
             // for a later account at the same address.
             self.two_fa.forget_user(&email).await?;
             // Nor may its API keys.
-            if let Some(keys) = &self.api_keys {
-                keys.delete_all_for_owner(&email)
-                    .await
-                    .map_err(|e| CredentialError::ApiKeys(e.to_string()))?;
-            }
+            self.forget_api_keys(&email).await?;
             // A deleted user's token would otherwise keep validating until it
             // expires (JWT validation is signature-based, not a user-store read).
             self.two_fa.cancel_pending(&email).await?;
@@ -1568,6 +1652,8 @@ where
             // after this finds no account.
             self.two_fa.cancel_pending(&email).await?;
             self.revoke_all_tokens(&email).await?;
+            // And keys, in case one was issued as the account went.
+            self.forget_api_keys(&email).await?;
             Ok(())
         }
         .await;
@@ -2527,6 +2613,8 @@ where
             // chose. With 2FA kept on, codes go to the address the provider
             // has just vouched for.
             self.two_fa.forget_user(email).await?;
+            // So are API keys whoever signed up issued themselves.
+            self.forget_api_keys(email).await?;
             self.two_fa.cancel_pending(email).await?;
             self.revoke_all_tokens(email).await?;
             // Once more, in case the lock expired under a slow store and an
@@ -2891,6 +2979,10 @@ pub enum CredentialError<TE: std::error::Error + Send + Sync + 'static> {
     #[error("API key store error: {0}")]
     ApiKeys(String),
 
+    /// A user asked for a key with a scope they may not give it.
+    #[error("Scope not allowed: {0}")]
+    ScopeNotAllowed(String),
+
     /// Linking a provider that does not vouch for the account's address,
     /// to an account whose address is not proven.
     #[error("Verify your address before linking this provider")]
@@ -2989,6 +3081,10 @@ where
             }
             CredentialError::TotpNotEnrolled(why) => (ErrorCategory::BadRequest, why.to_string()),
             CredentialError::PasswordRejected(why) => (ErrorCategory::BadRequest, why),
+            CredentialError::ScopeNotAllowed(scope) => (
+                ErrorCategory::BadRequest,
+                format!("Scope not allowed: {scope}"),
+            ),
             CredentialError::ApiKeys(e) => {
                 tracing::error!(error = %e, "API key store error");
                 (ErrorCategory::Internal, "Internal error".to_string())

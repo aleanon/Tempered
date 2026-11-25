@@ -50,7 +50,7 @@ fn apps() -> (Router, Router, Keys) {
         config("elevated", "another-test-secret-long-enough!"),
         |e| e.supports_account_deletion(),
     )
-    .supports_api_key_management(store.clone());
+    .supports_api_key_management(store.clone(), ["read"]);
     let accounts: Router = auth_service(accounts, String::new()).into();
 
     let keys: Keys = ApiKeyScheme::new(store).supports_issuance();
@@ -139,6 +139,15 @@ async fn a_user_issues_uses_lists_and_revokes_a_key() {
     let key = body["apiKey"].as_str().unwrap().to_string();
     let id = body["id"].as_str().unwrap().to_string();
     assert!(body["expiresAt"].as_u64().is_some());
+
+    // Users may give their keys only the scopes the app allows.
+    let greedy = json!({ "scopes": ["read", "write"] });
+    let (status, _, body) = send(
+        &accounts,
+        json_request("POST", "/elevated/api-keys", &[&session, &elevated], greedy),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
     // The key works where its scope allows, and only there.
     assert_eq!(

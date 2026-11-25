@@ -143,57 +143,33 @@ fn with_link_state_cleared(mut response: EndpointResponse) -> EndpointResponse {
     response
 }
 
-/// The user's own API keys: list, issue, revoke.
+/// The user's own API keys: list (with the scopes they may ask for), revoke.
 async fn api_keys(
     store: &dyn tempered_core::ApiKeyStore,
     id: RouteId,
     req: &EndpointRequest,
     email: Email,
+    allowed_scopes: &[String],
 ) -> Result<EndpointResponse, EndpointResponse> {
-    use crate::authentication::api_key_scheme::{issue_key, store_err, unix_now};
+    use crate::authentication::api_key_scheme::store_err;
     let internal = |e: tempered_core::ApiKeyStoreError| classified(store_err(e));
-    match id {
-        RouteId::ApiKeyList => {
-            let keys = store.list_for_user(&email).await.map_err(internal)?;
-            Ok(json_response(StatusCode::OK, json!({ "keys": keys })))
+    if id == RouteId::ApiKeyList {
+        let keys = store.list_for_user(&email).await.map_err(internal)?;
+        return Ok(json_response(
+            StatusCode::OK,
+            json!({ "keys": keys, "allowedScopes": allowed_scopes }),
+        ));
+    }
+    let key_id = req
+        .param("id")
+        .and_then(tempered_core::ApiKeyId::parse)
+        .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Not found"))?;
+    match store.revoke_key(&email, &key_id).await {
+        Ok(()) => Ok(json_response(StatusCode::OK, json!({}))),
+        Err(tempered_core::ApiKeyStoreError::NotFound) => {
+            Err(error_response(StatusCode::NOT_FOUND, "Not found"))
         }
-        RouteId::ApiKeyIssue => {
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct Issue {
-                #[serde(default)]
-                scopes: Vec<String>,
-                expires_in_days: Option<u64>,
-            }
-            let request: Issue = parse(req)?;
-            if request.expires_in_days == Some(0) {
-                return Err(bad_request("expiresInDays must be at least 1"));
-            }
-            let expires_at = request
-                .expires_in_days
-                .map(|days| unix_now() + days.min(3650) * 86_400);
-            let (key_id, key) = issue_key(store, email, request.scopes, expires_at)
-                .await
-                .map_err(classified)?;
-            // The only time the key is shown.
-            Ok(json_response(
-                StatusCode::CREATED,
-                json!({ "id": key_id.to_string(), "apiKey": key, "expiresAt": expires_at }),
-            ))
-        }
-        _ => {
-            let key_id = req
-                .param("id")
-                .and_then(tempered_core::ApiKeyId::parse)
-                .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Not found"))?;
-            match store.revoke_key(&email, &key_id).await {
-                Ok(()) => Ok(json_response(StatusCode::OK, json!({}))),
-                Err(tempered_core::ApiKeyStoreError::NotFound) => {
-                    Err(error_response(StatusCode::NOT_FOUND, "Not found"))
-                }
-                Err(e) => Err(internal(e)),
-            }
-        }
+        Err(e) => Err(internal(e)),
     }
 }
 
@@ -272,6 +248,7 @@ where
     M: SlotEndpoints<Self>,
     O: SlotEndpoints<Self>,
     K: SlotEndpoints<Self>,
+    U: tempered_core::UserStore,
 {
     fn routes(&self, o: &PathOverrides) -> Vec<RouteSpec> {
         use RouteId::*;
@@ -464,6 +441,11 @@ where
     T: TokenStrategy,
     L: SlotEndpoints<Self> + ElevationRevoke + ElevatedCookieName,
     M: SlotEndpoints<Self>,
+    U: tempered_core::UserStore,
+    F: Send + Sync,
+    R: Send + Sync,
+    O: Send + Sync,
+    K: Send + Sync,
 {
     /// Check `tier` and return who passed it (`None` for public routes).
     async fn admit(&self, tier: Tier, parts: &Parts) -> Result<Option<Email>, EndpointResponse> {
@@ -493,11 +475,41 @@ where
         who: Option<&Email>,
     ) -> Option<EndpointResponse> {
         match id {
-            RouteId::ApiKeyList | RouteId::ApiKeyIssue | RouteId::ApiKeyRevoke => {
+            RouteId::ApiKeyIssue => {
+                self.api_key_store()?;
+                respond!({
+                    #[derive(Deserialize)]
+                    #[serde(rename_all = "camelCase")]
+                    struct Issue {
+                        #[serde(default)]
+                        scopes: Vec<String>,
+                        expires_in_days: Option<u64>,
+                    }
+                    let email = who.cloned().ok_or_else(not_logged_in)?;
+                    let request: Issue = parse(req)?;
+                    if request.expires_in_days == Some(0) {
+                        return Err(bad_request("expiresInDays must be at least 1"));
+                    }
+                    let expires_at = request.expires_in_days.map(|days| {
+                        crate::authentication::api_key_scheme::unix_now() + days.min(3650) * 86_400
+                    });
+                    let (key_id, key) = self
+                        .issue_user_api_key(email, request.scopes, expires_at)
+                        .await
+                        .map_err(classified)?;
+                    // The only time the key is shown.
+                    Ok(json_response(
+                        StatusCode::CREATED,
+                        json!({ "id": key_id.to_string(), "apiKey": key, "expiresAt": expires_at }),
+                    ))
+                })
+            }
+            RouteId::ApiKeyList | RouteId::ApiKeyRevoke => {
                 let store = self.api_key_store()?.clone();
+                let allowed = self.allowed_api_key_scopes().to_vec();
                 respond!({
                     let email = who.cloned().ok_or_else(not_logged_in)?;
-                    api_keys(&*store, id, req, email).await
+                    api_keys(&*store, id, req, email, &allowed).await
                 })
             }
             RouteId::ListSessions => respond!({

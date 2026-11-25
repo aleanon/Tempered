@@ -821,6 +821,34 @@ mod oauth_tests {
         ));
     }
 
+    /// API keys that whoever signed up an unproven account issued are
+    /// removed when a provider login secures it.
+    #[tokio::test]
+    async fn securing_an_unproven_account_removes_its_api_keys() {
+        use crate::persistence::HashMapApiKeyStore;
+        use tempered_core::ApiKeyStore;
+
+        let users = HashMapUserStore::new();
+        add_account(&users, SIGNUP_PASSWORD, false).await;
+        let keys = HashMapApiKeyStore::new();
+        let scheme = JwtScheme::new(
+            users,
+            jwt_config(),
+            HashSetBannedTokenStore::new(),
+            HashMapTokenEpochStore::new(),
+        )
+        .supports_api_key_management(keys.clone(), ["read"])
+        .supports_oauth(flow());
+        scheme
+            .issue_user_api_key(email(), vec!["read".to_string()], None)
+            .await
+            .unwrap();
+        assert_eq!(keys.list_for_user(&email()).await.unwrap().len(), 1);
+
+        oauth_login(&scheme).await.unwrap();
+        assert!(keys.list_for_user(&email()).await.unwrap().is_empty());
+    }
+
     /// Whoever signed up an unproven account may have added an
     /// authenticator app to it. Securing the account removes that app too,
     /// with the password and passkeys.
