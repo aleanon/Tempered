@@ -226,7 +226,13 @@ posts them (a link that logged in on `GET` would be used up by mail
 scanners that open links). The code is single-use with an attempt
 budget. An account that requires 2FA needs a second factor other than the
 inbox: with an authenticator app it is asked for the app's code (`206`);
-without one it is refused (`403`) and signs in with its password.
+without one it is refused (`403`) and signs in with its password. With email verification on, the first email login to an account
+whose address was never verified secures it first, as a first provider
+login does: whoever signed up with that address loses the password,
+passkeys, authenticator app, API keys and sessions they set up, and the
+address counts as proven. Without email verification the scheme cannot
+tell such an account apart, so turn verification on alongside email
+login.
 
 ### Changing the email address
 

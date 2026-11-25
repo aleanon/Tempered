@@ -503,6 +503,14 @@ where
             .map_err(|e| OAuthFlowError::Identity(e.to_string()))
     }
 
+    /// Whether any provider identity is linked to the account.
+    pub async fn has_links(&self, user: &UserId) -> Result<bool, OAuthFlowError> {
+        self.identity_store
+            .has_identity_for_user(user)
+            .await
+            .map_err(|e| OAuthFlowError::Identity(e.to_string()))
+    }
+
     /// Remove every provider identity linked to the account. Call when it is
     /// deleted, so its links cannot log anyone in to, or stand as proof for,
     /// a later account at the address.

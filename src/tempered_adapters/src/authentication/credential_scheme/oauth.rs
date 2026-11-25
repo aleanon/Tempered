@@ -245,62 +245,6 @@ where
         let drop_two_fa = proof == AddressProof::Unverified;
         self.secure_unproven_account(email, drop_two_fa).await
     }
-
-    /// Remove every way into an account that predates proof of its address.
-    ///
-    /// Signup does not prove the address belongs to whoever signed up, so an
-    /// attacker can register a victim's address and wait for the victim to
-    /// arrive through a provider ("account pre-hijacking"). Whoever created
-    /// this account may still hold its password, a session, or a passkey: all
-    /// three go before the provider's user is let in. A genuine user who
-    /// signed up with a password loses it and sets a new one via password
-    /// reset.
-    ///
-    /// With `drop_two_fa`, the account's 2FA requirement goes too: it was
-    /// chosen by whoever signed up, and the owner should not be held to a
-    /// second factor they did not set up (or cannot pass).
-    ///
-    /// It all happens under the user's credential lock, so one credential
-    /// cannot mint another while this runs: no login begins, and a session
-    /// that is about to be revoked cannot enrol a passkey (enrolment takes the
-    /// same lock, and enrolments already started are dropped with the
-    /// passkeys). The order and the second passkey pass are what remains if
-    /// the lock expires under a stalled store: password first (no new password
-    /// logins), then passkeys, then sessions, then passkeys once more.
-    async fn secure_unproven_account(
-        &self,
-        email: &Email,
-        drop_two_fa: bool,
-    ) -> Result<(), CredentialError<T::Error>> {
-        let lock = self.lock_credentials(email).await?;
-        let result: Result<(), CredentialError<T::Error>> = async {
-            let account = self.subject_for(email).await?;
-            let id = account.id;
-            self.user_store
-                .set_new_password(email, unknowable_password())
-                .await?;
-            if drop_two_fa {
-                self.user_store.set_requires_2fa(email, false).await?;
-            }
-            self.passkeys.forget_user(&account).await?;
-            // An authenticator app is a second factor whoever signed up
-            // chose. With 2FA kept on, codes go to the address the provider
-            // has just vouched for.
-            self.two_fa.forget_user(&id).await?;
-            // So are API keys whoever signed up issued themselves.
-            self.forget_api_keys(&id).await?;
-            self.two_fa.cancel_pending(email).await?;
-            self.revoke_all_tokens(email).await?;
-            // Once more, in case the lock expired under a slow store and an
-            // enrolment authorised before the revocation slipped in.
-            self.passkeys.forget_user(&account).await?;
-            self.two_fa.forget_user(&id).await?;
-            Ok(())
-        }
-        .await;
-        self.unlock_credentials(email, lock).await;
-        result
-    }
 }
 
 /// A password no one can know or guess: 32 random bytes, base64url-encoded.
@@ -430,4 +374,75 @@ fn with_two_fa_marker(base: &str) -> String {
         location.push_str(fragment);
     }
     location
+}
+
+// Securing an account is shared by the paths that prove its address after
+// the fact: a provider login (above) and an email login.
+#[allow(private_bounds)]
+impl<U, T, F, L, R, M, O, K> CredentialScheme<U, T, F, L, R, M, O, K>
+where
+    U: UserStore,
+    T: TokenStrategy,
+    F: TwoFaChallenge + Send + Sync,
+    L: ElevationRevoke + Send + Sync,
+    R: ResetCleanup + Send + Sync,
+    M: Send + Sync,
+    O: Send + Sync,
+    K: PasskeyCleanup + Send + Sync,
+{
+    /// Remove every way into an account that predates proof of its address.
+    ///
+    /// Signup does not prove the address belongs to whoever signed up, so an
+    /// attacker can register a victim's address and wait for the victim to
+    /// arrive through a provider or an email login ("account pre-hijacking"). Whoever created
+    /// this account may still hold its password, a session, or a passkey: all
+    /// three go before the provider's user is let in. A genuine user who
+    /// signed up with a password loses it and sets a new one via password
+    /// reset.
+    ///
+    /// With `drop_two_fa`, the account's 2FA requirement goes too: it was
+    /// chosen by whoever signed up, and the owner should not be held to a
+    /// second factor they did not set up (or cannot pass).
+    ///
+    /// It all happens under the user's credential lock, so one credential
+    /// cannot mint another while this runs: no login begins, and a session
+    /// that is about to be revoked cannot enrol a passkey (enrolment takes the
+    /// same lock, and enrolments already started are dropped with the
+    /// passkeys). The order and the second passkey pass are what remains if
+    /// the lock expires under a stalled store: password first (no new password
+    /// logins), then passkeys, then sessions, then passkeys once more.
+    pub(super) async fn secure_unproven_account(
+        &self,
+        email: &Email,
+        drop_two_fa: bool,
+    ) -> Result<(), CredentialError<T::Error>> {
+        let lock = self.lock_credentials(email).await?;
+        let result: Result<(), CredentialError<T::Error>> = async {
+            let account = self.subject_for(email).await?;
+            let id = account.id;
+            self.user_store
+                .set_new_password(email, unknowable_password())
+                .await?;
+            if drop_two_fa {
+                self.user_store.set_requires_2fa(email, false).await?;
+            }
+            self.passkeys.forget_user(&account).await?;
+            // An authenticator app is a second factor whoever signed up
+            // chose. With 2FA kept on, codes go to the address the provider
+            // has just vouched for.
+            self.two_fa.forget_user(&id).await?;
+            // So are API keys whoever signed up issued themselves.
+            self.forget_api_keys(&id).await?;
+            self.two_fa.cancel_pending(email).await?;
+            self.revoke_all_tokens(email).await?;
+            // Once more, in case the lock expired under a slow store and an
+            // enrolment authorised before the revocation slipped in.
+            self.passkeys.forget_user(&account).await?;
+            self.two_fa.forget_user(&id).await?;
+            Ok(())
+        }
+        .await;
+        self.unlock_credentials(email, lock).await;
+        result
+    }
 }

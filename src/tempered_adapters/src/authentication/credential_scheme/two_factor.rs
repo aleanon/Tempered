@@ -61,11 +61,11 @@ where
     S: TwoFaCodeStore + Clone + Send + Sync + 'static,
     E: EmailClient + Clone + Send + Sync + 'static,
     P: TotpFactor + Clone + 'static,
-    L: Clone + Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
-    M: Clone + Send + Sync + 'static,
-    O: Clone + Send + Sync + 'static,
-    K: Clone + Send + Sync + 'static,
+    L: ElevationRevoke + Clone + Send + Sync + 'static,
+    R: ResetCleanup + Clone + Send + Sync + 'static,
+    M: EmailProof + Clone + Send + Sync + 'static,
+    O: OAuthCleanup + Clone + Send + Sync + 'static,
+    K: PasskeyCleanup + Clone + Send + Sync + 'static,
 {
     type EmailLoginError = CredentialError<T::Error>;
 
@@ -149,7 +149,25 @@ where
             .store
             .redeem_code(&email, &attempt_id, &code)
             .await?;
-        let user = self.user_store.get_user(&email).await?;
+        let mut user = self.user_store.get_user(&email).await?;
+        let mut ticket = ticket;
+        // The code proves the inbox. An account whose address was never
+        // proven may have been made by someone else with this address
+        // ("account pre-hijacking"): secure it, as a first provider login
+        // does, before letting the inbox's owner in, and record the proof.
+        if self.email_verify.proof(&email).await? == AddressProof::Unverified
+            && !self.oauth.has_links(&user.id).await?
+        {
+            self.secure_unproven_account(&email, true).await?;
+            self.email_verify.mark_verified(&email).await?;
+            // Securing revoked every token, the ticket's login included.
+            ticket = self
+                .tokens
+                .begin(&email)
+                .await
+                .map_err(CredentialError::Token)?;
+            user = self.user_store.get_user(&email).await?;
+        }
         if user.requires_2fa() {
             // The inbox is one factor, and a 2FA account needs a second one
             // that is not the inbox again: its authenticator app. Without

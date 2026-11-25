@@ -301,3 +301,61 @@ fn sharing_the_two_factor_store_is_refused_at_startup() {
     .supports_2fa(shared.clone(), Outbox::default())
     .supports_email_login(EmailLogin::code(shared));
 }
+
+/// Someone signed up with the victim's address (never verified) and kept
+/// the password. The victim's first email login secures the account: the
+/// squatter's password stops working, and the address counts as proven.
+#[tokio::test]
+async fn an_email_login_secures_an_account_someone_else_signed_up() {
+    use tempered_adapters::persistence::HashMapEmailVerificationTokenStore;
+    let outbox = Outbox::default();
+    let scheme = JwtScheme::new(
+        HashMapUserStore::new(),
+        JwtAuthConfig {
+            jwt_cookie_name: "jwt".to_string(),
+            jwt_secret: Secret::new("a-test-secret-that-is-long-enough".to_string()),
+            token_ttl_in_seconds: 300,
+            audience: None,
+            issuer: None,
+        },
+        HashSetBannedTokenStore::new(),
+        HashMapTokenEpochStore::new(),
+    )
+    .supports_registration()
+    .supports_2fa(HashMapTwoFaCodeStore::new(), outbox.clone())
+    .supports_email_login(EmailLogin::code(HashMapTwoFaCodeStore::new()))
+    // Verification links go elsewhere, so the outbox holds only codes.
+    .supports_email_verification(HashMapEmailVerificationTokenStore::new(), Outbox::default());
+    let app: Router = auth_service(scheme, String::new()).into();
+
+    // The squatter signs up and can log in with their password.
+    sign_up(&app, "victim@example.com", false).await;
+    let squatter = json!({ "email": "victim@example.com", "password": "correct-horse" });
+    assert_eq!(
+        post(&app, "/login", squatter.clone()).await.0,
+        StatusCode::OK
+    );
+
+    // The victim logs in with a code from their inbox.
+    let (_, _, body) = post(
+        &app,
+        "/email-login/start",
+        json!({ "email": "victim@example.com" }),
+    )
+    .await;
+    let (_, code) = outbox.mail(0).await.expect("a code was mailed");
+    let verify = json!({
+        "email": "victim@example.com",
+        "loginAttemptId": body["loginAttemptId"],
+        "code": code,
+    });
+    let (status, cookie, _) = post(&app, "/email-login/verify", verify).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(cookie.unwrap().starts_with("jwt="));
+
+    // The squatter's password no longer works.
+    assert_eq!(
+        post(&app, "/login", squatter).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}

@@ -327,12 +327,18 @@ where
 #[async_trait]
 trait OAuthCleanup {
     async fn forget_user(&self, user: &tempered_core::UserId) -> Result<(), OAuthFlowError>;
+    /// Whether a provider identity is linked to the account (which proves
+    /// its address).
+    async fn has_links(&self, user: &tempered_core::UserId) -> Result<bool, OAuthFlowError>;
 }
 
 #[async_trait]
 impl OAuthCleanup for () {
     async fn forget_user(&self, _: &tempered_core::UserId) -> Result<(), OAuthFlowError> {
         Ok(())
+    }
+    async fn has_links(&self, _: &tempered_core::UserId) -> Result<bool, OAuthFlowError> {
+        Ok(false)
     }
 }
 
@@ -345,6 +351,9 @@ where
 {
     async fn forget_user(&self, user: &tempered_core::UserId) -> Result<(), OAuthFlowError> {
         self.flow.forget_user(user).await
+    }
+    async fn has_links(&self, user: &tempered_core::UserId) -> Result<bool, OAuthFlowError> {
+        self.flow.has_links(user).await
     }
 }
 
