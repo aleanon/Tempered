@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use tempered_core::{Email, Password, User, UserStore, UserStoreError, ValidatedUser};
+use tempered_core::{Email, Password, User, UserId, UserStore, UserStoreError, ValidatedUser};
 
 /// In-memory [`UserStore`] backed by a `HashMap`.
 ///
@@ -88,6 +88,15 @@ impl UserStore for HashMapUserStore {
         let mut users = self.users.write().await;
         users.remove(user).ok_or(UserStoreError::UserNotFound)?;
         Ok(())
+    }
+
+    async fn get_user_by_id(&self, id: &UserId) -> Result<User, UserStoreError> {
+        let users = self.users.read().await;
+        users
+            .values()
+            .find(|u| &u.id == id)
+            .cloned()
+            .ok_or(UserStoreError::UserNotFound)
     }
 
     async fn change_email(&self, old: &Email, new: &Email) -> Result<(), UserStoreError> {

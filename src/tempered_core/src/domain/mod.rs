@@ -10,3 +10,4 @@ pub mod two_fa_attempt_id;
 pub mod two_fa_code;
 pub mod two_fa_error;
 pub mod user;
+pub mod user_id;

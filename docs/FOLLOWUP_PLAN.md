@@ -672,6 +672,19 @@ OAuth slot instead.
   No longer blocks 8.9 (built by moving the address-keyed records). What
   it would still buy: an email change that is one row update rather than
   several, and app tables that need not follow the address.
+  Owner chose to do it anyway (2026-11-25). Scope, in steps (one commit
+  each):
+  - A. `UserId` (UUID) on `User`; `UserStore::get_user_by_id`; Postgres
+    `users.id` primary key, address unique. ✅
+  - B. Tokens carry it: JWT `uid` claim, `SessionRecord.user_id`,
+    `IdentityClaims::user_id()`, so an app keys its tables on the id.
+  - C. The durable credential stores key on it: TOTP, passkeys, OAuth
+    identities, API keys (migrations, `ON DELETE CASCADE`). Their
+    `reassign` methods go; email change is the account update plus
+    revocation.
+  - Not rekeyed: the ephemeral stores (sessions, codes, mailed tokens,
+    epochs, rate limits, challenges). An email change ends them all, so
+    keying them by address costs nothing.
 - **9.6 Public contract tests.** ✅ DONE 2026-11-25. Expose `persistence/contract.rs` behind a
   `testing` feature so third-party store backends can run them.
   As built: `persistence::contract` is public under `testing` (and in

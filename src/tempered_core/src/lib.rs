@@ -25,6 +25,7 @@ pub use domain::{
     two_fa_code::TwoFaCode,
     two_fa_error::TwoFaError,
     user::{User, UserError, ValidatedUser},
+    user_id::UserId,
 };
 
 pub use ports::{

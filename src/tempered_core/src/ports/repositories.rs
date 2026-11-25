@@ -14,6 +14,7 @@ use crate::domain::{
     two_fa_attempt_id::TwoFaAttemptId,
     two_fa_code::TwoFaCode,
     user::{User, ValidatedUser},
+    user_id::UserId,
 };
 
 // UserStore port trait and errors
@@ -55,6 +56,8 @@ pub trait UserStore: Send + Sync {
         password: &Password,
     ) -> Result<ValidatedUser, UserStoreError>;
     async fn get_user(&self, email: &Email) -> Result<User, UserStoreError>;
+    /// The account with this id, at whatever address it has now.
+    async fn get_user_by_id(&self, id: &UserId) -> Result<User, UserStoreError>;
     /// Turn the account's 2FA requirement on or off, leaving everything else
     /// about it unchanged. Fails with [`UserStoreError::UserNotFound`] if
     /// there is no such account.

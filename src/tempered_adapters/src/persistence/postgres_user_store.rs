@@ -1,6 +1,6 @@
 use secrecy::{ExposeSecret, Secret};
 use sqlx::{PgPool, Pool, Postgres, postgres::PgPoolOptions};
-use tempered_core::{Email, Password, User, UserStore, UserStoreError, ValidatedUser};
+use tempered_core::{Email, Password, User, UserId, UserStore, UserStoreError, ValidatedUser};
 
 use super::password_hasher::{Argon2Hasher, PasswordVerdict};
 
@@ -64,6 +64,22 @@ impl PostgresUserStore {
     }
 }
 
+fn user_from_row(
+    id: uuid::Uuid,
+    email: String,
+    password_hash: String,
+    requires_2fa: bool,
+) -> Result<User, UserStoreError> {
+    let mut user = User::parse(
+        Secret::from(email),
+        Secret::from(password_hash),
+        requires_2fa,
+    )
+    .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?;
+    user.id = UserId::from_uuid(id);
+    Ok(user)
+}
+
 #[async_trait::async_trait]
 impl UserStore for PostgresUserStore {
     #[tracing::instrument(name = "Adding user to PostgreSQL", skip_all)]
@@ -76,9 +92,10 @@ impl UserStore for PostgresUserStore {
 
         let query = sqlx::query!(
             r#"
-                INSERT INTO users (email, password_hash, requires_2fa)
-                VALUES ($1, $2, $3)
+                INSERT INTO users (id, email, password_hash, requires_2fa)
+                VALUES ($1, $2, $3, $4)
             "#,
+            user.id().as_uuid(),
             user.email().as_ref().expose_secret(),
             password_hash.expose_secret(),
             user.requires_2fa()
@@ -211,7 +228,7 @@ impl UserStore for PostgresUserStore {
     async fn get_user(&self, email: &Email) -> Result<User, UserStoreError> {
         let query = sqlx::query!(
             r#"
-                SELECT email, password_hash, requires_2fa
+                SELECT id, email, password_hash, requires_2fa
                 FROM users
                 WHERE email = $1
             "#,
@@ -226,15 +243,24 @@ impl UserStore for PostgresUserStore {
         let Some(row) = row else {
             return Err(UserStoreError::UserNotFound);
         };
+        user_from_row(row.id, row.email, row.password_hash, row.requires_2fa)
+    }
 
-        let user = User::parse(
-            Secret::from(row.email),
-            Secret::from(row.password_hash),
-            row.requires_2fa,
+    #[tracing::instrument(name = "Retrieving user by id from PostgreSQL", skip_all)]
+    async fn get_user_by_id(&self, id: &UserId) -> Result<User, UserStoreError> {
+        let row = sqlx::query!(
+            r#"
+                SELECT id, email, password_hash, requires_2fa
+                FROM users
+                WHERE id = $1
+            "#,
+            id.as_uuid()
         )
-        .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?;
-
-        Ok(user)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| UserStoreError::UnexpectedError(tempered_core::Failure::new(e)))?
+        .ok_or(UserStoreError::UserNotFound)?;
+        user_from_row(row.id, row.email, row.password_hash, row.requires_2fa)
     }
 
     #[tracing::instrument(name = "Delete user from user store", skip_all)]
@@ -634,8 +660,9 @@ mod tests {
         let (_container, pool) = setup_and_connect_db_container().await;
         let store = PostgresUserStore::new(pool.clone());
         sqlx::query(
-            "INSERT INTO users (email, password_hash, requires_2fa) VALUES ($1, $2, false)",
+            "INSERT INTO users (id, email, password_hash, requires_2fa) VALUES ($1, $2, $3, false)",
         )
+        .bind(UserId::new().as_uuid())
         .bind("a@example.com")
         .bind("not-a-phc-string")
         .execute(&pool)

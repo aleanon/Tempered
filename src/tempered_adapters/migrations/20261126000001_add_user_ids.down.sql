@@ -1,0 +1,4 @@
+ALTER TABLE users DROP CONSTRAINT users_email_key;
+ALTER TABLE users DROP CONSTRAINT users_pkey;
+ALTER TABLE users ADD PRIMARY KEY (email);
+ALTER TABLE users DROP COLUMN id;

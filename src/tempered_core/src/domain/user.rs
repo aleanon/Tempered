@@ -1,7 +1,7 @@
 use secrecy::Secret;
 use thiserror::Error;
 
-use super::{email::Email, password::Password};
+use super::{email::Email, password::Password, user_id::UserId};
 
 #[derive(Debug, Error, PartialEq)]
 pub enum UserError {
@@ -13,14 +13,18 @@ pub enum UserError {
 
 #[derive(Debug, Clone)]
 pub struct User {
+    /// The account's stable id: it stays when the address changes.
+    pub id: UserId,
     pub email: Email,
     pub password: Password,
     pub requires_2fa: bool,
 }
 
 impl User {
+    /// A new account, with a fresh id.
     pub fn new(email: Email, password: Password, requires_2fa: bool) -> Self {
         User {
+            id: UserId::new(),
             email,
             password,
             requires_2fa,
@@ -33,10 +37,15 @@ impl User {
         requires_2fa: bool,
     ) -> Result<Self, UserError> {
         Ok(User {
+            id: UserId::new(),
             email: Email::try_from(email)?,
             password: Password::try_from(password)?,
             requires_2fa,
         })
+    }
+
+    pub fn id(&self) -> UserId {
+        self.id
     }
 
     pub fn email(&self) -> &Email {
